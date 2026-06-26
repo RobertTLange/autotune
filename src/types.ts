@@ -41,4 +41,5 @@ export interface RunOptions {
   storage?: string;
   yes: boolean;
   config?: string;
+  ask?: (prompt: string) => Promise<string>;
 }

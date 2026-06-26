@@ -4,31 +4,55 @@ import { stdin, stdout } from "node:process";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import type { SearchSpace } from "./types.js";
 
+type Ask = (prompt: string) => Promise<string>;
+
 export async function confirmSearchSpace(input: {
   searchSpace: SearchSpace;
   filePath: string;
   yes: boolean;
+  ask?: Ask;
+  revise?: (searchSpace: SearchSpace, feedback: string) => Promise<SearchSpace>;
 }): Promise<SearchSpace> {
   const request = input;
-  await writeSearchSpace(request.filePath, request.searchSpace);
+  let current = request.searchSpace;
+  await writeSearchSpace(request.filePath, current);
   if (request.yes) {
-    return request.searchSpace;
+    return current;
   }
 
-  printSearchSpace(request.searchSpace);
-  const rl = readline.createInterface({ input: stdin, output: stdout });
+  const rl = request.ask ? undefined : readline.createInterface({ input: stdin, output: stdout });
+  const ask = request.ask ?? ((prompt: string) => rl?.question(prompt) ?? Promise.resolve(""));
   try {
-    const answer = (await rl.question("Confirm search space? [Y/edit/n] ")).trim().toLowerCase();
-    if (answer === "" || answer === "y" || answer === "yes") {
-      return request.searchSpace;
+    while (true) {
+      printSearchSpace(current);
+      const rawAnswer = (await ask("Run search with this space? [Y/feedback/edit/n] ")).trim();
+      const answer = rawAnswer.toLowerCase();
+      if (answer === "" || answer === "y" || answer === "yes") {
+        await writeSearchSpace(request.filePath, current);
+        return current;
+      }
+      if (answer === "edit") {
+        await openEditor(request.filePath);
+        current = await readSearchSpace(request.filePath);
+        continue;
+      }
+      if (answer === "n" || answer === "no") {
+        throw new Error("aborted by user");
+      }
+
+      const feedback = answer === "feedback" || answer === "f" ? (await ask("Feedback: ")).trim() : rawAnswer;
+      if (!feedback) {
+        continue;
+      }
+      if (!request.revise) {
+        throw new Error("feedback revision is unavailable");
+      }
+      console.error("Revising search space from feedback...");
+      current = await request.revise(current, feedback);
+      await writeSearchSpace(request.filePath, current);
     }
-    if (answer === "edit") {
-      await openEditor(request.filePath);
-      return readSearchSpace(request.filePath);
-    }
-    throw new Error("aborted by user");
   } finally {
-    rl.close();
+    rl?.close();
   }
 }
 

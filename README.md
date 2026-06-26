@@ -56,6 +56,20 @@ autotune run train.py \
   --output .autotune/results.json
 ```
 
+By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
+
+```text
+Run search with this space? [Y/feedback/edit/n]
+```
+
+- `Y` or Enter: run the search
+- `feedback`: enter free-form feedback; the configured headless agent revises the search space and asks again
+- any other non-empty text: treated directly as feedback
+- `edit`: edit `.autotune/search_space.yaml` manually
+- `n`: abort
+
+Use `--yes` only when you want to accept the first proposed search space without review.
+
 Use a custom runtime command without invoking a shell:
 
 ```bash
@@ -130,6 +144,7 @@ By default, `.autotune/` contains:
 
 - `analyze_prompt.md`
 - `generate_prompt.md`
+- `revise_prompt.md`, when feedback revision is used
 - `search_space.yaml`
 - `<script>_optuna.py`
 - `results.json`

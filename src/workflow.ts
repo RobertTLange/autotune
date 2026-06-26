@@ -1,7 +1,7 @@
 import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { analyzeScript, requestWrapperGeneration } from "./analyze.js";
+import { analyzeScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation } from "./detect.js";
@@ -35,7 +35,24 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
   const searchSpace = normalizeDirection(proposed, options.direction);
   console.error(`Saving confirmed search space: ${searchSpacePath}`);
-  const confirmed = await confirmSearchSpace({ searchSpace, filePath: searchSpacePath, yes: options.yes });
+  const confirmed = await confirmSearchSpace({
+    searchSpace,
+    filePath: searchSpacePath,
+    yes: options.yes,
+    ask: options.ask,
+    revise: async (current, feedback) => {
+      console.error(`Phase 1b: revising search space with headless ${options.agent}...`);
+      const revised = await reviseSearchSpace({
+        invocation,
+        searchSpace: current,
+        feedback,
+        workDir,
+        agent: options.agent
+      });
+      console.error(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`);
+      return normalizeDirection(revised, options.direction);
+    }
+  });
 
   const runnerPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
   const resultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");

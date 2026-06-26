@@ -1,4 +1,7 @@
-import { printSearchSpace } from "../src/confirm.js";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { confirmSearchSpace, printSearchSpace } from "../src/confirm.js";
 
 describe("printSearchSpace", () => {
   it("prints numeric and categorical parameters", () => {
@@ -23,5 +26,33 @@ describe("printSearchSpace", () => {
     }
     expect(lines.join("\n")).toContain("[0.001, 0.1] log");
     expect(lines.join("\n")).toContain("[adam, sgd]");
+  });
+});
+
+describe("confirmSearchSpace", () => {
+  it("revises the proposal from feedback, then accepts the revised space", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-confirm-"));
+    const filePath = path.join(dir, "search_space.yaml");
+    const answers = ["feedback", "make x wider", "Y"];
+
+    const confirmed = await confirmSearchSpace({
+      searchSpace: {
+        parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+        has_arg_parsing: true,
+        needs_wrapper: false,
+        direction: "maximize"
+      },
+      filePath,
+      yes: false,
+      ask: async () => answers.shift() ?? "Y",
+      revise: async (searchSpace, feedback) => ({
+        ...searchSpace,
+        parameters: [{ name: "x", cli_flag: "--x", type: "float", low: -1, high: 2 }],
+        reasoning: feedback
+      })
+    });
+
+    expect(confirmed.parameters[0]).toMatchObject({ low: -1, high: 2 });
+    expect(await readFile(filePath, "utf8")).toContain("high: 2");
   });
 });

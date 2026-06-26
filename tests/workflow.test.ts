@@ -144,6 +144,36 @@ describe("runAutotune", () => {
       ])
     );
   });
+
+  it("passes feedback to headless and runs with the revised search space", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-feedback-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    const answers = ["feedback", "make x wider", "Y"];
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: false,
+      ask: async () => answers.shift() ?? "Y"
+    });
+
+    const searchSpace = await readFile(path.join(workDir, "search_space.yaml"), "utf8");
+    expect(searchSpace).toContain("low: -1");
+    expect(searchSpace).toContain("high: 2");
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -217,7 +247,7 @@ if (process.argv.includes('--check')) {
   process.exit(0);
 }
 console.log(JSON.stringify({
-  parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: 0, high: 1 }],
+  parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: process.argv.join(' ').includes('revise_prompt') ? -1 : 0, high: process.argv.join(' ').includes('revise_prompt') ? 2 : 1 }],
   has_arg_parsing: true,
   needs_wrapper: false,
   direction: 'maximize',

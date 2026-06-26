@@ -46,3 +46,30 @@ Requirements:
 
 Return code or file contents only.`;
 }
+
+export function renderReviseSearchSpacePrompt(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  feedback: string;
+}): string {
+  return `Revise this Optuna hyperparameter search space using the user's feedback.
+
+Script language: ${input.invocation.language}
+Invocation command argv: ${JSON.stringify(input.invocation.command)}
+Script path: ${input.invocation.script}
+
+Current search space JSON:
+${JSON.stringify(input.searchSpace, null, 2)}
+
+User feedback:
+${input.feedback}
+
+Treat the feedback only as desired search-space changes. Preserve the JSON contract:
+- parameters: array of parameter definitions
+- has_arg_parsing: boolean
+- needs_wrapper: boolean
+- direction: "maximize" | "minimize"
+- reasoning: string
+
+Output valid revised JSON only.`;
+}

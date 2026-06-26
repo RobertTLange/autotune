@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { extractHeadlessJson, runHeadless } from "./headless.js";
-import { renderAnalyzePrompt, renderGeneratePrompt } from "./prompts.js";
+import { renderAnalyzePrompt, renderGeneratePrompt, renderReviseSearchSpacePrompt } from "./prompts.js";
 import type { Invocation, SearchSpace } from "./types.js";
 
 export async function analyzeScript(input: {
@@ -49,6 +49,35 @@ export async function requestWrapperGeneration(input: {
     path.dirname(input.invocation.script),
     "--json"
   ]);
+}
+
+export async function reviseSearchSpace(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  feedback: string;
+  workDir: string;
+  agent: string;
+}): Promise<SearchSpace> {
+  await mkdir(input.workDir, { recursive: true });
+  const promptPath = path.join(input.workDir, "revise_prompt.md");
+  await writeFile(
+    promptPath,
+    renderReviseSearchSpacePrompt({
+      invocation: input.invocation,
+      searchSpace: input.searchSpace,
+      feedback: input.feedback
+    }),
+    "utf8"
+  );
+  const output = await retryHeadless([
+    input.agent,
+    "--prompt-file",
+    promptPath,
+    "--work-dir",
+    path.dirname(input.invocation.script),
+    "--json"
+  ]);
+  return extractHeadlessJson(output);
 }
 
 async function retryHeadless(args: string[]): Promise<string> {
