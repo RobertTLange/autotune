@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
-import { analyzeOnly, resumeStudy, runAutotune, showResults } from "./workflow.js";
+import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, RunOptions } from "./types.js";
 
 const program = new Command();
@@ -40,6 +40,15 @@ program
   .option("--command <command>", "override script invocation command")
   .action(async (script: string, options: { agent: string; json: boolean; output?: string; workDir: string; command?: string }) => {
     await analyzeOnly(script, options);
+  });
+
+program
+  .command("doctor")
+  .argument("[script]", "optional script to check runtime detection")
+  .option("--agent <name>", "headless agent", "claude")
+  .option("--command <command>", "override script invocation command")
+  .action(async (script: string | undefined, options: { agent: string; command?: string }) => {
+    await doctorAutotune({ script, agent: options.agent, command: options.command });
   });
 
 program

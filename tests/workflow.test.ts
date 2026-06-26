@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { analyzeOnly, resumeStudy, runAutotune, showResults } from "../src/workflow.js";
+import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "../src/workflow.js";
 import { writeSearchSpace } from "../src/search-space.js";
 
 describe("runAutotune", () => {
@@ -28,16 +28,18 @@ describe("runAutotune", () => {
     process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
     process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
 
-    await runAutotune(script, {
-      trials: 2,
-      direction: "maximize",
-      sampler: "tpe",
-      pruner: "none",
-      nJobs: 1,
-      workDir,
-      agent: "claude",
-      json: true,
-      yes: true
+    const progress = await captureStderr(async () => {
+      await runAutotune(script, {
+        trials: 2,
+        direction: "maximize",
+        sampler: "tpe",
+        pruner: "none",
+        nJobs: 1,
+        workDir,
+        agent: "claude",
+        json: true,
+        yes: true
+      });
     });
 
     const searchSpace = await readFile(path.join(workDir, "search_space.yaml"), "utf8");
@@ -46,6 +48,15 @@ describe("runAutotune", () => {
     expect(searchSpace).toContain("cli_flag: --x");
     expect(runner).toContain("subprocess.run(argv");
     expect(result.best_trial.params).toEqual({ x: 0.5 });
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Phase 1: analyzing"),
+        expect.stringContaining("Phase 2: generating"),
+        expect.stringContaining("Writing Optuna runner"),
+        expect.stringContaining("Running 2 Optuna trials"),
+        expect.stringContaining("Trials complete")
+      ])
+    );
   });
 
   it("rejects invalid trial counts before spawning tools", async () => {
@@ -109,7 +120,59 @@ describe("runAutotune", () => {
 
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toContain("best_trial");
   });
+
+  it("prints doctor checks for base tools and script runtime", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-doctor-"));
+    const binDir = path.join(dir, "bin");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    const lines = await captureStdout(async () => {
+      await doctorAutotune({ script, agent: "claude" });
+    });
+
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("python3"),
+        expect.stringContaining("optuna"),
+        expect.stringContaining("headless"),
+        expect.stringContaining("runtime")
+      ])
+    );
+  });
 });
+
+async function captureStderr(action: () => Promise<void>): Promise<string[]> {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (value?: unknown) => {
+    lines.push(String(value ?? ""));
+  };
+  try {
+    await action();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+async function captureStdout(action: () => Promise<void>): Promise<string[]> {
+  const original = console.log;
+  const lines: string[] = [];
+  console.log = (value?: unknown) => {
+    lines.push(String(value ?? ""));
+  };
+  try {
+    await action();
+  } finally {
+    console.log = original;
+  }
+  return lines;
+}
 
 async function writeFakePython(filePath: string): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });

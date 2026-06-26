@@ -11,6 +11,12 @@ export interface PrerequisiteReport {
   runtime: string;
 }
 
+export interface DoctorCheck {
+  name: string;
+  status: "ok" | "fail" | "skip";
+  detail: string;
+}
+
 export async function checkPrerequisites(input: {
   invocation: Invocation;
   agent: string;
@@ -23,7 +29,35 @@ export async function checkPrerequisites(input: {
   return { python, optuna, headless, runtime };
 }
 
-async function checkPython(): Promise<string> {
+export async function checkDoctorPrerequisites(input: {
+  invocation?: Invocation;
+  agent: string;
+}): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  checks.push(await runDoctorCheck("python3", checkPython));
+  checks.push(await runDoctorCheck("optuna", checkOptuna));
+  checks.push(await runDoctorCheck("headless", () => checkHeadless(input.agent)));
+  checks.push(
+    input.invocation
+      ? await runDoctorCheck("runtime", () => checkRuntime(input.invocation as Invocation))
+      : {
+          name: "runtime",
+          status: "skip",
+          detail: "pass a script to check its runtime"
+        }
+  );
+  return checks;
+}
+
+async function runDoctorCheck(name: string, check: () => Promise<string>): Promise<DoctorCheck> {
+  try {
+    return { name, status: "ok", detail: await check() };
+  } catch (error) {
+    return { name, status: "fail", detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function checkPython(): Promise<string> {
   const { stdout } = await runCommand("python3", ["--version"]);
   const version = stdout.trim().replace(/^Python\s+/, "");
   const [major = "0", minor = "0"] = version.split(".");
@@ -33,7 +67,7 @@ async function checkPython(): Promise<string> {
   return version;
 }
 
-async function checkOptuna(): Promise<string> {
+export async function checkOptuna(): Promise<string> {
   try {
     const { stdout } = await runCommand("python3", ["-c", "import optuna; print(optuna.__version__)"]);
     return stdout.trim();
@@ -42,7 +76,7 @@ async function checkOptuna(): Promise<string> {
   }
 }
 
-async function checkHeadless(agent: string): Promise<string> {
+export async function checkHeadless(agent: string): Promise<string> {
   const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
   let stdout = "";
   let stderr = "";
@@ -66,7 +100,7 @@ function isMissingExecutable(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-async function checkRuntime(invocation: Invocation): Promise<string> {
+export async function checkRuntime(invocation: Invocation): Promise<string> {
   const executable = invocation.command[0];
   if (!executable) {
     throw new Error("empty invocation command");

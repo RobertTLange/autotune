@@ -2,7 +2,7 @@ import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { analyzeScript, requestWrapperGeneration } from "./analyze.js";
-import { checkPrerequisites } from "./check.js";
+import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation } from "./detect.js";
 import { writeOptunaRunner } from "./generate.js";
@@ -31,13 +31,16 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
 
   const searchSpacePath = path.join(workDir, "search_space.yaml");
   const proposed = options.config
-    ? await readSearchSpace(path.resolve(options.config))
-    : await analyzeScript({ invocation, workDir, agent: options.agent });
+    ? await loadConfiguredSearchSpace(options.config)
+    : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
   const searchSpace = normalizeDirection(proposed, options.direction);
+  console.error(`Saving confirmed search space: ${searchSpacePath}`);
   const confirmed = await confirmSearchSpace({ searchSpace, filePath: searchSpacePath, yes: options.yes });
 
   const runnerPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
   const resultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
+  console.error(`Phase 2: generating Optuna wrapper with headless ${options.agent}...`);
+  console.error("  This can take a minute on first run.");
   await requestWrapperGeneration({
     invocation,
     searchSpace: confirmed,
@@ -45,6 +48,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     agent: options.agent,
     outputPath: runnerPath
   });
+  console.error(`Writing Optuna runner: ${runnerPath}`);
   await writeOptunaRunner({
     invocation,
     searchSpace: confirmed,
@@ -52,6 +56,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     resultsPath
   });
 
+  console.error(`Running ${options.trials} Optuna trials...`);
   await runPythonRunner({
     runnerPath,
     trials: options.trials,
@@ -62,6 +67,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     storage: options.storage,
     output: resultsPath
   });
+  console.error("Trials complete.");
 
   const result = await readResults(resultsPath);
   if (options.json) {
@@ -88,6 +94,25 @@ export async function analyzeOnly(script: string, options: {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
   console.log(options.json ? JSON.stringify(searchSpace, null, 2) : renderSearchSpaceSummary(searchSpace));
+}
+
+export async function doctorAutotune(options: {
+  script?: string;
+  agent: string;
+  command?: string;
+}): Promise<void> {
+  const invocation = options.script
+    ? detectInvocation(await resolveReadableScript(options.script), options.command)
+    : undefined;
+  const checks = await checkDoctorPrerequisites({ invocation, agent: options.agent });
+  console.log("autotune doctor");
+  for (const check of checks) {
+    console.log(formatDoctorCheck(check));
+  }
+  const failures = checks.filter((check) => check.status === "fail");
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} prerequisite check failed`);
+  }
 }
 
 export async function showResults(options: { dir: string; json: boolean; top: number }): Promise<void> {
@@ -121,6 +146,35 @@ export async function resumeStudy(options: {
 
 function normalizeDirection(searchSpace: SearchSpace, direction: "maximize" | "minimize"): SearchSpace {
   return { ...searchSpace, direction: direction ?? searchSpace.direction };
+}
+
+async function loadConfiguredSearchSpace(configPath: string): Promise<SearchSpace> {
+  const resolved = path.resolve(configPath);
+  console.error(`Loading search space config: ${resolved}`);
+  return readSearchSpace(resolved);
+}
+
+async function runAnalysisPhase(input: {
+  invocation: ReturnType<typeof detectInvocation>;
+  workDir: string;
+  agent: string;
+}): Promise<SearchSpace> {
+  console.error(`Phase 1: analyzing ${input.invocation.script} with headless ${input.agent}...`);
+  console.error("  This can take a minute on first run.");
+  const searchSpace = await analyzeScript(input);
+  console.error(`Analysis complete: ${searchSpace.parameters.length} parameter(s) proposed.`);
+  return searchSpace;
+}
+
+async function resolveReadableScript(script: string): Promise<string> {
+  const scriptPath = path.resolve(script);
+  await access(scriptPath, constants.R_OK);
+  return scriptPath;
+}
+
+function formatDoctorCheck(check: DoctorCheck): string {
+  const label = check.status === "ok" ? "[ok]" : check.status === "skip" ? "[skip]" : "[fail]";
+  return `${label} ${check.name}: ${check.detail}`;
 }
 
 function renderSearchSpaceSummary(searchSpace: SearchSpace): string {

@@ -97,9 +97,16 @@ reasoning: accuracy-style metric
 
 ```bash
 autotune analyze <script> [--json] [--output search_space.yaml]
+autotune doctor [script] [--agent codex]
 autotune run <script> --trials N [flags]
 autotune results [.autotune] [--top 10] [--json]
 autotune resume --storage sqlite:///study.db --trials N [--work-dir .autotune]
+```
+
+Use `doctor` to verify prerequisites before a run:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH autotune doctor examples/quadratic.py --agent codex
 ```
 
 ## Example
