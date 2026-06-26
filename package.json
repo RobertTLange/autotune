@@ -9,7 +9,7 @@
   "files": [
     "dist",
     "examples/*.py",
-    "examples/*.yaml",
+    "examples/*.cpp",
     "templates",
     "README.md",
     "spec.md"

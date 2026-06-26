@@ -130,45 +130,17 @@ autotune resume --storage sqlite:///study.db --trials N
 Use `doctor` to verify prerequisites before a run:
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH autotune doctor examples/quadratic.py --agent codex
+PATH=$PWD/.venv/bin:$PATH autotune doctor examples/mnist_cnn_no_cli.py --agent codex
 ```
 
-## Example
+## MNIST CNN Example
 
-```bash
-python3 -m pip install optuna
-npm run build
-node dist/cli.js run examples/quadratic.py \
-  --trials 8 \
-  --agent codex \
-  --yes \
-  --json
-```
-
-Expected behavior: `headless` proposes an `x` search space, the generated Optuna runner calls `examples/quadratic.py --x <value>`, and the best trial approaches `x = 0.7`.
-
-## No-Argparse Example
-
-`examples/no_argparse.py` has hardcoded values and does not accept `--x` or `--penalty`. The paired config sets `needs_wrapper: true`, so autotune asks `headless` to generate a modified copy before running Optuna. The same path is used when `has_metric_output: false` or the source does not contain `autotune_metric`.
-
-```bash
-autotune run examples/no_argparse.py \
-  --config examples/no_argparse_space.yaml \
-  --trials 8 \
-  --agent codex \
-  --yes \
-  --json
-```
-
-Expected behavior: autotune generates a modified copy, builds an Optuna runner, and runs trials against the modified copy. The original `examples/no_argparse.py` is not changed.
-
-## MNIST CNN Compatibility Example
-
-`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print. The paired config tells autotune to generate a compatible copy that accepts `--lr`, `--dropout`, and `--batch-size`, then prints validation accuracy as the metric.
+`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so autotune asks the agent to create a compatible copy for the run.
 
 Install runtime packages first if needed:
 
 ```bash
+python3 -m pip install optuna
 uv pip install --python .venv/bin/python torch torchvision
 ```
 
@@ -176,14 +148,32 @@ Run:
 
 ```bash
 PATH=$PWD/.venv/bin:$PATH autotune run examples/mnist_cnn_no_cli.py \
-  --config examples/mnist_cnn_no_cli_space.yaml \
   --trials 8 \
   --agent codex \
-  --yes \
   --json
 ```
 
-Expected behavior: autotune generates a compatible copy that accepts `--lr`, `--dropout`, and `--batch-size`, then runs trials against it. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+Expected behavior: the agent proposes a search space, autotune asks for confirmation or feedback, then generates a compatible copy that accepts hyperparameter flags and prints validation accuracy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+
+## C++ Example
+
+`examples/quadratic.cpp` is a single-file C++ objective with manual flag parsing and built-in metric output. Compile it first, then point autotune at the source for analysis while using the compiled binary as the runtime command.
+
+```bash
+g++ -std=c++17 -O2 examples/quadratic.cpp -o /tmp/autotune-quadratic-cpp
+```
+
+Run:
+
+```bash
+autotune run examples/quadratic.cpp \
+  --command /tmp/autotune-quadratic-cpp \
+  --trials 8 \
+  --agent codex \
+  --json
+```
+
+Expected behavior: the agent proposes `--x`, the runner calls the compiled binary with trial values, and the best trial approaches `x = 0.7`.
 
 ## Development
 
@@ -194,4 +184,4 @@ npm test
 npm run build
 ```
 
-The test suite uses fake `python3` and `headless` binaries for fast deterministic workflow coverage. Real end-to-end verification was run with `headless codex`, Optuna 4.9.0, and `examples/quadratic.py`.
+The test suite uses fake `python3` and `headless` binaries for fast deterministic workflow coverage.
