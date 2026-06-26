@@ -1,0 +1,17 @@
+parameters:
+  - name: x
+    cli_flag: --x
+    type: float
+    low: -1
+    high: 2
+    current_value: 0
+  - name: penalty
+    cli_flag: --penalty
+    type: float
+    low: 0
+    high: 0.2
+    current_value: 0.05
+has_arg_parsing: false
+needs_wrapper: true
+direction: maximize
+reasoning: The script prints autotune_metric and is best when x is near 0.7 and penalty is low.

@@ -140,6 +140,22 @@ node dist/cli.js run examples/quadratic.py \
 
 Expected behavior: `headless` proposes an `x` search space, the generated Optuna runner calls `examples/quadratic.py --x <value>`, and the best trial approaches `x = 0.7`.
 
+## No-Argparse Example
+
+`examples/no_argparse.py` has hardcoded values and does not accept `--x` or `--penalty`. The paired config sets `needs_wrapper: true`, so autotune asks `headless` to generate a modified copy before running Optuna:
+
+```bash
+autotune run examples/no_argparse.py \
+  --config examples/no_argparse_space.yaml \
+  --trials 8 \
+  --agent codex \
+  --yes \
+  --json \
+  --work-dir /tmp/autotune-no-argparse
+```
+
+Expected behavior: autotune writes `/tmp/autotune-no-argparse/no_argparse_modified.py`, generates `/tmp/autotune-no-argparse/no_argparse_optuna.py`, and runs trials against the modified copy. The original `examples/no_argparse.py` is not changed.
+
 ## Generated Files
 
 By default, `.autotune/` contains:
