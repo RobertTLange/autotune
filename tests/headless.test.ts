@@ -25,4 +25,17 @@ describe("extractHeadlessJson", () => {
     );
     expect(result.direction).toBe("minimize");
   });
+
+  it("extracts JSON from headless item text traces", () => {
+    const result = extractHeadlessJson(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: '{"parameters":[],"has_arg_parsing":true,"needs_wrapper":false,"direction":"maximize"}'
+        }
+      })
+    );
+    expect(result.direction).toBe("maximize");
+  });
 });

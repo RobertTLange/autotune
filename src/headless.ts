@@ -110,6 +110,12 @@ function findText(value: unknown): string | undefined {
         return found;
       }
     }
+    for (const nested of Object.values(record)) {
+      const found = findText(nested);
+      if (found) {
+        return found;
+      }
+    }
   }
   return undefined;
 }

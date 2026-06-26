@@ -28,7 +28,7 @@ from pathlib import Path
 import optuna
 from optuna.trial import TrialState
 
-CONFIG = ${JSON.stringify(payload, null, 2)}
+CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
 
 
 def suggest_value(trial, parameter):
