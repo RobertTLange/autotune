@@ -8,6 +8,7 @@
   },
   "files": [
     "dist",
+    "examples",
     "templates",
     "README.md",
     "spec.md"
