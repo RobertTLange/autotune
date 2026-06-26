@@ -72,6 +72,8 @@ Use `--yes` only when you want to accept the first proposed search space without
 
 If the analyzed script does not accept the proposed CLI flags or does not print `autotune_metric=<value>`, autotune can ask `headless` to generate a modified copy in the work dir, such as `.autotune/train_modified.py`. The original script is left untouched, and the Optuna runner invokes the modified copy.
 
+Autotune prompts the agent to keep objective measurement fixed. Proposed parameters should change the candidate behavior being evaluated, not the metric formula, evaluation input set, aggregation, thresholds, baselines, reporting, or measurement-only random seeds.
+
 Use a custom runtime command without invoking a shell:
 
 ```bash

@@ -9,6 +9,12 @@ The script is invoked via: ${[...input.invocation.command, input.invocation.scri
 Identify all tunable hyperparameters and propose Optuna search spaces.
 The optimization metric is reported via printing "autotune_metric=<value>" to stdout.
 
+A tunable hyperparameter should change candidate behavior before the objective is measured.
+Do not include parameters that change objective measurement, including the evaluation input set,
+scoring formula, aggregation window, reporting threshold, comparison baseline, output formatting,
+or random seed used only for measurement. Leave these values fixed so trials remain comparable.
+If you intentionally exclude an important metric or evaluation value, mention it in reasoning.
+
 For each parameter, output JSON with:
 - name: variable name / parameter name in the script
 - cli_flag: the CLI argument name to pass this parameter, such as "--lr" or "--batch-size"
@@ -73,6 +79,10 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 - direction: "maximize" | "minimize"
 - reasoning: string
 
+Preserve fixed objective measurement semantics. If feedback asks to tune a value used only to
+measure, score, aggregate, threshold, compare, or report the objective, omit it from parameters
+and explain the exclusion in reasoning.
+
 Output valid revised JSON only.`;
 }
 
@@ -93,9 +103,11 @@ ${JSON.stringify(input.searchSpace, null, 2)}
 
 Requirements:
 - preserve the original script's behavior except for the compatibility changes below
-- add CLI parsing for every parameter using its cli_flag when the script does not already accept it
+- add CLI parsing only for the confirmed parameters using their cli_flag when the script does not already accept them
+- do not add CLI flags for values used only by objective measurement, scoring, aggregation, thresholding, comparison, or reporting
 - ensure the script prints exactly one final "autotune_metric=<value>" line to stdout
-- if the original script lacks metric output, choose the most suitable scalar score/loss/accuracy value computed by the script and print it after that value is available
+- if the original script lacks metric output, choose the most suitable scalar objective value computed by the script and print it after that value is available
+- preserve the original objective computation exactly except for adding the final metric print
 - do not modify the original script
 - output a JSON object with exactly one key: "code"
 - "code" must contain the full modified script source as a JSON string
