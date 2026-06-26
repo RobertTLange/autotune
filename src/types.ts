@@ -46,6 +46,7 @@ export interface RunOptions {
   workDir: string;
   agent: string;
   command?: string;
+  buildCommand?: string;
   json: boolean;
   output?: string;
   storage?: string;

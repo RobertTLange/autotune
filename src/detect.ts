@@ -57,9 +57,13 @@ export function splitCommand(command: string): string[] {
   return parts;
 }
 
-export function detectInvocation(scriptPath: string, commandOverride?: string): Invocation {
+export function detectInvocation(scriptPath: string, commandOverride?: string | string[]): Invocation {
   const extension = path.extname(scriptPath).toLowerCase();
-  const command = commandOverride ? splitCommand(commandOverride) : undefined;
+  const command = Array.isArray(commandOverride)
+    ? commandOverride
+    : commandOverride
+      ? splitCommand(commandOverride)
+      : undefined;
 
   if (command) {
     return {

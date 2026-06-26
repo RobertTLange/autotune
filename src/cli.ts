@@ -21,6 +21,7 @@ program
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--agent <name>", "headless agent", "claude")
   .option("--command <command>", "override script invocation command")
+  .option("--build-command <command>", "command to run once before analysis/trials; supports {script} and {work-dir}")
   .option("--json", "print JSON results", false)
   .option("--output <file>", "write JSON results to file")
   .option("--work-dir <dir>", "artifact directory", ".autotune")
@@ -86,6 +87,7 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
     workDir: String(raw.workDir),
     agent: String(raw.agent),
     command: typeof raw.command === "string" ? raw.command : undefined,
+    buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,
     json: Boolean(raw.json),
     output: typeof raw.output === "string" ? raw.output : undefined,
     storage: typeof raw.storage === "string" ? raw.storage : undefined,

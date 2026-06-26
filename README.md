@@ -81,6 +81,17 @@ Use a custom runtime command without invoking a shell:
 autotune run train.jl --trials 30 --command "julia +nightly"
 ```
 
+Run a build step once before analysis and trials:
+
+```bash
+autotune run model.cpp \
+  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/model" \
+  --command "{work-dir}/model" \
+  --trials 30
+```
+
+`--build-command` and `--command` support `{script}` and `{work-dir}` placeholders.
+
 Skip Phase 1 analysis with a known search space:
 
 ```bash
@@ -157,23 +168,18 @@ Expected behavior: the agent proposes a search space, autotune asks for confirma
 
 ## C++ Example
 
-`examples/quadratic.cpp` is a single-file C++ objective with manual flag parsing and built-in metric output. Compile it first, then point autotune at the source for analysis while using the compiled binary as the runtime command.
+`examples/pid_controller.cpp` is a single-file C++ simulation with manual flag parsing and built-in metric output. It tunes PID controller gains against a fixed tracking scenario with a disturbance.
 
 ```bash
-g++ -std=c++17 -O2 examples/quadratic.cpp -o /tmp/autotune-quadratic-cpp
-```
-
-Run:
-
-```bash
-autotune run examples/quadratic.cpp \
-  --command /tmp/autotune-quadratic-cpp \
-  --trials 8 \
+autotune run examples/pid_controller.cpp \
+  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
+  --command "{work-dir}/pid_controller" \
+  --trials 12 \
   --agent codex \
   --json
 ```
 
-Expected behavior: the agent proposes `--x`, the runner calls the compiled binary with trial values, and the best trial approaches `x = 0.7`.
+Expected behavior: the agent proposes `--kp`, `--ki`, and `--kd`, the runner calls the compiled binary with trial values, and the best trial improves the fixed PID tracking score.
 
 ## Development
 

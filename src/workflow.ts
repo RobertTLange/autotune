@@ -4,8 +4,9 @@ import path from "node:path";
 import { analyzeScript, generateModifiedScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
-import { detectInvocation } from "./detect.js";
+import { detectInvocation, splitCommand } from "./detect.js";
 import { writeOptunaRunner } from "./generate.js";
+import { runCommand } from "./process.js";
 import { readResults, renderResults } from "./results.js";
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
@@ -25,7 +26,12 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   await access(scriptPath, constants.R_OK);
   const workDir = path.resolve(options.workDir);
   await mkdir(workDir, { recursive: true });
-  const invocation = detectInvocation(scriptPath, options.command);
+  const commandContext = { scriptPath, workDir };
+  if (options.buildCommand) {
+    await runBuildCommand(options.buildCommand, commandContext);
+  }
+  const commandOverride = options.command ? expandCommandTemplateArgs(splitCommand(options.command), commandContext) : undefined;
+  const invocation = detectInvocation(scriptPath, commandOverride);
 
   writeStatus("Checking prerequisites...");
   const prerequisites = await checkPrerequisites({ invocation, agent: options.agent });
@@ -179,6 +185,26 @@ async function prepareSearchSpaceForRun(
     return normalized;
   }
   return { ...normalized, has_metric_output: false };
+}
+
+async function runBuildCommand(template: string, context: CommandTemplateContext): Promise<void> {
+  const command = expandCommandTemplateArgs(splitCommand(template), context);
+  const [executable, ...args] = command;
+  if (!executable) {
+    throw new Error("build command cannot be empty");
+  }
+  writeStatus(`Building runtime: ${styles.dim(command.join(" "))}`);
+  await runCommand(executable, args);
+  writeStatus("Build complete.", "success");
+}
+
+interface CommandTemplateContext {
+  scriptPath: string;
+  workDir: string;
+}
+
+function expandCommandTemplateArgs(args: string[], context: CommandTemplateContext): string[] {
+  return args.map((arg) => arg.replaceAll("{script}", context.scriptPath).replaceAll("{work-dir}", context.workDir));
 }
 
 function withEffectiveOptunaSettings(

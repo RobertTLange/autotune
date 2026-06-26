@@ -297,6 +297,39 @@ describe("runAutotune", () => {
     const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
     expect(argv).toEqual(expect.arrayContaining(["--direction", "maximize", "--sampler", "tpe", "--pruner", "none"]));
   });
+
+  it("runs a build command once before checking and using the runtime command", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune build command-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.cpp");
+    const runtime = path.join(workDir, "train-bin");
+    const buildLog = path.join(dir, "build.log");
+    await writeFile(script, "int main() { /* autotune_metric */ return 0; }\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    await writeFakeBuilder(path.join(binDir, "fake-build"), buildLog);
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      command: "{work-dir}/train-bin",
+      buildCommand: "fake-build {script} {work-dir}/train-bin",
+      json: true,
+      yes: true
+    });
+
+    expect(await readFile(buildLog, "utf8")).toBe(`${script}\n${runtime}\n`);
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain(runtime);
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -383,6 +416,22 @@ console.log(JSON.stringify({
   direction: 'maximize',
   reasoning: 'test metric'
 }));
+`,
+    "utf8"
+  );
+  await chmod(filePath, 0o755);
+}
+
+async function writeFakeBuilder(filePath: string, logPath: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(
+    filePath,
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const [script, output] = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(logPath)}, script + '\\n' + output + '\\n');
+fs.writeFileSync(output, '#!/usr/bin/env node\\nconsole.log("autotune_metric=1")\\n');
+fs.chmodSync(output, 0o755);
 `,
     "utf8"
   );
