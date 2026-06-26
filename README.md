@@ -2,7 +2,7 @@
 
 Automatic hyperparameter optimization CLI for scripts that print an `autotune_metric=<value>` line.
 
-`autotune` analyzes a script with `headless`, proposes an Optuna search space, writes a generated Python runner into `.autotune/`, and executes trials without modifying the original script. If a script is missing CLI parsing or metric output, autotune can ask the agent to generate a compatible copy in the work dir.
+`autotune` analyzes a script with `headless`, proposes an Optuna search space, asks for confirmation or feedback, then runs an Optuna study without modifying the original script. If a script is missing CLI parsing or metric output, autotune can ask the agent to generate a compatible copy for the run.
 
 ## Requirements
 
@@ -52,8 +52,7 @@ autotune run train.py \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
-  --work-dir .autotune \
-  --output .autotune/results.json
+  --output results.json
 ```
 
 When `--direction`, `--sampler`, or `--pruner` are omitted, autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
@@ -67,12 +66,12 @@ Run search with this space? [Y/feedback/edit/n]
 - `Y` or Enter: run the search
 - `feedback`: enter free-form feedback; the configured headless agent revises the search space and asks again
 - any other non-empty text: treated directly as feedback
-- `edit`: edit `.autotune/search_space.yaml` manually
+- `edit`: edit the generated `search_space.yaml` manually
 - `n`: abort
 
 Use `--yes` only when you want to accept the first proposed search space without review.
 
-If the analyzed script does not accept the proposed CLI flags or does not print `autotune_metric=<value>`, autotune can ask `headless` to generate a modified copy in the work dir, such as `.autotune/train_modified.py`. The original script is left untouched, and the Optuna runner invokes the modified copy.
+If the analyzed script does not accept the proposed CLI flags or does not print `autotune_metric=<value>`, autotune can ask `headless` to generate a modified copy. The original script is left untouched, and the Optuna runner invokes the modified copy.
 
 Autotune prompts the agent to keep objective measurement fixed. Proposed parameters should change the candidate behavior being evaluated, not the metric formula, evaluation input set, aggregation, thresholds, baselines, reporting, or measurement-only random seeds.
 
@@ -124,8 +123,8 @@ reasoning: accuracy-style metric
 autotune analyze <script> [--json] [--output search_space.yaml]
 autotune doctor [script] [--agent codex]
 autotune run <script> --trials N [flags]
-autotune results [.autotune] [--top 10] [--json]
-autotune resume --storage sqlite:///study.db --trials N [--work-dir .autotune]
+autotune results [results.json] [--top 10] [--json]
+autotune resume --storage sqlite:///study.db --trials N
 ```
 
 Use `doctor` to verify prerequisites before a run:
@@ -143,8 +142,7 @@ node dist/cli.js run examples/quadratic.py \
   --trials 8 \
   --agent codex \
   --yes \
-  --json \
-  --work-dir /tmp/autotune-example
+  --json
 ```
 
 Expected behavior: `headless` proposes an `x` search space, the generated Optuna runner calls `examples/quadratic.py --x <value>`, and the best trial approaches `x = 0.7`.
@@ -159,11 +157,10 @@ autotune run examples/no_argparse.py \
   --trials 8 \
   --agent codex \
   --yes \
-  --json \
-  --work-dir /tmp/autotune-no-argparse
+  --json
 ```
 
-Expected behavior: autotune writes `/tmp/autotune-no-argparse/no_argparse_modified.py`, generates `/tmp/autotune-no-argparse/no_argparse_optuna.py`, and runs trials against the modified copy. The original `examples/no_argparse.py` is not changed.
+Expected behavior: autotune generates a modified copy, builds an Optuna runner, and runs trials against the modified copy. The original `examples/no_argparse.py` is not changed.
 
 ## MNIST CNN Compatibility Example
 
@@ -183,25 +180,10 @@ PATH=$PWD/.venv/bin:$PATH autotune run examples/mnist_cnn_no_cli.py \
   --trials 8 \
   --agent codex \
   --yes \
-  --json \
-  --work-dir /tmp/autotune-mnist-cnn
+  --json
 ```
 
-Expected behavior: autotune writes `/tmp/autotune-mnist-cnn/mnist_cnn_no_cli_modified.py`, generates `/tmp/autotune-mnist-cnn/mnist_cnn_no_cli_optuna.py`, and runs trials against the modified copy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
-
-## Generated Files
-
-By default, `.autotune/` contains:
-
-- `analyze_prompt.md`
-- `generate_prompt.md`
-- `revise_prompt.md`, when feedback revision is used
-- `modified_prompt.md`, when a modified script copy is needed
-- `search_space.yaml`
-- `<script>_optuna.py`
-- `<script>_modified.<ext>`, when CLI parsing or metric output is added to a copy
-- `results.json`
-- `study.db`, when SQLite storage is configured
+Expected behavior: autotune generates a compatible copy that accepts `--lr`, `--dropout`, and `--batch-size`, then runs trials against it. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
 
 ## Development
 
