@@ -81,6 +81,7 @@ export function printSearchSpace(searchSpace: SearchSpace): void {
   }
   console.log(`\nDirection: ${searchSpace.direction}${searchSpace.reasoning ? ` (${searchSpace.reasoning})` : ""}`);
   console.log(`Arg parsing: ${searchSpace.has_arg_parsing ? "yes" : "no"}`);
+  console.log(`Metric output: ${searchSpace.has_metric_output === false ? "no" : "yes"}`);
 }
 
 function columnWidth(header: string, values: string[]): number {

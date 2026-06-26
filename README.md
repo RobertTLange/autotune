@@ -2,7 +2,7 @@
 
 Automatic hyperparameter optimization CLI for scripts that print an `autotune_metric=<value>` line.
 
-`autotune` analyzes a script with `headless`, proposes an Optuna search space, writes a generated Python runner into `.autotune/`, and executes trials without modifying the original script.
+`autotune` analyzes a script with `headless`, proposes an Optuna search space, writes a generated Python runner into `.autotune/`, and executes trials without modifying the original script. If a script is missing CLI parsing or metric output, autotune can ask the agent to generate a compatible copy in the work dir.
 
 ## Requirements
 
@@ -70,7 +70,7 @@ Run search with this space? [Y/feedback/edit/n]
 
 Use `--yes` only when you want to accept the first proposed search space without review.
 
-If the analyzed script does not accept the proposed CLI flags, autotune can ask `headless` to generate a modified copy in the work dir, such as `.autotune/train_modified.py`. The original script is left untouched, and the Optuna runner invokes the modified copy.
+If the analyzed script does not accept the proposed CLI flags or does not print `autotune_metric=<value>`, autotune can ask `headless` to generate a modified copy in the work dir, such as `.autotune/train_modified.py`. The original script is left untouched, and the Optuna runner invokes the modified copy.
 
 Use a custom runtime command without invoking a shell:
 
@@ -105,6 +105,7 @@ parameters:
     choices: [adam, sgd]
 has_arg_parsing: true
 needs_wrapper: false
+has_metric_output: true
 direction: maximize
 reasoning: accuracy-style metric
 ```
@@ -142,7 +143,7 @@ Expected behavior: `headless` proposes an `x` search space, the generated Optuna
 
 ## No-Argparse Example
 
-`examples/no_argparse.py` has hardcoded values and does not accept `--x` or `--penalty`. The paired config sets `needs_wrapper: true`, so autotune asks `headless` to generate a modified copy before running Optuna:
+`examples/no_argparse.py` has hardcoded values and does not accept `--x` or `--penalty`. The paired config sets `needs_wrapper: true`, so autotune asks `headless` to generate a modified copy before running Optuna. The same path is used when `has_metric_output: false` or the source does not contain `autotune_metric`.
 
 ```bash
 autotune run examples/no_argparse.py \
@@ -166,7 +167,7 @@ By default, `.autotune/` contains:
 - `modified_prompt.md`, when a modified script copy is needed
 - `search_space.yaml`
 - `<script>_optuna.py`
-- `<script>_modified.<ext>`, when CLI parsing is added to a copy
+- `<script>_modified.<ext>`, when CLI parsing or metric output is added to a copy
 - `results.json`
 - `study.db`, when SQLite storage is configured
 

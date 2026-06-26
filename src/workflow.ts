@@ -1,4 +1,4 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { analyzeScript, generateModifiedScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
@@ -33,7 +33,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const proposed = options.config
     ? await loadConfiguredSearchSpace(options.config)
     : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
-  const searchSpace = normalizeDirection(proposed, options.direction);
+  const searchSpace = await prepareSearchSpaceForScript(proposed, options.direction, scriptPath);
   console.error(`Saving confirmed search space: ${searchSpacePath}`);
   const confirmed = await confirmSearchSpace({
     searchSpace,
@@ -50,11 +50,11 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         agent: options.agent
       });
       console.error(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`);
-      return normalizeDirection(revised, options.direction);
+      return prepareSearchSpaceForScript(revised, options.direction, scriptPath);
     }
   });
 
-  const executionInvocation = confirmed.needs_wrapper
+  const executionInvocation = needsModifiedCopy(confirmed)
     ? await prepareModifiedInvocation({ invocation, searchSpace: confirmed, workDir, agent: options.agent })
     : invocation;
   const runnerPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
@@ -168,6 +168,26 @@ function normalizeDirection(searchSpace: SearchSpace, direction: "maximize" | "m
   return { ...searchSpace, direction: direction ?? searchSpace.direction };
 }
 
+async function prepareSearchSpaceForScript(
+  searchSpace: SearchSpace,
+  direction: "maximize" | "minimize",
+  scriptPath: string
+): Promise<SearchSpace> {
+  const normalized = normalizeDirection(searchSpace, direction);
+  if (await scriptContainsMetricOutput(scriptPath)) {
+    return normalized;
+  }
+  return { ...normalized, has_metric_output: false };
+}
+
+async function scriptContainsMetricOutput(scriptPath: string): Promise<boolean> {
+  return (await readFile(scriptPath, "utf8")).includes("autotune_metric");
+}
+
+function needsModifiedCopy(searchSpace: SearchSpace): boolean {
+  return searchSpace.needs_wrapper || searchSpace.has_metric_output === false;
+}
+
 async function prepareModifiedInvocation(input: {
   invocation: ReturnType<typeof detectInvocation>;
   searchSpace: SearchSpace;
@@ -177,7 +197,7 @@ async function prepareModifiedInvocation(input: {
   const extension = path.extname(input.invocation.script);
   const baseName = path.basename(input.invocation.script, extension);
   const modifiedPath = path.join(input.workDir, `${baseName}_modified${extension}`);
-  console.error(`Script lacks CLI parsing; generating modified copy: ${modifiedPath}`);
+  console.error(`Script needs compatibility changes (${modifiedCopyReason(input.searchSpace)}); generating modified copy: ${modifiedPath}`);
   await generateModifiedScript({
     invocation: input.invocation,
     searchSpace: input.searchSpace,
@@ -190,6 +210,17 @@ async function prepareModifiedInvocation(input: {
     script: modifiedPath,
     command: commandForModifiedScript(input.invocation, modifiedPath)
   };
+}
+
+function modifiedCopyReason(searchSpace: SearchSpace): string {
+  const reasons = [];
+  if (searchSpace.needs_wrapper) {
+    reasons.push("adding CLI parsing");
+  }
+  if (searchSpace.has_metric_output === false) {
+    reasons.push("adding metric output");
+  }
+  return reasons.join(", ");
 }
 
 function commandForModifiedScript(invocation: ReturnType<typeof detectInvocation>, modifiedPath: string): string[] {
@@ -232,6 +263,7 @@ function renderSearchSpaceSummary(searchSpace: SearchSpace): string {
   return [
     `Direction: ${searchSpace.direction}`,
     `Arg parsing: ${searchSpace.has_arg_parsing ? "yes" : "no"}`,
+    `Metric output: ${searchSpace.has_metric_output === false ? "no" : "yes"}`,
     `Needs wrapper: ${searchSpace.needs_wrapper ? "yes" : "no"}`,
     "Parameters:",
     ...searchSpace.parameters.map((parameter) => `  ${parameter.name} (${parameter.type}) ${parameter.cli_flag}`)

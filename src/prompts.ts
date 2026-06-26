@@ -21,6 +21,7 @@ For each parameter, output JSON with:
 Also identify:
 - has_arg_parsing: whether the script already has CLI argument parsing
 - needs_wrapper: whether a wrapper script is needed to add arg parsing
+- has_metric_output: whether the script already prints "autotune_metric=<value>" to stdout
 - direction: "maximize" | "minimize"
 - reasoning: why this direction
 
@@ -68,6 +69,7 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 - parameters: array of parameter definitions
 - has_arg_parsing: boolean
 - needs_wrapper: boolean
+- has_metric_output: boolean
 - direction: "maximize" | "minimize"
 - reasoning: string
 
@@ -79,7 +81,7 @@ export function renderModifiedScriptPrompt(input: {
   searchSpace: SearchSpace;
   outputPath: string;
 }): string {
-  return `Create a modified copy of the target script that accepts the confirmed hyperparameters as CLI arguments.
+  return `Create a modified copy of the target script that is compatible with autotune.
 
 Script language: ${input.invocation.language}
 Original script path: ${input.invocation.script}
@@ -90,9 +92,10 @@ Confirmed search space JSON:
 ${JSON.stringify(input.searchSpace, null, 2)}
 
 Requirements:
-- preserve the original script's behavior except for reading the listed hyperparameters from CLI flags
-- add CLI parsing for every parameter using its cli_flag
-- keep printing "autotune_metric=<value>" to stdout
+- preserve the original script's behavior except for the compatibility changes below
+- add CLI parsing for every parameter using its cli_flag when the script does not already accept it
+- ensure the script prints exactly one final "autotune_metric=<value>" line to stdout
+- if the original script lacks metric output, choose the most suitable scalar score/loss/accuracy value computed by the script and print it after that value is available
 - do not modify the original script
 - output a JSON object with exactly one key: "code"
 - "code" must contain the full modified script source as a JSON string

@@ -11,6 +11,7 @@ const searchSpace = {
   ],
   has_arg_parsing: true,
   needs_wrapper: false,
+  has_metric_output: true,
   direction: "maximize",
   reasoning: "accuracy"
 } as const;
@@ -32,9 +33,21 @@ parameters:
     log: true
 has_arg_parsing: true
 needs_wrapper: false
+has_metric_output: true
 direction: maximize
 `)
     ).toMatchObject({ direction: "maximize", parameters: [{ name: "lr" }] });
+  });
+
+  it("defaults missing metric-output metadata to true for old configs", () => {
+    expect(
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+`)
+    ).toMatchObject({ has_metric_output: true });
   });
 
   it("validates parameter bounds", () => {

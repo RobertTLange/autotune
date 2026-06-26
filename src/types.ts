@@ -17,6 +17,7 @@ export interface SearchSpace {
   parameters: ReadonlyArray<SearchParameter>;
   has_arg_parsing: boolean;
   needs_wrapper: boolean;
+  has_metric_output?: boolean;
   direction: Direction;
   reasoning?: string;
 }

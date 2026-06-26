@@ -13,5 +13,6 @@ parameters:
     current_value: 0.05
 has_arg_parsing: false
 needs_wrapper: true
+has_metric_output: true
 direction: maximize
 reasoning: The script prints autotune_metric and is best when x is near 0.7 and penalty is low.

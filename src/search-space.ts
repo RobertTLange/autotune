@@ -43,6 +43,7 @@ const searchSpaceSchema = z.object({
   parameters: z.array(parameterSchema),
   has_arg_parsing: z.boolean(),
   needs_wrapper: z.boolean(),
+  has_metric_output: z.boolean().default(true),
   direction: directionSchema,
   reasoning: z.string().optional()
 });
