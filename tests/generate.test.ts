@@ -23,6 +23,10 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
     expect(code).toContain("file=sys.stderr");
+    expect(code).toContain("def timestamp");
+    expect(code).toContain("[{timestamp()}] Trial");
+    expect(code).toContain("value=");
+    expect(code).toContain("best=");
     expect(code).toContain("trial.suggest_float");
     expect(code).not.toContain("shell=True");
   });

@@ -21,8 +21,10 @@ export function renderOptunaRunner(input: {
   return `#!/usr/bin/env python3
 import argparse
 import json
+import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import optuna
@@ -120,11 +122,40 @@ def serialize_study(study, direction):
     }
 
 
+def timestamp():
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def color_enabled():
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR") not in (None, "", "0"):
+        return True
+    return sys.stderr.isatty()
+
+
+def style(text, code):
+    if not color_enabled():
+        return text
+    return f"\\033[{code}m{text}\\033[0m"
+
+
+def style_state(state):
+    if state == "COMPLETE":
+        return style(state, "32")
+    if state == "PRUNED":
+        return style(state, "33")
+    if state == "FAIL":
+        return style(state, "31")
+    return state
+
+
 def report_progress(study, trial):
     complete = [item for item in study.trials if item.state == TrialState.COMPLETE]
     finished = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
-    best = f" best: {study.best_value}" if complete else ""
-    print(f"Trial {finished}/{CURRENT_TRIAL_TARGET} complete ({trial.state.name}){best}", file=sys.stderr, flush=True)
+    value = f" value={trial.value}" if trial.value is not None else ""
+    best = f" best={study.best_value}" if complete else ""
+    print(f"[{timestamp()}] Trial {finished}/{CURRENT_TRIAL_TARGET} {style_state(trial.state.name)}{value}{best}", file=sys.stderr, flush=True)
 
 
 def main():
@@ -154,7 +185,7 @@ def main():
     output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result))
     if result["best_trial"] is None:
-        print("all trials failed", file=sys.stderr)
+        print(f"[{timestamp()}] all trials failed", file=sys.stderr)
         sys.exit(2)
 
 

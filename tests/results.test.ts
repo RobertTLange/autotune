@@ -21,7 +21,10 @@ describe("results", () => {
       "utf8"
     );
     const result = await readResults(dir);
-    expect(renderResults(result, 1)).toContain("Best trial: #1");
-    expect(renderResults(result, 1)).toContain("#1\t0.1\tlr=0.01");
+    const rendered = renderResults(result, 1);
+    expect(rendered).toContain("Best trial: #1");
+    expect(rendered).toContain("Trial  Value  Parameters");
+    expect(rendered).toContain("#1     0.1    lr=0.01");
+    expect(rendered).not.toContain("\t");
   });
 });

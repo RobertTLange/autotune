@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
+import { formatTable, styles, wrapText, writeStatus } from "./terminal.js";
 import type { SearchSpace } from "./types.js";
 
 type Ask = (prompt: string) => Promise<string>;
@@ -47,7 +48,7 @@ export async function confirmSearchSpace(input: {
       if (!request.revise) {
         throw new Error("feedback revision is unavailable");
       }
-      console.error("Revising search space from feedback...");
+      writeStatus("Revising search space from feedback...");
       current = await request.revise(current, feedback);
       await writeSearchSpace(request.filePath, current);
     }
@@ -57,7 +58,7 @@ export async function confirmSearchSpace(input: {
 }
 
 export function printSearchSpace(searchSpace: SearchSpace): void {
-  console.log("\nAnalysis complete. Proposed search space:\n");
+  console.log(`\n${styles.cyan(styles.bold("Analysis complete. Proposed search space"))}\n`);
   const rows = searchSpace.parameters.map((parameter) => ({
     parameter: parameter.name,
     type: parameter.type,
@@ -68,41 +69,22 @@ export function printSearchSpace(searchSpace: SearchSpace): void {
     flag: parameter.cli_flag,
     current: String(parameter.current_value ?? "")
   }));
-  const widths = {
-    parameter: columnWidth("Parameter", rows.map((row) => row.parameter)),
-    type: columnWidth("Type", rows.map((row) => row.type)),
-    range: columnWidth("Range/Choices", rows.map((row) => row.range)),
-    flag: columnWidth("CLI Flag", rows.map((row) => row.flag))
-  };
 
-  console.log(formatSearchSpaceRow("Parameter", "Type", "Range/Choices", "CLI Flag", "Current", widths));
-  for (const row of rows) {
-    console.log(formatSearchSpaceRow(row.parameter, row.type, row.range, row.flag, row.current, widths));
+  for (const line of formatTable({
+    headers: ["Parameter", "Type", "Range/Choices", "CLI Flag", "Current"],
+    rows: rows.map((row) => [row.parameter, row.type, row.range, row.flag, row.current])
+  })) {
+    console.log(line);
   }
-  console.log(`\nDirection: ${searchSpace.direction}${searchSpace.reasoning ? ` (${searchSpace.reasoning})` : ""}`);
-  console.log(`Arg parsing: ${searchSpace.has_arg_parsing ? "yes" : "no"}`);
-  console.log(`Metric output: ${searchSpace.has_metric_output === false ? "no" : "yes"}`);
-}
-
-function columnWidth(header: string, values: string[]): number {
-  return Math.max(header.length, ...values.map((value) => value.length));
-}
-
-function formatSearchSpaceRow(
-  parameter: string,
-  type: string,
-  range: string,
-  flag: string,
-  current: string,
-  widths: { parameter: number; type: number; range: number; flag: number }
-): string {
-  return [
-    parameter.padEnd(widths.parameter),
-    type.padEnd(widths.type),
-    range.padEnd(widths.range),
-    flag.padEnd(widths.flag),
-    current
-  ].join("  ");
+  console.log("");
+  console.log(`${styles.bold("Direction:")} ${searchSpace.direction}`);
+  if (searchSpace.reasoning) {
+    for (const line of wrapText(searchSpace.reasoning, 100)) {
+      console.log(`  ${styles.dim(line)}`);
+    }
+  }
+  console.log(`${styles.bold("Arg parsing:")} ${searchSpace.has_arg_parsing ? styles.green("yes") : styles.yellow("no")}`);
+  console.log(`${styles.bold("Metric output:")} ${searchSpace.has_metric_output === false ? styles.yellow("no") : styles.green("yes")}`);
 }
 
 async function openEditor(filePath: string): Promise<void> {

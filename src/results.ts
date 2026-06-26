@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { formatNumber, formatTable, styles } from "./terminal.js";
 
 export interface TrialResult {
   number: number;
@@ -23,18 +24,21 @@ export async function readResults(location = ".autotune"): Promise<StudyResult> 
 
 export function renderResults(result: StudyResult, top = 5): string {
   const lines = [
-    `autotune · ${result.n_trials} trials · ${result.direction}`,
+    styles.cyan(styles.bold(`autotune · ${result.n_trials} trials · ${result.direction}`)),
     "",
     result.best_trial
-      ? `Best trial: #${result.best_trial.number} | Value: ${result.best_trial.value}`
+      ? `Best trial: #${result.best_trial.number} | Value: ${styles.green(styles.bold(formatNumber(Number(result.best_trial.value))))}`
       : "No completed trials"
   ];
 
   if (result.best_trial) {
     lines.push("", "Parameters:");
-    for (const [key, value] of Object.entries(result.best_trial.params)) {
-      lines.push(`  ${key}\t${String(value)}`);
-    }
+    lines.push(
+      ...formatTable({
+        headers: ["Parameter", "Value"],
+        rows: Object.entries(result.best_trial.params).map(([key, value]) => [key, formatResultValue(value)])
+      }).map((line) => `  ${line}`)
+    );
   }
 
   const completed = result.all_trials
@@ -48,13 +52,23 @@ export function renderResults(result: StudyResult, top = 5): string {
 
   if (completed.length > 0) {
     lines.push("", `Top ${completed.length} trials:`);
-    for (const trial of completed) {
-      const params = Object.entries(trial.params)
-        .map(([key, value]) => `${key}=${String(value)}`)
-        .join(" ");
-      lines.push(`  #${trial.number}\t${trial.value}\t${params}`);
-    }
+    lines.push(
+      ...formatTable({
+        headers: ["Trial", "Value", "Parameters"],
+        rows: completed.map((trial) => [
+          `#${trial.number}`,
+          formatNumber(Number(trial.value)),
+          Object.entries(trial.params)
+            .map(([key, value]) => `${key}=${formatResultValue(value)}`)
+            .join(" ")
+        ])
+      }).map((line) => `  ${line}`)
+    );
   }
 
   return lines.join("\n");
+}
+
+function formatResultValue(value: unknown): string {
+  return typeof value === "number" ? formatNumber(value) : String(value);
 }
