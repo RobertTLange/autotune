@@ -1,5 +1,13 @@
 import type { Invocation, SearchSpace } from "./types.js";
 
+export interface TrialResultSummary {
+  direction: "maximize" | "minimize";
+  n_trials: number;
+  best_trial: unknown;
+  top_trials: unknown[];
+  parameter_ranges: unknown[];
+}
+
 export function renderAnalyzePrompt(input: { invocation: Invocation }): string {
   return `Analyze the following script for hyperparameter tuning.
 
@@ -93,6 +101,48 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 Preserve fixed objective measurement semantics. If feedback asks to tune a value used only to
 measure, score, aggregate, threshold, compare, or report the objective, omit it from parameters
 and explain the exclusion in reasoning.
+Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or "grid"; pruner may
+be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
+
+Output valid revised JSON only.`;
+}
+
+export function renderRefineSearchSpacePrompt(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  round: number;
+  trialSummary: TrialResultSummary;
+}): string {
+  return `Refine this Optuna hyperparameter search space for round ${input.round} using completed trial evidence.
+
+Script language: ${input.invocation.language}
+Invocation command argv: ${JSON.stringify(input.invocation.command)}
+Script path: ${input.invocation.script}
+
+Current search space JSON:
+${JSON.stringify(input.searchSpace, null, 2)}
+
+Trial result summary:
+${JSON.stringify(input.trialSummary, null, 2)}
+
+Use the trial evidence to improve the next search space:
+- narrow ranges when good completed trials cluster inside the current bounds
+- broaden ranges when best values sit near bounds or evidence suggests the optimum may be outside
+- add or remove variables only when justified by the source script and trial results
+- preserve or revise optuna sampler/pruner only within the allowed contract
+
+Preserve the JSON contract:
+- parameters: array of parameter definitions
+- has_arg_parsing: boolean
+- needs_wrapper: boolean
+- has_metric_output: boolean
+- direction: "maximize" | "minimize"
+- optuna: object with optional sampler, pruner, and reasoning fields
+- reasoning: string
+
+Preserve fixed objective measurement semantics. Do not tune values used only to measure, score,
+aggregate, threshold, compare, or report the objective. Do not tune random seeds used only for
+measurement. Keep trials comparable across rounds.
 Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or "grid"; pruner may
 be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
 

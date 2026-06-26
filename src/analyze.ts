@@ -1,7 +1,14 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { extractHeadlessJson, extractHeadlessObject, runHeadless } from "./headless.js";
-import { renderAnalyzePrompt, renderGeneratePrompt, renderModifiedScriptPrompt, renderReviseSearchSpacePrompt } from "./prompts.js";
+import {
+  renderAnalyzePrompt,
+  renderGeneratePrompt,
+  renderModifiedScriptPrompt,
+  renderRefineSearchSpacePrompt,
+  renderReviseSearchSpacePrompt,
+  type TrialResultSummary
+} from "./prompts.js";
 import type { Invocation, SearchSpace } from "./types.js";
 
 export async function analyzeScript(input: {
@@ -66,6 +73,37 @@ export async function reviseSearchSpace(input: {
       invocation: input.invocation,
       searchSpace: input.searchSpace,
       feedback: input.feedback
+    }),
+    "utf8"
+  );
+  const output = await retryHeadless([
+    input.agent,
+    "--prompt-file",
+    promptPath,
+    "--work-dir",
+    path.dirname(input.invocation.script),
+    "--json"
+  ]);
+  return extractHeadlessJson(output);
+}
+
+export async function refineSearchSpaceFromTrials(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  trialSummary: TrialResultSummary;
+  round: number;
+  workDir: string;
+  agent: string;
+}): Promise<SearchSpace> {
+  await mkdir(input.workDir, { recursive: true });
+  const promptPath = path.join(input.workDir, `refine_prompt.round_${input.round}.md`);
+  await writeFile(
+    promptPath,
+    renderRefineSearchSpacePrompt({
+      invocation: input.invocation,
+      searchSpace: input.searchSpace,
+      trialSummary: input.trialSummary,
+      round: input.round
     }),
     "utf8"
   );

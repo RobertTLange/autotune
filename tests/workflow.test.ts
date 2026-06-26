@@ -330,6 +330,42 @@ describe("runAutotune", () => {
     const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
     expect(runner).toContain(runtime);
   });
+
+  it("runs automatic agent refinement rounds with separate round artifacts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      refineRounds: 1,
+      refineTrials: 3,
+      refineMode: "auto",
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true
+    });
+
+    expect(await readFile(path.join(workDir, "search_space.round_0.yaml"), "utf8")).toContain("high: 1");
+    expect(await readFile(path.join(workDir, "search_space.round_1.yaml"), "utf8")).toContain("low: 0.25");
+    expect(await readFile(path.join(workDir, "results.round_0.json"), "utf8")).toContain("best_trial");
+    expect(await readFile(path.join(workDir, "results.round_1.json"), "utf8")).toContain("best_trial");
+    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("Trial result summary");
+    expect(await readFile(path.join(workDir, "results.json"), "utf8")).toBe(
+      await readFile(path.join(workDir, "results.round_1.json"), "utf8")
+    );
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -406,6 +442,16 @@ if (process.argv.includes('--check')) {
 if (process.argv.join(' ').includes('modified_prompt')) {
   console.log(JSON.stringify({
     code: "import argparse\\nparser = argparse.ArgumentParser()\\nparser.add_argument('--x', type=float, default=0.0)\\nargs = parser.parse_args()\\nprint(f'autotune_metric={args.x}')\\n"
+  }));
+  process.exit(0);
+}
+if (process.argv.join(' ').includes('refine_prompt')) {
+  console.log(JSON.stringify({
+    parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }],
+    has_arg_parsing: true,
+    needs_wrapper: false,
+    direction: 'maximize',
+    reasoning: 'narrow x around completed best trials'
   }));
   process.exit(0);
 }

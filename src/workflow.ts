@@ -1,13 +1,19 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { analyzeScript, generateModifiedScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
+import {
+  analyzeScript,
+  generateModifiedScript,
+  refineSearchSpaceFromTrials,
+  requestWrapperGeneration,
+  reviseSearchSpace
+} from "./analyze.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation, splitCommand } from "./detect.js";
 import { writeOptunaRunner } from "./generate.js";
 import { runCommand } from "./process.js";
-import { readResults, renderResults } from "./results.js";
+import { readResults, renderResults, type StudyResult, type TrialResult } from "./results.js";
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
@@ -21,6 +27,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   if (!Number.isInteger(options.trials) || options.trials < 1) {
     throw new Error("--trials must be a positive integer");
   }
+  validateRefinementOptions(options);
 
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
@@ -40,15 +47,18 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   writeStatus(`headless ${prerequisites.headless}`, "success");
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
+  const refineRounds = options.refineRounds ?? 0;
   const searchSpacePath = path.join(workDir, "search_space.yaml");
+  const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
   const proposed = options.config
     ? await loadConfiguredSearchSpace(options.config)
     : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
   const searchSpace = await prepareSearchSpaceForRun(proposed, options, scriptPath);
-  writeStatus(`Saving confirmed search space: ${styles.dim(searchSpacePath)}`);
-  const confirmed = await confirmSearchSpace({
+  const initialSearchSpacePath = searchSpacePathForRound(workDir, 0, refineRounds);
+  writeStatus(`Saving confirmed search space: ${styles.dim(initialSearchSpacePath)}`);
+  let confirmed = await confirmSearchSpace({
     searchSpace,
-    filePath: searchSpacePath,
+    filePath: initialSearchSpacePath,
     yes: options.yes,
     ask: options.ask,
     revise: async (current, feedback) => {
@@ -64,48 +74,57 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       return prepareSearchSpaceForRun(revised, options, scriptPath);
     }
   });
+  await writeSearchSpace(searchSpacePath, confirmed);
 
-  const executionInvocation = needsModifiedCopy(confirmed)
-    ? await prepareModifiedInvocation({ invocation, searchSpace: confirmed, workDir, agent: options.agent })
-    : invocation;
-  const runnerPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
-  const resultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
-  writeStatus(`Phase 2: generating Optuna wrapper with headless ${options.agent}...`);
-  writeStatus("This can take a minute on first run.");
-  await requestWrapperGeneration({
-    invocation: executionInvocation,
-    searchSpace: confirmed,
-    workDir,
-    agent: options.agent,
-    outputPath: runnerPath
-  });
-  writeStatus(`Writing Optuna runner: ${styles.dim(runnerPath)}`);
-  await writeOptunaRunner({
-    invocation: executionInvocation,
-    searchSpace: confirmed,
-    outputPath: runnerPath,
-    resultsPath
-  });
+  let result: StudyResult | undefined;
+  for (let round = 0; round <= refineRounds; round += 1) {
+    if (round > 0) {
+      if (!result) {
+        throw new Error("cannot refine before a completed trial round");
+      }
+      confirmed = await refineSearchSpaceForRound({
+        invocation,
+        current: confirmed,
+        previousResult: result,
+        round,
+        workDir,
+        agent: options.agent,
+        options,
+        scriptPath,
+        searchSpacePath,
+        roundSearchSpacePath: searchSpacePathForRound(workDir, round, refineRounds)
+      });
+    }
 
-  writeStatus(`Running ${options.trials} Optuna trials...`);
-  await runPythonRunner({
-    runnerPath,
-    trials: options.trials,
-    direction: confirmed.direction,
-    sampler: confirmed.optuna?.sampler ?? DEFAULT_SAMPLER,
-    pruner: confirmed.optuna?.pruner ?? DEFAULT_PRUNER,
-    nJobs: options.nJobs,
-    storage: options.storage,
-    output: resultsPath
-  });
-  writeStatus("Trials complete.", "success");
+    const roundResultsPath = resultsPathForRound(workDir, finalResultsPath, round, refineRounds);
+    result = await runSearchRound({
+      invocation,
+      searchSpace: confirmed,
+      workDir,
+      agent: options.agent,
+      scriptPath,
+      trials: round === 0 ? options.trials : options.refineTrials ?? options.trials,
+      options,
+      resultsPath: roundResultsPath,
+      round,
+      totalRounds: refineRounds
+    });
+    if (refineRounds > 0) {
+      await mkdir(path.dirname(finalResultsPath), { recursive: true });
+      if (path.resolve(roundResultsPath) !== path.resolve(finalResultsPath)) {
+        await copyFile(roundResultsPath, finalResultsPath);
+      }
+    }
+  }
 
-  const result = await readResults(resultsPath);
+  if (!result) {
+    throw new Error("no trial results produced");
+  }
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(renderResults(result));
-    writeStatus(`Results saved to ${styles.dim(resultsPath)}`, "success");
+    writeStatus(`Results saved to ${styles.dim(finalResultsPath)}`, "success");
   }
 }
 
@@ -185,6 +204,171 @@ async function prepareSearchSpaceForRun(
     return normalized;
   }
   return { ...normalized, has_metric_output: false };
+}
+
+async function runSearchRound(input: {
+  invocation: ReturnType<typeof detectInvocation>;
+  searchSpace: SearchSpace;
+  workDir: string;
+  agent: string;
+  scriptPath: string;
+  trials: number;
+  options: RunOptions;
+  resultsPath: string;
+  round: number;
+  totalRounds: number;
+}): Promise<StudyResult> {
+  const executionInvocation = needsModifiedCopy(input.searchSpace)
+    ? await prepareModifiedInvocation({
+        invocation: input.invocation,
+        searchSpace: input.searchSpace,
+        workDir: input.workDir,
+        agent: input.agent
+      })
+    : input.invocation;
+  const runnerPath = path.join(input.workDir, `${path.basename(input.scriptPath, path.extname(input.scriptPath))}_optuna.py`);
+  writeStatus(`Phase 2: generating Optuna wrapper with headless ${input.agent}...`);
+  writeStatus("This can take a minute on first run.");
+  await requestWrapperGeneration({
+    invocation: executionInvocation,
+    searchSpace: input.searchSpace,
+    workDir: input.workDir,
+    agent: input.agent,
+    outputPath: runnerPath
+  });
+  writeStatus(`Writing Optuna runner: ${styles.dim(runnerPath)}`);
+  await writeOptunaRunner({
+    invocation: executionInvocation,
+    searchSpace: input.searchSpace,
+    outputPath: runnerPath,
+    resultsPath: input.resultsPath
+  });
+
+  const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
+  writeStatus(`${label}Running ${input.trials} Optuna trials...`);
+  await runPythonRunner({
+    runnerPath,
+    trials: input.trials,
+    direction: input.searchSpace.direction,
+    sampler: input.searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER,
+    pruner: input.searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
+    nJobs: input.options.nJobs,
+    storage: input.options.storage,
+    output: input.resultsPath
+  });
+  writeStatus(`${label}Trials complete.`, "success");
+  return readResults(input.resultsPath);
+}
+
+async function refineSearchSpaceForRound(input: {
+  invocation: ReturnType<typeof detectInvocation>;
+  current: SearchSpace;
+  previousResult: StudyResult;
+  round: number;
+  workDir: string;
+  agent: string;
+  options: RunOptions;
+  scriptPath: string;
+  searchSpacePath: string;
+  roundSearchSpacePath: string;
+}): Promise<SearchSpace> {
+  writeStatus(`Phase 3: refining search space for round ${input.round + 1} with headless ${input.agent}...`);
+  const refined = await refineSearchSpaceFromTrials({
+    invocation: input.invocation,
+    searchSpace: input.current,
+    trialSummary: summarizeTrialResults(input.previousResult, input.current),
+    round: input.round,
+    workDir: input.workDir,
+    agent: input.agent
+  });
+  writeStatus(`Refinement complete: ${refined.parameters.length} parameter(s) proposed.`, "success");
+  const prepared = await prepareSearchSpaceForRun(refined, input.options, input.scriptPath);
+  const confirmed = await confirmSearchSpace({
+    searchSpace: prepared,
+    filePath: input.roundSearchSpacePath,
+    yes: input.options.yes || input.options.refineMode === "auto",
+    ask: input.options.ask,
+    revise: async (current, feedback) => {
+      writeStatus(`Phase 3b: revising refined space with headless ${input.agent}...`);
+      const revised = await reviseSearchSpace({
+        invocation: input.invocation,
+        searchSpace: current,
+        feedback,
+        workDir: input.workDir,
+        agent: input.agent
+      });
+      writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
+      return prepareSearchSpaceForRun(revised, input.options, input.scriptPath);
+    }
+  });
+  await writeSearchSpace(input.searchSpacePath, confirmed);
+  return confirmed;
+}
+
+function summarizeTrialResults(result: StudyResult, searchSpace: SearchSpace) {
+  const topTrials = completedTrials(result).slice(0, 5);
+  return {
+    direction: result.direction,
+    n_trials: result.n_trials,
+    best_trial: result.best_trial,
+    top_trials: topTrials,
+    parameter_ranges: searchSpace.parameters.map((parameter) => ({
+      name: parameter.name,
+      type: parameter.type,
+      cli_flag: parameter.cli_flag,
+      low: parameter.low,
+      high: parameter.high,
+      choices: parameter.choices,
+      best_value: result.best_trial?.params[parameter.name],
+      sampled_values: uniqueSampledValues(result.all_trials, parameter.name).slice(0, 10)
+    }))
+  };
+}
+
+function completedTrials(result: StudyResult): TrialResult[] {
+  return result.all_trials
+    .filter((trial) => typeof trial.value === "number")
+    .sort((left, right) =>
+      result.direction === "maximize"
+        ? Number(right.value) - Number(left.value)
+        : Number(left.value) - Number(right.value)
+    );
+}
+
+function uniqueSampledValues(trials: TrialResult[], parameterName: string): unknown[] {
+  const seen = new Set<string>();
+  const values = [];
+  for (const trial of trials) {
+    if (!(parameterName in trial.params)) {
+      continue;
+    }
+    const value = trial.params[parameterName];
+    const key = JSON.stringify(value);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    values.push(value);
+  }
+  return values;
+}
+
+function validateRefinementOptions(options: RunOptions): void {
+  const refineRounds = options.refineRounds ?? 0;
+  if (!Number.isInteger(refineRounds) || refineRounds < 0) {
+    throw new Error("--refine-rounds must be a non-negative integer");
+  }
+  if (options.refineTrials !== undefined && (!Number.isInteger(options.refineTrials) || options.refineTrials < 1)) {
+    throw new Error("--refine-trials must be a positive integer");
+  }
+}
+
+function searchSpacePathForRound(workDir: string, round: number, refineRounds: number): string {
+  return refineRounds > 0 ? path.join(workDir, `search_space.round_${round}.yaml`) : path.join(workDir, "search_space.yaml");
+}
+
+function resultsPathForRound(workDir: string, finalResultsPath: string, round: number, refineRounds: number): string {
+  return refineRounds > 0 ? path.join(workDir, `results.round_${round}.json`) : finalResultsPath;
 }
 
 async function runBuildCommand(template: string, context: CommandTemplateContext): Promise<void> {

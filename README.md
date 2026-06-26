@@ -98,6 +98,23 @@ Skip Phase 1 analysis with a known search space:
 autotune run train.py --trials 20 --config search_space.yaml --yes
 ```
 
+Run multiple agentic refinement rounds:
+
+```bash
+autotune run train.py \
+  --trials 20 \
+  --refine-rounds 2 \
+  --refine-trials 10 \
+  --refine-mode ask
+```
+
+After each round, autotune summarizes completed trials and asks the agent to revise the search space.
+The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove
+variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before
+each revised space; `--refine-mode auto` accepts revised spaces automatically. Each round starts a new
+Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json`. The latest round is also
+written to `search_space.yaml` and `results.json`.
+
 ## Search Space Format
 
 ```yaml
@@ -175,11 +192,14 @@ autotune run examples/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \
   --trials 12 \
+  --refine-rounds 2 \
+  --refine-trials 8 \
+  --refine-mode auto \
   --agent codex \
   --json
 ```
 
-Expected behavior: the agent proposes `--kp`, `--ki`, and `--kd`, the runner calls the compiled binary with trial values, and the best trial improves the fixed PID tracking score.
+Expected behavior: the agent proposes `--kp`, `--ki`, and `--kd`, the runner calls the compiled binary with trial values, and later rounds refine the fixed PID tracking search space from previous trial results.
 
 ## Development
 

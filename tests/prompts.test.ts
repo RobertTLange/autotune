@@ -1,4 +1,9 @@
-import { renderAnalyzePrompt, renderModifiedScriptPrompt, renderReviseSearchSpacePrompt } from "../src/prompts.js";
+import {
+  renderAnalyzePrompt,
+  renderModifiedScriptPrompt,
+  renderRefineSearchSpacePrompt,
+  renderReviseSearchSpacePrompt
+} from "../src/prompts.js";
 import type { Invocation, SearchSpace } from "../src/types.js";
 
 const invocation: Invocation = {
@@ -75,6 +80,32 @@ describe("prompt Optuna config contract", () => {
     expect(prompt).toContain("optuna");
     expect(prompt).toContain("sampler");
     expect(prompt).toContain("pruner");
+    expect(prompt).toContain("Do not add storage");
+    expect(prompt).toContain("Do not add n_jobs");
+  });
+});
+
+describe("prompt trial-result refinement contract", () => {
+  it("asks refinement to use trial evidence without changing metric semantics", () => {
+    const prompt = renderRefineSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      round: 1,
+      trialSummary: {
+        direction: "maximize",
+        n_trials: 4,
+        best_trial: { number: 3, value: 0.9, params: { lr: 0.002 }, state: "COMPLETE" },
+        top_trials: [{ number: 3, value: 0.9, params: { lr: 0.002 }, state: "COMPLETE" }],
+        parameter_ranges: [{ name: "lr", low: 0.0001, high: 0.01, best_value: 0.002 }]
+      }
+    });
+
+    expect(prompt).toContain("round 1");
+    expect(prompt).toContain("Trial result summary");
+    expect(prompt).toContain("narrow");
+    expect(prompt).toContain("broaden");
+    expect(prompt).toContain("best values sit near bounds");
+    expect(prompt).toContain("Preserve fixed objective measurement semantics");
     expect(prompt).toContain("Do not add storage");
     expect(prompt).toContain("Do not add n_jobs");
   });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
-import type { Direction, Pruner, RunOptions, Sampler } from "./types.js";
+import type { Direction, Pruner, RefineMode, RunOptions, Sampler } from "./types.js";
 
 const program = new Command();
 
@@ -22,6 +22,9 @@ program
   .option("--agent <name>", "headless agent", "claude")
   .option("--command <command>", "override script invocation command")
   .option("--build-command <command>", "command to run once before analysis/trials; supports {script} and {work-dir}")
+  .option("--refine-rounds <n>", "agentic search-space refinement rounds after the initial trials", parseNonNegativeInt, 0)
+  .option("--refine-trials <n>", "trials per refinement round; defaults to --trials", parsePositiveInt)
+  .addOption(new Option("--refine-mode <mode>", "refinement approval mode").choices(["ask", "auto"]).default("ask"))
   .option("--json", "print JSON results", false)
   .option("--output <file>", "write JSON results to file")
   .option("--work-dir <dir>", "artifact directory", ".autotune")
@@ -88,6 +91,9 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
     agent: String(raw.agent),
     command: typeof raw.command === "string" ? raw.command : undefined,
     buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,
+    refineRounds: Number(raw.refineRounds),
+    refineTrials: typeof raw.refineTrials === "number" ? raw.refineTrials : undefined,
+    refineMode: raw.refineMode as RefineMode,
     json: Boolean(raw.json),
     output: typeof raw.output === "string" ? raw.output : undefined,
     storage: typeof raw.storage === "string" ? raw.storage : undefined,
@@ -108,6 +114,14 @@ function parsePositiveInt(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`expected positive integer, got ${value}`);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInt(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`expected non-negative integer, got ${value}`);
   }
   return parsed;
 }

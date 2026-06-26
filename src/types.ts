@@ -1,6 +1,7 @@
 export type Direction = "maximize" | "minimize";
 export type Sampler = "tpe" | "random" | "cmaes" | "grid";
 export type Pruner = "none" | "median" | "hyperband";
+export type RefineMode = "ask" | "auto";
 
 export type ParameterType = "float" | "int" | "categorical";
 
@@ -47,6 +48,9 @@ export interface RunOptions {
   agent: string;
   command?: string;
   buildCommand?: string;
+  refineRounds?: number;
+  refineTrials?: number;
+  refineMode?: RefineMode;
   json: boolean;
   output?: string;
   storage?: string;
