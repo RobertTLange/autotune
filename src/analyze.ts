@@ -1,0 +1,64 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { extractHeadlessJson, runHeadless } from "./headless.js";
+import { renderAnalyzePrompt, renderGeneratePrompt } from "./prompts.js";
+import type { Invocation, SearchSpace } from "./types.js";
+
+export async function analyzeScript(input: {
+  invocation: Invocation;
+  workDir: string;
+  agent: string;
+}): Promise<SearchSpace> {
+  await mkdir(input.workDir, { recursive: true });
+  const promptPath = path.join(input.workDir, "analyze_prompt.md");
+  await writeFile(promptPath, renderAnalyzePrompt({ invocation: input.invocation }), "utf8");
+  const output = await retryHeadless([
+    input.agent,
+    "--prompt-file",
+    promptPath,
+    "--work-dir",
+    path.dirname(input.invocation.script),
+    "--json"
+  ]);
+  return extractHeadlessJson(output);
+}
+
+export async function requestWrapperGeneration(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  workDir: string;
+  agent: string;
+  outputPath: string;
+}): Promise<void> {
+  await mkdir(input.workDir, { recursive: true });
+  const promptPath = path.join(input.workDir, "generate_prompt.md");
+  await writeFile(
+    promptPath,
+    renderGeneratePrompt({
+      invocation: input.invocation,
+      searchSpace: input.searchSpace,
+      outputPath: input.outputPath
+    }),
+    "utf8"
+  );
+  await retryHeadless([
+    input.agent,
+    "--prompt-file",
+    promptPath,
+    "--work-dir",
+    path.dirname(input.invocation.script),
+    "--json"
+  ]);
+}
+
+async function retryHeadless(args: string[]): Promise<string> {
+  try {
+    return await runHeadless(args, { cwd: process.cwd() });
+  } catch (firstError) {
+    try {
+      return await runHeadless(args, { cwd: process.cwd() });
+    } catch (secondError) {
+      throw new Error(`headless failed after retry: ${String(secondError)}; first error: ${String(firstError)}`);
+    }
+  }
+}

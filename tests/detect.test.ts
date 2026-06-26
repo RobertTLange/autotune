@@ -45,4 +45,8 @@ describe("detectInvocation", () => {
       command: [script]
     });
   });
+
+  it("rejects unknown extensions without command override", () => {
+    expect(() => detectInvocation("/work/train.xyz")).toThrow(/Use --command/);
+  });
 });

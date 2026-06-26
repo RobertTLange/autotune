@@ -16,7 +16,14 @@ export function extractHeadlessJson(output: string): SearchSpace {
 
 export async function runHeadless(args: string[], options: { cwd: string; bin?: string }): Promise<string> {
   const bin = options.bin ?? process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
-  return spawnCapture(bin, args, options.cwd);
+  try {
+    return await spawnCapture(bin, args, options.cwd);
+  } catch (error) {
+    if (!options.bin && !process.env.AUTOTUNE_HEADLESS_BIN && isMissingExecutable(error)) {
+      return spawnCapture("npx", ["-y", "@roberttlange/headless", ...args], options.cwd);
+    }
+    throw error;
+  }
 }
 
 async function spawnCapture(bin: string, args: string[], cwd: string): Promise<string> {
@@ -43,6 +50,10 @@ async function spawnCapture(bin: string, args: string[], cwd: string): Promise<s
       }
     });
   });
+}
+
+function isMissingExecutable(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function collectCandidates(output: string): string[] {
