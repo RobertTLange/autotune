@@ -58,16 +58,50 @@ export async function confirmSearchSpace(input: {
 
 export function printSearchSpace(searchSpace: SearchSpace): void {
   console.log("\nAnalysis complete. Proposed search space:\n");
-  console.log("Parameter\tType\tRange/Choices\tCLI Flag\tCurrent");
-  for (const parameter of searchSpace.parameters) {
-    const range =
+  const rows = searchSpace.parameters.map((parameter) => ({
+    parameter: parameter.name,
+    type: parameter.type,
+    range:
       parameter.type === "categorical"
         ? `[${parameter.choices?.join(", ")}]`
-        : `[${parameter.low}, ${parameter.high}]${parameter.log ? " log" : ""}`;
-    console.log(`${parameter.name}\t${parameter.type}\t${range}\t${parameter.cli_flag}\t${String(parameter.current_value ?? "")}`);
+        : `[${parameter.low}, ${parameter.high}]${parameter.log ? " log" : ""}`,
+    flag: parameter.cli_flag,
+    current: String(parameter.current_value ?? "")
+  }));
+  const widths = {
+    parameter: columnWidth("Parameter", rows.map((row) => row.parameter)),
+    type: columnWidth("Type", rows.map((row) => row.type)),
+    range: columnWidth("Range/Choices", rows.map((row) => row.range)),
+    flag: columnWidth("CLI Flag", rows.map((row) => row.flag))
+  };
+
+  console.log(formatSearchSpaceRow("Parameter", "Type", "Range/Choices", "CLI Flag", "Current", widths));
+  for (const row of rows) {
+    console.log(formatSearchSpaceRow(row.parameter, row.type, row.range, row.flag, row.current, widths));
   }
   console.log(`\nDirection: ${searchSpace.direction}${searchSpace.reasoning ? ` (${searchSpace.reasoning})` : ""}`);
   console.log(`Arg parsing: ${searchSpace.has_arg_parsing ? "yes" : "no"}`);
+}
+
+function columnWidth(header: string, values: string[]): number {
+  return Math.max(header.length, ...values.map((value) => value.length));
+}
+
+function formatSearchSpaceRow(
+  parameter: string,
+  type: string,
+  range: string,
+  flag: string,
+  current: string,
+  widths: { parameter: number; type: number; range: number; flag: number }
+): string {
+  return [
+    parameter.padEnd(widths.parameter),
+    type.padEnd(widths.type),
+    range.padEnd(widths.range),
+    flag.padEnd(widths.flag),
+    current
+  ].join("  ");
 }
 
 async function openEditor(filePath: string): Promise<void> {

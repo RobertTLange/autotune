@@ -26,6 +26,14 @@ describe("printSearchSpace", () => {
     }
     expect(lines.join("\n")).toContain("[0.001, 0.1] log");
     expect(lines.join("\n")).toContain("[adam, sgd]");
+    expect(lines.join("\n")).not.toContain("\t");
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "Parameter  Type         Range/Choices     CLI Flag     Current",
+        "lr         float        [0.001, 0.1] log  --lr         ",
+        "optimizer  categorical  [adam, sgd]       --optimizer  "
+      ])
+    );
   });
 });
 
