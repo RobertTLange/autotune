@@ -21,4 +21,8 @@ has_arg_parsing: false
 needs_wrapper: true
 has_metric_output: false
 direction: maximize
+optuna:
+  sampler: tpe
+  pruner: median
+  reasoning: TPE handles the mixed continuous/categorical space; median pruning can help iterative training scripts.
 reasoning: validation_accuracy is the scalar objective computed after training.

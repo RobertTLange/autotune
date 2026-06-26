@@ -13,4 +13,13 @@ scoring formula, aggregation window, reporting threshold, comparison baseline, o
 or random seed used only for measurement. Leave these values fixed so trials remain comparable.
 If you intentionally exclude an important metric or evaluation value, mention it in reasoning.
 
+Also propose safe optuna settings:
+- sampler: "tpe" | "random" | "cmaes" | "grid"
+- pruner: "none" | "median" | "hyperband"
+- reasoning: short explanation for the Optuna choices
+Prefer tpe for mixed or continuous spaces, random for tiny exploratory searches, grid only when all
+parameters are small categorical choices, and cmaes only for continuous numeric spaces. Prefer none
+for pruner unless the script is iterative and pruning is likely comparable across trials.
+Do not propose storage. Do not propose n_jobs. These are user-controlled resource/state settings.
+
 Output valid JSON only.

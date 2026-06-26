@@ -53,3 +53,29 @@ describe("prompt metric-boundary contract", () => {
     expect(prompt).toContain("preserve the original objective computation exactly");
   });
 });
+
+describe("prompt Optuna config contract", () => {
+  it("asks analysis to propose safe Optuna settings", () => {
+    const prompt = renderAnalyzePrompt({ invocation });
+
+    expect(prompt).toContain("optuna");
+    expect(prompt).toContain("sampler");
+    expect(prompt).toContain("pruner");
+    expect(prompt).toContain("Do not propose storage");
+    expect(prompt).toContain("Do not propose n_jobs");
+  });
+
+  it("asks revision to preserve the Optuna config contract", () => {
+    const prompt = renderReviseSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      feedback: "use hyperband"
+    });
+
+    expect(prompt).toContain("optuna");
+    expect(prompt).toContain("sampler");
+    expect(prompt).toContain("pruner");
+    expect(prompt).toContain("Do not add storage");
+    expect(prompt).toContain("Do not add n_jobs");
+  });
+});

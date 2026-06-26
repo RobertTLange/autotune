@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { SearchSpace } from "./types.js";
 
 const directionSchema = z.enum(["maximize", "minimize"]);
+const samplerSchema = z.enum(["tpe", "random", "cmaes", "grid"]);
+const prunerSchema = z.enum(["none", "median", "hyperband"]);
 const primitiveSchema = z.union([z.string(), z.number(), z.boolean()]);
 
 const parameterSchema = z
@@ -45,6 +47,14 @@ const searchSpaceSchema = z.object({
   needs_wrapper: z.boolean(),
   has_metric_output: z.boolean().default(true),
   direction: directionSchema,
+  optuna: z
+    .object({
+      sampler: samplerSchema.optional(),
+      pruner: prunerSchema.optional(),
+      reasoning: z.string().optional()
+    })
+    .strict()
+    .optional(),
   reasoning: z.string().optional()
 });
 

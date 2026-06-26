@@ -56,6 +56,8 @@ autotune run train.py \
   --output .autotune/results.json
 ```
 
+When `--direction`, `--sampler`, or `--pruner` are omitted, autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
+
 By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
 
 ```text
@@ -109,6 +111,10 @@ has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true
 direction: maximize
+optuna:
+  sampler: tpe
+  pruner: none
+  reasoning: TPE is a good default for mixed continuous/categorical spaces.
 reasoning: accuracy-style metric
 ```
 

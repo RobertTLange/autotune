@@ -1,4 +1,6 @@
 export type Direction = "maximize" | "minimize";
+export type Sampler = "tpe" | "random" | "cmaes" | "grid";
+export type Pruner = "none" | "median" | "hyperband";
 
 export type ParameterType = "float" | "int" | "categorical";
 
@@ -19,6 +21,13 @@ export interface SearchSpace {
   needs_wrapper: boolean;
   has_metric_output?: boolean;
   direction: Direction;
+  optuna?: OptunaConfig;
+  reasoning?: string;
+}
+
+export interface OptunaConfig {
+  sampler?: Sampler;
+  pruner?: Pruner;
   reasoning?: string;
 }
 
@@ -30,9 +39,9 @@ export interface Invocation {
 
 export interface RunOptions {
   trials: number;
-  direction: Direction;
-  sampler: string;
-  pruner: string;
+  direction?: Direction;
+  sampler?: Sampler;
+  pruner?: Pruner;
   nJobs: number;
   workDir: string;
   agent: string;

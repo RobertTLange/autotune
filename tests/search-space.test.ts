@@ -50,6 +50,38 @@ direction: maximize
     ).toMatchObject({ has_metric_output: true });
   });
 
+  it("parses agent-proposed Optuna settings", () => {
+    expect(
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: minimize
+optuna:
+  sampler: random
+  pruner: hyperband
+  reasoning: broad exploratory search
+`)
+    ).toMatchObject({
+      direction: "minimize",
+      optuna: { sampler: "random", pruner: "hyperband", reasoning: "broad exploratory search" }
+    });
+  });
+
+  it("rejects unsupported Optuna settings", () => {
+    expect(() =>
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+optuna:
+  sampler: bayes
+  pruner: none
+`)
+    ).toThrow(/sampler|Invalid/i);
+  });
+
   it("validates parameter bounds", () => {
     expect(() =>
       parseSearchSpaceText(

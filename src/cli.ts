@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
-import type { Direction, RunOptions } from "./types.js";
+import type { Direction, Pruner, RunOptions, Sampler } from "./types.js";
 
 const program = new Command();
 
@@ -14,9 +14,9 @@ program
   .command("run")
   .argument("<script>", "script or executable to optimize")
   .requiredOption("--trials <n>", "number of Optuna trials", parsePositiveInt)
-  .addOption(new Option("--direction <direction>", "optimization direction").choices(["maximize", "minimize"]).default("maximize"))
-  .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid"]).default("tpe"))
-  .addOption(new Option("--pruner <pruner>", "Optuna pruner").choices(["none", "median", "hyperband"]).default("none"))
+  .addOption(new Option("--direction <direction>", "optimization direction").choices(["maximize", "minimize"]))
+  .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid"]))
+  .addOption(new Option("--pruner <pruner>", "Optuna pruner").choices(["none", "median", "hyperband"]))
   .option("--storage <uri>", "Optuna storage URI, such as sqlite:///study.db")
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--agent <name>", "headless agent", "claude")
@@ -26,8 +26,8 @@ program
   .option("--work-dir <dir>", "artifact directory", ".autotune")
   .option("--yes", "skip confirmation prompts", false)
   .option("--config <file>", "pre-defined search space YAML/JSON")
-  .action(async (script: string, raw: Record<string, unknown>) => {
-    await runAutotune(script, normalizeRunOptions(raw));
+  .action(async (script: string, raw: Record<string, unknown>, command: Command) => {
+    await runAutotune(script, normalizeRunOptions(raw, command));
   });
 
 program
@@ -76,12 +76,12 @@ program.parseAsync(process.argv).catch((error: unknown) => {
   process.exitCode = 1;
 });
 
-function normalizeRunOptions(raw: Record<string, unknown>): RunOptions {
+function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
   return {
     trials: Number(raw.trials),
-    direction: raw.direction as Direction,
-    sampler: String(raw.sampler),
-    pruner: String(raw.pruner),
+    direction: optionValue(raw, command, "direction") as Direction | undefined,
+    sampler: optionValue(raw, command, "sampler") as Sampler | undefined,
+    pruner: optionValue(raw, command, "pruner") as Pruner | undefined,
     nJobs: Number(raw.nJobs),
     workDir: String(raw.workDir),
     agent: String(raw.agent),
@@ -92,6 +92,14 @@ function normalizeRunOptions(raw: Record<string, unknown>): RunOptions {
     yes: Boolean(raw.yes),
     config: typeof raw.config === "string" ? raw.config : undefined
   };
+}
+
+function optionValue(raw: Record<string, unknown>, command: Command, name: string): string | undefined {
+  const value = raw[name];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return command.getOptionValueSource(name) === undefined ? undefined : value;
 }
 
 function parsePositiveInt(value: string): number {

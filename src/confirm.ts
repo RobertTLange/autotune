@@ -78,8 +78,15 @@ export function printSearchSpace(searchSpace: SearchSpace): void {
   }
   console.log("");
   console.log(`${styles.bold("Direction:")} ${searchSpace.direction}`);
+  console.log(`${styles.bold("Sampler:")} ${searchSpace.optuna?.sampler ?? "tpe"}`);
+  console.log(`${styles.bold("Pruner:")} ${searchSpace.optuna?.pruner ?? "none"}`);
   if (searchSpace.reasoning) {
     for (const line of wrapText(searchSpace.reasoning, 100)) {
+      console.log(`  ${styles.dim(line)}`);
+    }
+  }
+  if (searchSpace.optuna?.reasoning) {
+    for (const line of wrapText(searchSpace.optuna.reasoning, 100)) {
       console.log(`  ${styles.dim(line)}`);
     }
   }

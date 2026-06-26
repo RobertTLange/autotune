@@ -29,7 +29,17 @@ Also identify:
 - needs_wrapper: whether a wrapper script is needed to add arg parsing
 - has_metric_output: whether the script already prints "autotune_metric=<value>" to stdout
 - direction: "maximize" | "minimize"
+- optuna: object with optional sampler, pruner, and reasoning fields
 - reasoning: why this direction
+
+Also propose safe optuna settings:
+- sampler: "tpe" | "random" | "cmaes" | "grid"
+- pruner: "none" | "median" | "hyperband"
+- reasoning: short explanation for the Optuna choices
+Prefer tpe for mixed or continuous spaces, random for tiny exploratory searches, grid only when all
+parameters are small categorical choices, and cmaes only for continuous numeric spaces. Prefer none
+for pruner unless the script is iterative and pruning is likely comparable across trials.
+Do not propose storage. Do not propose n_jobs. These are user-controlled resource/state settings.
 
 Output valid JSON only.`;
 }
@@ -77,11 +87,14 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 - needs_wrapper: boolean
 - has_metric_output: boolean
 - direction: "maximize" | "minimize"
+- optuna: object with optional sampler, pruner, and reasoning fields
 - reasoning: string
 
 Preserve fixed objective measurement semantics. If feedback asks to tune a value used only to
 measure, score, aggregate, threshold, compare, or report the objective, omit it from parameters
 and explain the exclusion in reasoning.
+Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or "grid"; pruner may
+be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
 
 Output valid revised JSON only.`;
 }

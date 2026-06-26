@@ -10,7 +10,11 @@ import { readResults, renderResults } from "./results.js";
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
-import type { RunOptions, SearchSpace } from "./types.js";
+import type { Direction, Pruner, RunOptions, Sampler, SearchSpace } from "./types.js";
+
+const DEFAULT_DIRECTION: Direction = "maximize";
+const DEFAULT_SAMPLER: Sampler = "tpe";
+const DEFAULT_PRUNER: Pruner = "none";
 
 export async function runAutotune(script: string, options: RunOptions): Promise<void> {
   if (!Number.isInteger(options.trials) || options.trials < 1) {
@@ -34,7 +38,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const proposed = options.config
     ? await loadConfiguredSearchSpace(options.config)
     : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
-  const searchSpace = await prepareSearchSpaceForScript(proposed, options.direction, scriptPath);
+  const searchSpace = await prepareSearchSpaceForRun(proposed, options, scriptPath);
   writeStatus(`Saving confirmed search space: ${styles.dim(searchSpacePath)}`);
   const confirmed = await confirmSearchSpace({
     searchSpace,
@@ -51,7 +55,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         agent: options.agent
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
-      return prepareSearchSpaceForScript(revised, options.direction, scriptPath);
+      return prepareSearchSpaceForRun(revised, options, scriptPath);
     }
   });
 
@@ -82,8 +86,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     runnerPath,
     trials: options.trials,
     direction: confirmed.direction,
-    sampler: options.sampler,
-    pruner: options.pruner,
+    sampler: confirmed.optuna?.sampler ?? DEFAULT_SAMPLER,
+    pruner: confirmed.optuna?.pruner ?? DEFAULT_PRUNER,
     nJobs: options.nJobs,
     storage: options.storage,
     output: resultsPath
@@ -110,7 +114,7 @@ export async function analyzeOnly(script: string, options: {
   await access(scriptPath, constants.R_OK);
   const workDir = path.resolve(options.workDir);
   const invocation = detectInvocation(scriptPath, options.command);
-  const searchSpace = await analyzeScript({ invocation, workDir, agent: options.agent });
+  const searchSpace = withEffectiveOptunaSettings(await analyzeScript({ invocation, workDir, agent: options.agent }), {});
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
@@ -156,8 +160,8 @@ export async function resumeStudy(options: {
     runnerPath,
     trials: options.trials,
     direction: searchSpace.direction ?? options.direction,
-    sampler: "tpe",
-    pruner: "none",
+    sampler: searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER,
+    pruner: searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
     nJobs: options.nJobs,
     storage: options.storage,
     output: resultsPath
@@ -165,20 +169,31 @@ export async function resumeStudy(options: {
   console.log(renderResults(await readResults(resultsPath)));
 }
 
-function normalizeDirection(searchSpace: SearchSpace, direction: "maximize" | "minimize"): SearchSpace {
-  return { ...searchSpace, direction: direction ?? searchSpace.direction };
-}
-
-async function prepareSearchSpaceForScript(
+async function prepareSearchSpaceForRun(
   searchSpace: SearchSpace,
-  direction: "maximize" | "minimize",
+  options: Pick<RunOptions, "direction" | "sampler" | "pruner">,
   scriptPath: string
 ): Promise<SearchSpace> {
-  const normalized = normalizeDirection(searchSpace, direction);
+  const normalized = withEffectiveOptunaSettings(searchSpace, options);
   if (await scriptContainsMetricOutput(scriptPath)) {
     return normalized;
   }
   return { ...normalized, has_metric_output: false };
+}
+
+function withEffectiveOptunaSettings(
+  searchSpace: SearchSpace,
+  options: Pick<RunOptions, "direction" | "sampler" | "pruner">
+): SearchSpace {
+  return {
+    ...searchSpace,
+    direction: options.direction ?? searchSpace.direction ?? DEFAULT_DIRECTION,
+    optuna: {
+      ...searchSpace.optuna,
+      sampler: options.sampler ?? searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER,
+      pruner: options.pruner ?? searchSpace.optuna?.pruner ?? DEFAULT_PRUNER
+    }
+  };
 }
 
 async function scriptContainsMetricOutput(scriptPath: string): Promise<boolean> {
@@ -266,6 +281,8 @@ function formatDoctorCheck(check: DoctorCheck): string {
 function renderSearchSpaceSummary(searchSpace: SearchSpace): string {
   return [
     `Direction: ${searchSpace.direction}`,
+    `Sampler: ${searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER}`,
+    `Pruner: ${searchSpace.optuna?.pruner ?? DEFAULT_PRUNER}`,
     `Arg parsing: ${searchSpace.has_arg_parsing ? "yes" : "no"}`,
     `Metric output: ${searchSpace.has_metric_output === false ? "no" : "yes"}`,
     `Needs wrapper: ${searchSpace.needs_wrapper ? "yes" : "no"}`,

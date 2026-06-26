@@ -18,6 +18,7 @@ describe("printSearchSpace", () => {
         ],
         has_arg_parsing: true,
         needs_wrapper: false,
+        optuna: { sampler: "random", pruner: "median", reasoning: "short iterative trials" },
         direction: "maximize",
         reasoning: "accuracy"
       });
@@ -31,6 +32,9 @@ describe("printSearchSpace", () => {
     expect(lines.join("\n")).toContain("---------  -----------  ----------------  -----------  -------");
     expect(lines.join("\n")).toContain("lr         float        [0.001, 0.1] log  --lr");
     expect(lines.join("\n")).toContain("optimizer  categorical  [adam, sgd]       --optimizer");
+    expect(lines.join("\n")).toContain("Sampler: random");
+    expect(lines.join("\n")).toContain("Pruner: median");
+    expect(lines.join("\n")).toContain("short iterative trials");
   });
 });
 

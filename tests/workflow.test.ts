@@ -244,6 +244,59 @@ describe("runAutotune", () => {
     expect(runner).toContain(modified);
     expect(progress).toEqual(expect.arrayContaining([expect.stringContaining("adding metric output")]));
   });
+
+  it("uses agent-proposed Optuna settings when CLI settings are absent", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-agent-optuna-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeOptunaSearchSpace(dir)
+    });
+
+    const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
+    expect(argv).toEqual(expect.arrayContaining(["--direction", "minimize", "--sampler", "random", "--pruner", "hyperband"]));
+  });
+
+  it("lets explicit CLI Optuna settings override agent proposals", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-cli-optuna-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeOptunaSearchSpace(dir)
+    });
+
+    const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
+    expect(argv).toEqual(expect.arrayContaining(["--direction", "maximize", "--sampler", "tpe", "--pruner", "none"]));
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -300,6 +353,7 @@ const result = {
 };
 fs.mkdirSync(require('node:path').dirname(output), { recursive: true });
 fs.writeFileSync(output, JSON.stringify(result));
+fs.writeFileSync(output + '.argv.json', JSON.stringify(args));
 console.log(JSON.stringify(result));
 `,
     "utf8"
@@ -355,6 +409,22 @@ async function writeMissingMetricSearchSpace(dir: string): Promise<string> {
     needs_wrapper: false,
     direction: "maximize",
     reasoning: "script computes score but does not print autotune_metric"
+  });
+  return filePath;
+}
+
+async function writeOptunaSearchSpace(dir: string): Promise<string> {
+  const filePath = path.join(dir, "optuna-space.yaml");
+  await writeSearchSpace(filePath, {
+    parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+    has_arg_parsing: true,
+    needs_wrapper: false,
+    direction: "minimize",
+    optuna: {
+      sampler: "random",
+      pruner: "hyperband",
+      reasoning: "broad exploratory search"
+    }
   });
   return filePath;
 }
