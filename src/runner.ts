@@ -43,6 +43,7 @@ export async function runPythonRunner(input: {
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
+      process.stderr.write(chunk);
     });
     child.on("error", reject);
     child.on("close", (code) => {

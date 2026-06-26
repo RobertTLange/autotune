@@ -29,6 +29,8 @@ import optuna
 from optuna.trial import TrialState
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
+CURRENT_TRIAL_TARGET = 0
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def suggest_value(trial, parameter):
@@ -118,6 +120,13 @@ def serialize_study(study, direction):
     }
 
 
+def report_progress(study, trial):
+    complete = [item for item in study.trials if item.state == TrialState.COMPLETE]
+    finished = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
+    best = f" best: {study.best_value}" if complete else ""
+    print(f"Trial {finished}/{CURRENT_TRIAL_TARGET} complete ({trial.state.name}){best}", file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, required=True)
@@ -129,6 +138,8 @@ def main():
     parser.add_argument("--output", default=CONFIG["results_path"])
     args = parser.parse_args()
 
+    global CURRENT_TRIAL_TARGET
+    CURRENT_TRIAL_TARGET = args.trials
     study = optuna.create_study(
         direction=args.direction,
         storage=args.storage,
@@ -136,7 +147,7 @@ def main():
         sampler=make_sampler(args.sampler),
         pruner=make_pruner(args.pruner),
     )
-    study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs)
+    study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[report_progress])
     result = serialize_study(study, args.direction)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

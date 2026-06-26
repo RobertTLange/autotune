@@ -31,4 +31,41 @@ describe("runPythonRunner", () => {
     // Python fake runner exits after writing argv. If shell interpolation happened, this test would fail.
     expect(true).toBe(true);
   });
+
+  it("forwards runner stderr progress", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-progress-"));
+    const runner = path.join(dir, "runner.py");
+    await writeFile(
+      runner,
+      [
+        "import json",
+        "import sys",
+        "print('trial 1/3 complete', file=sys.stderr)",
+        "with open(sys.argv[sys.argv.index('--output') + 1], 'w', encoding='utf-8') as fh:",
+        "    json.dump({'ok': True}, fh)"
+      ].join("\n"),
+      "utf8"
+    );
+    const output = path.join(dir, "results.json");
+    let forwarded = "";
+    const original = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      forwarded += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await runPythonRunner({
+        runnerPath: runner,
+        trials: 3,
+        direction: "maximize",
+        sampler: "tpe",
+        pruner: "none",
+        nJobs: 1,
+        output
+      });
+    } finally {
+      process.stderr.write = original;
+    }
+    expect(forwarded).toContain("trial 1/3 complete");
+  });
 });

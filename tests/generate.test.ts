@@ -21,6 +21,8 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("subprocess.run(argv");
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
+    expect(code).toContain("def report_progress");
+    expect(code).toContain("file=sys.stderr");
     expect(code).toContain("trial.suggest_float");
     expect(code).not.toContain("shell=True");
   });
