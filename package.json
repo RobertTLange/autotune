@@ -11,8 +11,7 @@
     "examples/*.py",
     "examples/*.cpp",
     "templates",
-    "README.md",
-    "spec.md"
+    "README.md"
   ],
   "scripts": {
     "prebuild": "node scripts/clean-dist.mjs",
