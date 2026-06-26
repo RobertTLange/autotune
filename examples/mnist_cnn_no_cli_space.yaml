@@ -1,0 +1,24 @@
+parameters:
+  - name: lr
+    cli_flag: --lr
+    type: float
+    low: 0.0001
+    high: 0.01
+    log: true
+    current_value: 0.001
+  - name: dropout
+    cli_flag: --dropout
+    type: float
+    low: 0
+    high: 0.5
+    current_value: 0.2
+  - name: batch_size
+    cli_flag: --batch-size
+    type: categorical
+    choices: [32, 64, 128]
+    current_value: 64
+has_arg_parsing: false
+needs_wrapper: true
+has_metric_output: false
+direction: maximize
+reasoning: validation_accuracy is the scalar objective computed after training.

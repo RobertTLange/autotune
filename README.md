@@ -157,6 +157,30 @@ autotune run examples/no_argparse.py \
 
 Expected behavior: autotune writes `/tmp/autotune-no-argparse/no_argparse_modified.py`, generates `/tmp/autotune-no-argparse/no_argparse_optuna.py`, and runs trials against the modified copy. The original `examples/no_argparse.py` is not changed.
 
+## MNIST CNN Compatibility Example
+
+`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print. The paired config tells autotune to generate a compatible copy that accepts `--lr`, `--dropout`, and `--batch-size`, then prints validation accuracy as the metric.
+
+Install runtime packages first if needed:
+
+```bash
+uv pip install --python .venv/bin/python torch torchvision
+```
+
+Run:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH autotune run examples/mnist_cnn_no_cli.py \
+  --config examples/mnist_cnn_no_cli_space.yaml \
+  --trials 8 \
+  --agent codex \
+  --yes \
+  --json \
+  --work-dir /tmp/autotune-mnist-cnn
+```
+
+Expected behavior: autotune writes `/tmp/autotune-mnist-cnn/mnist_cnn_no_cli_modified.py`, generates `/tmp/autotune-mnist-cnn/mnist_cnn_no_cli_optuna.py`, and runs trials against the modified copy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+
 ## Generated Files
 
 By default, `.autotune/` contains:
