@@ -3,7 +3,7 @@ import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
 
 export function extractHeadlessJson(output: string): SearchSpace {
-  const candidates = collectCandidates(output);
+  const candidates = collectCandidates(output, "search-space");
   for (const candidate of candidates) {
     try {
       return parseSearchSpaceText(candidate);
@@ -12,6 +12,29 @@ export function extractHeadlessJson(output: string): SearchSpace {
     }
   }
   throw new Error("headless output did not contain a valid search space JSON object");
+}
+
+export function extractHeadlessObject(output: string): Record<string, unknown> {
+  const candidates = collectCandidates(output, "object");
+  let fallback: Record<string, unknown> | undefined;
+  for (const candidate of candidates) {
+    try {
+      const value = JSON.parse(candidate) as unknown;
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const record = value as Record<string, unknown>;
+        if (typeof record.code === "string") {
+          return record;
+        }
+        fallback ??= record;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  if (fallback) {
+    return fallback;
+  }
+  throw new Error("headless output did not contain a valid JSON object");
 }
 
 export async function runHeadless(args: string[], options: { cwd: string; bin?: string }): Promise<string> {
@@ -56,7 +79,7 @@ function isMissingExecutable(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-function collectCandidates(output: string): string[] {
+function collectCandidates(output: string, mode: "search-space" | "object"): string[] {
   const candidates: string[] = [];
   const trimmed = output.trim();
   if (trimmed) {
@@ -64,7 +87,7 @@ function collectCandidates(output: string): string[] {
   }
 
   for (const line of output.split(/\r?\n/)) {
-    const value = extractTextFromJsonLine(line);
+    const value = extractTextFromJsonLine(line, mode);
     if (value) {
       candidates.push(value);
     }
@@ -81,22 +104,23 @@ function collectCandidates(output: string): string[] {
   return candidates.filter(Boolean).reverse();
 }
 
-function extractTextFromJsonLine(line: string): string | undefined {
+function extractTextFromJsonLine(line: string, mode: "search-space" | "object"): string | undefined {
   try {
     const parsed = JSON.parse(line);
-    return findText(parsed);
+    return findText(parsed, mode);
   } catch {
     return undefined;
   }
 }
 
-function findText(value: unknown): string | undefined {
+function findText(value: unknown, mode: "search-space" | "object"): string | undefined {
   if (typeof value === "string") {
-    return value.includes("parameters") ? value : undefined;
+    const trimmed = value.trim();
+    return mode === "object" ? (trimmed.startsWith("{") ? value : undefined) : value.includes("parameters") ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = findText(item);
+      const found = findText(item, mode);
       if (found) {
         return found;
       }
@@ -105,13 +129,13 @@ function findText(value: unknown): string | undefined {
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     for (const key of ["text", "content", "message", "result", "final"]) {
-      const found = findText(record[key]);
+      const found = findText(record[key], mode);
       if (found) {
         return found;
       }
     }
     for (const nested of Object.values(record)) {
-      const found = findText(nested);
+      const found = findText(nested, mode);
       if (found) {
         return found;
       }

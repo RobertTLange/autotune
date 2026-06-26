@@ -70,6 +70,8 @@ Run search with this space? [Y/feedback/edit/n]
 
 Use `--yes` only when you want to accept the first proposed search space without review.
 
+If the analyzed script does not accept the proposed CLI flags, autotune can ask `headless` to generate a modified copy in the work dir, such as `.autotune/train_modified.py`. The original script is left untouched, and the Optuna runner invokes the modified copy.
+
 Use a custom runtime command without invoking a shell:
 
 ```bash
@@ -145,8 +147,10 @@ By default, `.autotune/` contains:
 - `analyze_prompt.md`
 - `generate_prompt.md`
 - `revise_prompt.md`, when feedback revision is used
+- `modified_prompt.md`, when a modified script copy is needed
 - `search_space.yaml`
 - `<script>_optuna.py`
+- `<script>_modified.<ext>`, when CLI parsing is added to a copy
 - `results.json`
 - `study.db`, when SQLite storage is configured
 

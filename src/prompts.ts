@@ -73,3 +73,29 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 
 Output valid revised JSON only.`;
 }
+
+export function renderModifiedScriptPrompt(input: {
+  invocation: Invocation;
+  searchSpace: SearchSpace;
+  outputPath: string;
+}): string {
+  return `Create a modified copy of the target script that accepts the confirmed hyperparameters as CLI arguments.
+
+Script language: ${input.invocation.language}
+Original script path: ${input.invocation.script}
+Original invocation command argv: ${JSON.stringify(input.invocation.command)}
+Modified copy output path: ${input.outputPath}
+
+Confirmed search space JSON:
+${JSON.stringify(input.searchSpace, null, 2)}
+
+Requirements:
+- preserve the original script's behavior except for reading the listed hyperparameters from CLI flags
+- add CLI parsing for every parameter using its cli_flag
+- keep printing "autotune_metric=<value>" to stdout
+- do not modify the original script
+- output a JSON object with exactly one key: "code"
+- "code" must contain the full modified script source as a JSON string
+
+Output valid JSON only.`;
+}

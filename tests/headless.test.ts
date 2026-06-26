@@ -1,4 +1,4 @@
-import { extractHeadlessJson } from "../src/headless.js";
+import { extractHeadlessJson, extractHeadlessObject } from "../src/headless.js";
 
 describe("extractHeadlessJson", () => {
   it("extracts plain JSON from agent output", () => {
@@ -37,5 +37,18 @@ describe("extractHeadlessJson", () => {
       })
     );
     expect(result.direction).toBe("maximize");
+  });
+});
+
+describe("extractHeadlessObject", () => {
+  it("extracts generic JSON objects from headless traces", () => {
+    expect(
+      extractHeadlessObject(
+        JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: '{"code":"print(1)"}' }
+        })
+      )
+    ).toEqual({ code: "print(1)" });
   });
 });

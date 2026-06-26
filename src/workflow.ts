@@ -1,7 +1,7 @@
 import { access, mkdir } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { analyzeScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
+import { analyzeScript, generateModifiedScript, requestWrapperGeneration, reviseSearchSpace } from "./analyze.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation } from "./detect.js";
@@ -54,12 +54,15 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     }
   });
 
+  const executionInvocation = confirmed.needs_wrapper
+    ? await prepareModifiedInvocation({ invocation, searchSpace: confirmed, workDir, agent: options.agent })
+    : invocation;
   const runnerPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
   const resultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
   console.error(`Phase 2: generating Optuna wrapper with headless ${options.agent}...`);
   console.error("  This can take a minute on first run.");
   await requestWrapperGeneration({
-    invocation,
+    invocation: executionInvocation,
     searchSpace: confirmed,
     workDir,
     agent: options.agent,
@@ -67,7 +70,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   });
   console.error(`Writing Optuna runner: ${runnerPath}`);
   await writeOptunaRunner({
-    invocation,
+    invocation: executionInvocation,
     searchSpace: confirmed,
     outputPath: runnerPath,
     resultsPath
@@ -163,6 +166,37 @@ export async function resumeStudy(options: {
 
 function normalizeDirection(searchSpace: SearchSpace, direction: "maximize" | "minimize"): SearchSpace {
   return { ...searchSpace, direction: direction ?? searchSpace.direction };
+}
+
+async function prepareModifiedInvocation(input: {
+  invocation: ReturnType<typeof detectInvocation>;
+  searchSpace: SearchSpace;
+  workDir: string;
+  agent: string;
+}): Promise<ReturnType<typeof detectInvocation>> {
+  const extension = path.extname(input.invocation.script);
+  const baseName = path.basename(input.invocation.script, extension);
+  const modifiedPath = path.join(input.workDir, `${baseName}_modified${extension}`);
+  console.error(`Script lacks CLI parsing; generating modified copy: ${modifiedPath}`);
+  await generateModifiedScript({
+    invocation: input.invocation,
+    searchSpace: input.searchSpace,
+    workDir: input.workDir,
+    agent: input.agent,
+    outputPath: modifiedPath
+  });
+  return {
+    ...input.invocation,
+    script: modifiedPath,
+    command: commandForModifiedScript(input.invocation, modifiedPath)
+  };
+}
+
+function commandForModifiedScript(invocation: ReturnType<typeof detectInvocation>, modifiedPath: string): string[] {
+  if (invocation.command.length === 1 && path.resolve(invocation.command[0] ?? "") === path.resolve(invocation.script)) {
+    return [modifiedPath];
+  }
+  return invocation.command;
 }
 
 async function loadConfiguredSearchSpace(configPath: string): Promise<SearchSpace> {

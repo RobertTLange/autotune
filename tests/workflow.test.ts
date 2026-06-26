@@ -174,6 +174,37 @@ describe("runAutotune", () => {
     expect(searchSpace).toContain("low: -1");
     expect(searchSpace).toContain("high: 2");
   });
+
+  it("generates a modified script copy when the search space needs a wrapper", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-wrapper-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "x = 0\nprint('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeWrapperSearchSpace(dir)
+    });
+
+    const modified = path.join(workDir, "train_modified.py");
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(await readFile(modified, "utf8")).toContain("argparse.ArgumentParser");
+    expect(runner).toContain(modified);
+    expect(runner).not.toContain(script);
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -246,6 +277,12 @@ if (process.argv.includes('--check')) {
   console.log('claude ok');
   process.exit(0);
 }
+if (process.argv.join(' ').includes('modified_prompt')) {
+  console.log(JSON.stringify({
+    code: "import argparse\\nparser = argparse.ArgumentParser()\\nparser.add_argument('--x', type=float, default=0.0)\\nargs = parser.parse_args()\\nprint(f'autotune_metric={args.x}')\\n"
+  }));
+  process.exit(0);
+}
 console.log(JSON.stringify({
   parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: process.argv.join(' ').includes('revise_prompt') ? -1 : 0, high: process.argv.join(' ').includes('revise_prompt') ? 2 : 1 }],
   has_arg_parsing: true,
@@ -257,4 +294,16 @@ console.log(JSON.stringify({
     "utf8"
   );
   await chmod(filePath, 0o755);
+}
+
+async function writeWrapperSearchSpace(dir: string): Promise<string> {
+  const filePath = path.join(dir, "wrapper-space.yaml");
+  await writeSearchSpace(filePath, {
+    parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+    has_arg_parsing: false,
+    needs_wrapper: true,
+    direction: "maximize",
+    reasoning: "script has hardcoded x"
+  });
+  return filePath;
 }
