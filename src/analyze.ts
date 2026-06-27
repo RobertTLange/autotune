@@ -3,7 +3,6 @@ import path from "node:path";
 import { extractHeadlessJson, extractHeadlessObject, runHeadless } from "./headless.js";
 import {
   renderAnalyzePrompt,
-  renderGeneratePrompt,
   renderModifiedScriptPrompt,
   renderRefineSearchSpacePrompt,
   renderReviseSearchSpacePrompt,
@@ -20,26 +19,6 @@ export async function analyzeScript(input: {
   await writeFile(promptPath, renderAnalyzePrompt({ invocation: input.invocation }), "utf8");
   const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   return extractHeadlessJson(output);
-}
-
-export async function requestWrapperGeneration(input: {
-  invocation: Invocation;
-  searchSpace: SearchSpace;
-  workDir: string;
-  outputPath: string;
-} & HeadlessOptions): Promise<void> {
-  await mkdir(input.workDir, { recursive: true });
-  const promptPath = path.join(input.workDir, "generate_prompt.md");
-  await writeFile(
-    promptPath,
-    renderGeneratePrompt({
-      invocation: input.invocation,
-      searchSpace: input.searchSpace,
-      outputPath: input.outputPath
-    }),
-    "utf8"
-  );
-  await retryHeadless(buildHeadlessArgs(input, promptPath));
 }
 
 export async function reviseSearchSpace(input: {

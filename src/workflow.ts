@@ -5,7 +5,6 @@ import {
   analyzeScript,
   generateModifiedScript,
   refineSearchSpaceFromTrials,
-  requestWrapperGeneration,
   reviseSearchSpace
 } from "./analyze.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
@@ -235,15 +234,6 @@ async function runSearchRound(input: {
       })
     : input.invocation;
   const runnerPath = path.join(input.workDir, `${path.basename(input.scriptPath, path.extname(input.scriptPath))}_optuna.py`);
-  writeStatus(`Phase 2: generating Optuna wrapper with ${formatHeadlessLabel(input.headless)}...`);
-  writeStatus("This can take a minute on first run.");
-  await requestWrapperGeneration({
-    invocation: executionInvocation,
-    searchSpace: input.searchSpace,
-    workDir: input.workDir,
-    ...input.headless,
-    outputPath: runnerPath
-  });
   writeStatus(`Writing Optuna runner: ${styles.dim(runnerPath)}`);
   await writeOptunaRunner({
     invocation: executionInvocation,

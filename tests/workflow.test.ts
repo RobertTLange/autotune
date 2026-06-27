@@ -57,7 +57,6 @@ describe("runAutotune", () => {
     expect(progress).toEqual(
       expect.arrayContaining([
         expect.stringContaining("Phase 1: analyzing"),
-        expect.stringContaining("Phase 2: generating"),
         expect.stringContaining("Writing Optuna runner"),
         expect.stringContaining("Running 2 Optuna trials"),
         expect.stringContaining("Trials complete")
@@ -542,7 +541,7 @@ describe("runAutotune", () => {
       .split("\n")
       .map((line) => JSON.parse(line) as string[]);
     const agentCalls = calls.filter((args) => !args.includes("--check"));
-    expect(agentCalls.length).toBeGreaterThanOrEqual(3);
+    expect(agentCalls.length).toBeGreaterThanOrEqual(2);
     for (const args of agentCalls) {
       expect(args).toEqual(expect.arrayContaining(["codex", "--model", "gpt-5.5", "--reasoning-effort", "high"]));
     }

@@ -59,26 +59,6 @@ function formatInvocation(invocation: Invocation): string {
   return [...invocation.command, invocation.script].join(" ");
 }
 
-export function renderGeneratePrompt(input: { invocation: Invocation; searchSpace: SearchSpace; outputPath: string }): string {
-  return `Generate an Optuna runner for this autotune search.
-
-Script language: ${input.invocation.language}
-Invocation command argv: ${JSON.stringify(input.invocation.command)}
-Script path: ${input.invocation.script}
-Output runner path: ${input.outputPath}
-
-Confirmed search space JSON:
-${JSON.stringify(input.searchSpace, null, 2)}
-
-Requirements:
-- preserve the original script
-- invoke subprocesses with argv arrays, not a shell
-- parse the last stdout line starting with "autotune_metric="
-- write a self-contained Python runner using Optuna
-
-Return code or file contents only.`;
-}
-
 export function renderReviseSearchSpacePrompt(input: {
   invocation: Invocation;
   searchSpace: SearchSpace;
