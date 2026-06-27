@@ -12,10 +12,9 @@
   <img alt="Node.js 22+" src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white" />
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-ESM-3178C6?logo=typescript&logoColor=white" />
   <img alt="Optuna" src="https://img.shields.io/badge/Optuna-powered-214478" />
-  <img alt="npm package" src="https://img.shields.io/badge/npm-%40roberttlange%2Fautotune-CB3837?logo=npm&logoColor=white" />
 </p>
 
-Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation or feedback, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
+Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
 
 ## How It Works
 
@@ -24,46 +23,20 @@ Autotune operates in clear phases:
 1. **Prerequisites**: checks `python3`, Optuna, the selected `headless` agent, and the target runtime.
 2. **Analysis**: asks the agent to inspect your script and propose tunable parameters, direction, sampler, and pruner.
 3. **Confirmation**: shows the proposed space and accepts `Y`, `feedback`, `edit`, or `n`.
-4. **Compatibility**: when needed, asks the agent to generate a modified copy that adds CLI flags or `autotune_metric` output.
+4. **Compatibility**: when needed, generates a modified copy that adds CLI flags or `autotune_metric`.
 5. **Optuna Run**: writes a Python runner, launches trials, reports progress, and stores results.
 6. **Refinement**: optionally runs extra agentic rounds that revise the search space from completed trial evidence.
 
 The original script is left untouched.
 
-## Requirements
-
-- Node.js 22+
-- `python3` 3.9+
-- Python package: `optuna`
-- `headless` CLI, or `npx -y @roberttlange/headless`
-- The runtime for the script being tuned, such as `python3`, `bash`, `julia`, `Rscript`, `ruby`, or a compiled binary
-
 ## Install
 
 ```bash
-npm install -g @roberttlange/autotune
 python3 -m pip install optuna
-```
-
-From this repository:
-
-```bash
 npm install
 npm run build
 node dist/cli.js --help
 ```
-
-## Metric Contract
-
-Your script must print the target metric to stdout:
-
-```text
-autotune_metric=0.9432
-```
-
-If multiple metric lines are printed, the last one wins. If a trial exits non-zero or does not print a metric, that trial is pruned and the study continues.
-
-Autotune prompts the agent to keep objective measurement fixed. Proposed parameters should change the candidate behavior being evaluated, not the metric formula, evaluation input set, aggregation, thresholds, baselines, reporting, or measurement-only random seeds.
 
 ## Core Usage
 
@@ -77,11 +50,15 @@ Common flags:
 autotune run train.py \
   --trials 50 \
   --agent codex \
+  --model gpt-5.5 \
+  --reasoning-effort high \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
   --output results.json
 ```
+
+Use `--effort low|medium|high|xhigh` as a shorter alias for `--reasoning-effort`.
 
 When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
 
@@ -102,9 +79,9 @@ Use `--yes` only when you want to accept the first proposed search space without
 ## Commands
 
 ```bash
-autotune analyze <script> [--json] [--output search_space.yaml]
+autotune analyze <script> [--agent codex] [--model MODEL] [--reasoning-effort high]
 autotune doctor [script] [--agent codex]
-autotune run <script> --trials N [flags]
+autotune run <script> --trials N [--agent codex] [--model MODEL] [--reasoning-effort high]
 autotune results [results.json] [--top 10] [--json]
 autotune resume --storage sqlite:///study.db --trials N
 ```
