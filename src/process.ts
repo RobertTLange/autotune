@@ -31,6 +31,7 @@ export async function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
+    const cleanupSignals = installCleanupHandlers(child.pid);
     let stdout = "";
     let stderr = "";
     const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
@@ -64,6 +65,7 @@ export async function runCommand(
       if (timeout) {
         clearTimeout(timeout);
       }
+      cleanupSignals();
       reject(error);
     });
     child.on("close", (code) => {
@@ -77,6 +79,7 @@ export async function runCommand(
       if (killTimer) {
         clearTimeout(killTimer);
       }
+      cleanupSignals();
       if (timedOut) {
         reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
         return;
@@ -88,6 +91,28 @@ export async function runCommand(
       }
     });
   });
+}
+
+function installCleanupHandlers(pid: number | undefined): () => void {
+  if (!pid || process.platform === "win32") {
+    return () => {};
+  }
+  const handleSignal = (signal: NodeJS.Signals) => {
+    killChildTree(pid, signal);
+    process.exit(128 + signalNumber(signal));
+  };
+  const onSigint = () => handleSignal("SIGINT");
+  const onSigterm = () => handleSignal("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  return () => {
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  };
+}
+
+function signalNumber(signal: NodeJS.Signals): number {
+  return signal === "SIGINT" ? 2 : 15;
 }
 
 function killChildTree(pid: number | undefined, signal: NodeJS.Signals): void {
