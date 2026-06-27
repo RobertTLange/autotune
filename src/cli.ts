@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
@@ -165,6 +166,9 @@ export function parseNonNegativeInt(value: string): number {
   return parsed;
 }
 
-function isMainModule(): boolean {
-  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+export function isMainModule(moduleUrl = import.meta.url, argvPath = process.argv[1]): boolean {
+  if (argvPath === undefined) {
+    return false;
+  }
+  return moduleUrl === pathToFileURL(realpathSync(argvPath)).href;
 }

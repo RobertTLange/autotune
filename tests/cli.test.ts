@@ -1,5 +1,9 @@
 import { Command, Option } from "commander";
+import { symlink, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
+  isMainModule,
   normalizeReasoningEffort,
   normalizeRunOptions,
   parseNonNegativeInt,
@@ -50,5 +54,15 @@ describe("CLI option normalization", () => {
     expect(parseNonNegativeInt("0")).toBe(0);
     expect(() => parsePositiveInt("0")).toThrow(/positive integer/);
     expect(() => parseNonNegativeInt("-1")).toThrow(/non-negative integer/);
+  });
+
+  it("recognizes symlinked bin entrypoints as main modules", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-cli-main-"));
+    const target = path.join(dir, "cli.js");
+    const link = path.join(dir, "autotune");
+    await writeFile(target, "#!/usr/bin/env node\n", "utf8");
+    await symlink(target, link);
+
+    expect(isMainModule(new URL(`file://${target}`).href, link)).toBe(true);
   });
 });
