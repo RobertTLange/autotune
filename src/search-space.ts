@@ -35,28 +35,66 @@ const parameterSchema = z
       ) {
         ctx.addIssue({ code: "custom", message: `${parameter.name} low must be less than high` });
       }
+      if (parameter.type === "int") {
+        if (typeof parameter.low === "number" && !Number.isInteger(parameter.low)) {
+          ctx.addIssue({ code: "custom", message: `${parameter.name} low must be an integer` });
+        }
+        if (typeof parameter.high === "number" && !Number.isInteger(parameter.high)) {
+          ctx.addIssue({ code: "custom", message: `${parameter.name} high must be an integer` });
+        }
+      }
+      if (parameter.type === "float" && parameter.log === true && typeof parameter.low === "number" && parameter.low <= 0) {
+        ctx.addIssue({ code: "custom", message: `${parameter.name} log-scale low must be positive` });
+      }
     }
     if (parameter.type === "categorical" && (!parameter.choices || parameter.choices.length === 0)) {
       ctx.addIssue({ code: "custom", message: `${parameter.name} missing choices` });
     }
   });
 
-const searchSpaceSchema = z.object({
-  parameters: z.array(parameterSchema),
-  has_arg_parsing: z.boolean(),
-  needs_wrapper: z.boolean(),
-  has_metric_output: z.boolean().default(true),
-  direction: directionSchema,
-  optuna: z
-    .object({
-      sampler: samplerSchema.optional(),
-      pruner: prunerSchema.optional(),
-      reasoning: z.string().optional()
-    })
-    .strict()
-    .optional(),
-  reasoning: z.string().optional()
-});
+const searchSpaceSchema = z
+  .object({
+    parameters: z.array(parameterSchema),
+    has_arg_parsing: z.boolean(),
+    needs_wrapper: z.boolean(),
+    has_metric_output: z.boolean().default(true),
+    direction: directionSchema,
+    optuna: z
+      .object({
+        sampler: samplerSchema.optional(),
+        pruner: prunerSchema.optional(),
+        reasoning: z.string().optional()
+      })
+      .strict()
+      .optional(),
+    reasoning: z.string().optional()
+  })
+  .superRefine((searchSpace, ctx) => {
+    addDuplicateIssue(searchSpace.parameters, "name", "parameter name", ctx);
+    addDuplicateIssue(searchSpace.parameters, "cli_flag", "cli_flag", ctx);
+  });
+
+function addDuplicateIssue(
+  parameters: Array<{ name: string; cli_flag: string }>,
+  key: "name" | "cli_flag",
+  label: string,
+  ctx: z.RefinementCtx
+): void {
+  const seen = new Map<string, number>();
+  parameters.forEach((parameter, index) => {
+    const value = parameter[key];
+    const firstIndex = seen.get(value);
+    if (firstIndex === undefined) {
+      seen.set(value, index);
+      return;
+    }
+    ctx.addIssue({
+      code: "custom",
+      path: ["parameters", index, key],
+      message: `duplicate ${label}: ${value}`
+    });
+  });
+}
 
 export function parseSearchSpaceText(text: string): SearchSpace {
   const trimmed = text.trim();

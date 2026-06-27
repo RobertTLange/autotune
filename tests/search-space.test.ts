@@ -92,6 +92,54 @@ optuna:
       )
     ).toThrow(/high/i);
   });
+
+  it("rejects log-scale float ranges with non-positive lower bounds", () => {
+    expect(() =>
+      parseSearchSpaceText(
+        JSON.stringify({
+          ...searchSpace,
+          parameters: [{ name: "lr", cli_flag: "--lr", type: "float", low: 0, high: 1, log: true }]
+        })
+      )
+    ).toThrow(/positive/i);
+  });
+
+  it("rejects fractional integer bounds", () => {
+    expect(() =>
+      parseSearchSpaceText(
+        JSON.stringify({
+          ...searchSpace,
+          parameters: [{ name: "layers", cli_flag: "--layers", type: "int", low: 1.5, high: 4 }]
+        })
+      )
+    ).toThrow(/integer/i);
+  });
+
+  it("rejects duplicate parameter names and CLI flags", () => {
+    expect(() =>
+      parseSearchSpaceText(
+        JSON.stringify({
+          ...searchSpace,
+          parameters: [
+            { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+            { name: "x", cli_flag: "--x2", type: "float", low: 0, high: 1 }
+          ]
+        })
+      )
+    ).toThrow(/duplicate parameter name/i);
+
+    expect(() =>
+      parseSearchSpaceText(
+        JSON.stringify({
+          ...searchSpace,
+          parameters: [
+            { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+            { name: "y", cli_flag: "--x", type: "float", low: 0, high: 1 }
+          ]
+        })
+      )
+    ).toThrow(/duplicate cli_flag/i);
+  });
 });
 
 describe("search space files", () => {
