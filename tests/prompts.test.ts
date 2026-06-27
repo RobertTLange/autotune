@@ -85,6 +85,36 @@ describe("prompt Optuna config contract", () => {
   });
 });
 
+describe("prompt invocation contract", () => {
+  it("does not append the source path for standalone runtime commands", () => {
+    const prompt = renderAnalyzePrompt({
+      invocation: {
+        language: "cpp",
+        command: ["/work/.autotune/model"],
+        script: "/work/model.cpp",
+        scriptArgument: "none"
+      }
+    });
+
+    expect(prompt).toContain("The script is invoked via: /work/.autotune/model");
+    expect(prompt).not.toContain("/work/.autotune/model /work/model.cpp");
+  });
+
+  it("does not duplicate explicit script slots", () => {
+    const prompt = renderAnalyzePrompt({
+      invocation: {
+        language: "python",
+        command: ["python3", "-u", "/work/train.py"],
+        script: "/work/train.py",
+        scriptArgument: "included"
+      }
+    });
+
+    expect(prompt).toContain("The script is invoked via: python3 -u /work/train.py");
+    expect(prompt).not.toContain("/work/train.py /work/train.py");
+  });
+});
+
 describe("prompt trial-result refinement contract", () => {
   it("asks refinement to use trial evidence without changing metric semantics", () => {
     const prompt = renderRefineSearchSpacePrompt({

@@ -12,7 +12,7 @@ export function renderAnalyzePrompt(input: { invocation: Invocation }): string {
   return `Analyze the following script for hyperparameter tuning.
 
 The script language is: ${input.invocation.language}
-The script is invoked via: ${[...input.invocation.command, input.invocation.script].join(" ")}
+The script is invoked via: ${formatInvocation(input.invocation)}
 
 Identify all tunable hyperparameters and propose Optuna search spaces.
 The optimization metric is reported via printing "autotune_metric=<value>" to stdout.
@@ -50,6 +50,13 @@ for pruner unless the script is iterative and pruning is likely comparable acros
 Do not propose storage. Do not propose n_jobs. These are user-controlled resource/state settings.
 
 Output valid JSON only.`;
+}
+
+function formatInvocation(invocation: Invocation): string {
+  if (invocation.scriptArgument === "included" || invocation.scriptArgument === "none") {
+    return invocation.command.join(" ");
+  }
+  return [...invocation.command, invocation.script].join(" ");
 }
 
 export function renderGeneratePrompt(input: { invocation: Invocation; searchSpace: SearchSpace; outputPath: string }): string {

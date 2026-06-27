@@ -29,10 +29,24 @@ describe("detectInvocation", () => {
   });
 
   it("uses override command argv", () => {
-    expect(detectInvocation("/work/train.jl", "julia +nightly").command).toEqual([
-      "julia",
-      "+nightly"
-    ]);
+    expect(detectInvocation("/work/train.jl", "julia +nightly")).toMatchObject({
+      command: ["julia", "+nightly"],
+      scriptArgument: "append"
+    });
+  });
+
+  it("treats compiled runtime command overrides as standalone", () => {
+    expect(detectInvocation("/work/model.cpp", "/work/.autotune/model")).toMatchObject({
+      command: ["/work/.autotune/model"],
+      scriptArgument: "none"
+    });
+  });
+
+  it("detects explicit script slots in command overrides", () => {
+    expect(detectInvocation("/work/train.py", "python3 -u /work/train.py")).toMatchObject({
+      command: ["python3", "-u", "/work/train.py"],
+      scriptArgument: "included"
+    });
   });
 
   it("runs extensionless executables directly", async () => {

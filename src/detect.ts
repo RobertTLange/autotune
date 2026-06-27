@@ -69,29 +69,45 @@ export function detectInvocation(scriptPath: string, commandOverride?: string | 
     return {
       language: languageForExtension(extension),
       command,
-      script: scriptPath
+      script: scriptPath,
+      scriptArgument: scriptArgumentForOverride(command, scriptPath, extension)
     };
   }
 
   switch (extension) {
     case ".py":
-      return { language: "python", command: ["python3"], script: scriptPath };
+      return { language: "python", command: ["python3"], script: scriptPath, scriptArgument: "append" };
     case ".sh":
-      return { language: "shell", command: ["bash"], script: scriptPath };
+      return { language: "shell", command: ["bash"], script: scriptPath, scriptArgument: "append" };
     case ".jl":
-      return { language: "julia", command: ["julia"], script: scriptPath };
+      return { language: "julia", command: ["julia"], script: scriptPath, scriptArgument: "append" };
     case ".r":
-      return { language: "r", command: ["Rscript"], script: scriptPath };
+      return { language: "r", command: ["Rscript"], script: scriptPath, scriptArgument: "append" };
     case ".rb":
-      return { language: "ruby", command: ["ruby"], script: scriptPath };
+      return { language: "ruby", command: ["ruby"], script: scriptPath, scriptArgument: "append" };
     case "":
       if (isExecutable(scriptPath)) {
-        return { language: "executable", command: [scriptPath], script: scriptPath };
+        return { language: "executable", command: [scriptPath], script: scriptPath, scriptArgument: "included" };
       }
       throw new Error(`cannot auto-detect runtime for non-executable file: ${scriptPath}`);
     default:
       throw new Error(`cannot auto-detect runtime for extension '${extension}'. Use --command.`);
   }
+}
+
+function scriptArgumentForOverride(
+  command: string[],
+  scriptPath: string,
+  extension: string
+): Invocation["scriptArgument"] {
+  if (command.some((arg) => path.resolve(arg) === path.resolve(scriptPath))) {
+    return "included";
+  }
+  return shouldAppendScriptForExtension(extension) ? "append" : "none";
+}
+
+function shouldAppendScriptForExtension(extension: string): boolean {
+  return [".py", ".sh", ".jl", ".r", ".rb"].includes(extension);
 }
 
 function languageForExtension(extension: string): string {

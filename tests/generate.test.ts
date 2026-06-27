@@ -31,6 +31,39 @@ describe("renderOptunaRunner", () => {
     expect(code).not.toContain("shell=True");
   });
 
+  it("does not append source scripts for standalone runtime commands", () => {
+    const code = renderOptunaRunner({
+      invocation: {
+        language: "cpp",
+        command: ["/work/.autotune/model"],
+        script: "/work/model.cpp",
+        scriptArgument: "none"
+      },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('\\"script_arg_mode\\":\\"none\\"');
+    expect(code).toContain('if script_arg_mode in ("included", "none"):');
+  });
+
+  it("preserves legacy direct executable invocations without metadata", () => {
+    const script = "/work/train";
+    const code = renderOptunaRunner({
+      invocation: {
+        language: "executable",
+        command: [script],
+        script
+      },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('\\"script_arg_mode\\":\\"included\\"');
+  });
+
   it("writes an executable runner file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-generate-"));
     const runner = path.join(dir, "train_optuna.py");

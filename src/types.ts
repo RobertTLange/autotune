@@ -37,6 +37,7 @@ export interface Invocation {
   language: string;
   command: string[];
   script: string;
+  scriptArgument?: "append" | "included" | "none";
 }
 
 export interface HeadlessOptions {

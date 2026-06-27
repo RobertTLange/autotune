@@ -13,6 +13,7 @@ export function renderOptunaRunner(input: {
   const payload = {
     command: input.invocation.command,
     script: input.invocation.script,
+    script_arg_mode: input.invocation.scriptArgument ?? inferScriptArgument(input.invocation),
     parameters: input.searchSpace.parameters,
     results_path: input.resultsPath,
     timeout
@@ -49,7 +50,11 @@ def suggest_value(trial, parameter):
 def build_argv(params):
     command = list(CONFIG["command"])
     script = CONFIG["script"]
-    argv = command[:] if command == [script] else command + [script]
+    script_arg_mode = CONFIG.get("script_arg_mode", "append")
+    if script_arg_mode in ("included", "none"):
+        argv = command[:]
+    else:
+        argv = command + [script]
     for parameter in CONFIG["parameters"]:
         argv.extend([parameter["cli_flag"], str(params[parameter["name"]])])
     return argv
@@ -192,6 +197,12 @@ def main():
 if __name__ == "__main__":
     main()
 `;
+}
+
+function inferScriptArgument(invocation: Invocation): "append" | "included" {
+  return invocation.command.length === 1 && path.resolve(invocation.command[0] ?? "") === path.resolve(invocation.script)
+    ? "included"
+    : "append";
 }
 
 export async function writeOptunaRunner(input: {
