@@ -23,6 +23,7 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("self.pending = self.pending[-self.max_chars:]");
     expect(code).toContain("metric_error");
     expect(code).toContain("threading.Thread");
+    expect(code).toContain("sys.stderr.write(chunk)");
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");

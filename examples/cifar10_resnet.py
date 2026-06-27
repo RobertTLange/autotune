@@ -81,6 +81,7 @@ class CifarResNet(nn.Module):
 
 
 def make_loaders(data_dir: Path, device: torch.device) -> tuple[DataLoader, DataLoader]:
+    print(f"Preparing CIFAR-10 data in {data_dir}", flush=True)
     train_transform = transforms.Compose(
         [
             transforms.RandomCrop(32, padding=4),
@@ -97,6 +98,7 @@ def make_loaders(data_dir: Path, device: torch.device) -> tuple[DataLoader, Data
     )
     train_data = datasets.CIFAR10(data_dir, train=True, download=True, transform=train_transform)
     validation_data = datasets.CIFAR10(data_dir, train=False, download=True, transform=validation_transform)
+    print("CIFAR-10 data ready", flush=True)
     pin_memory = device.type == "cuda"
     return (
         DataLoader(

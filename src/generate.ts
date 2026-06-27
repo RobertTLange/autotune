@@ -102,13 +102,16 @@ class OutputCapture:
                 self.metric_error = exc
 
 
-def drain_stream(stream, capture, parse_metrics=False):
+def drain_stream(stream, capture, parse_metrics=False, mirror=False):
     try:
         while True:
             chunk = stream.read(4096)
             if not chunk:
                 break
             capture.feed(chunk, parse_metrics=parse_metrics)
+            if mirror:
+                sys.stderr.write(chunk)
+                sys.stderr.flush()
     finally:
         capture.finish(parse_metrics=parse_metrics)
 
@@ -132,8 +135,8 @@ def run_trial_command(argv):
         errors="replace",
         start_new_session=hasattr(os, "setsid"),
     )
-    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True))
-    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture))
+    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True))
+    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True))
     stdout_thread.start()
     stderr_thread.start()
     try:
