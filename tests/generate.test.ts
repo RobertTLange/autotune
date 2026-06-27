@@ -64,6 +64,19 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('\\"script_arg_mode\\":\\"included\\"');
   });
 
+  it("fails infrastructure trial errors instead of pruning them", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain("raise RuntimeError(f\"Trial command exited");
+    expect(code).toContain("raise RuntimeError(str(exc)) from exc");
+    expect(code).not.toContain("raise optuna.TrialPruned");
+  });
+
   it("writes an executable runner file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-generate-"));
     const runner = path.join(dir, "train_optuna.py");

@@ -74,11 +74,11 @@ def objective(trial):
     argv = build_argv(params)
     result = subprocess.run(argv, capture_output=True, text=True, timeout=CONFIG["timeout"])
     if result.returncode != 0:
-        raise optuna.TrialPruned(f"Trial command exited {result.returncode}: {result.stderr[-1000:]}")
+        raise RuntimeError(f"Trial command exited {result.returncode}: {result.stderr[-1000:]}")
     try:
         return parse_metric(result.stdout)
     except Exception as exc:
-        raise optuna.TrialPruned(str(exc)) from exc
+        raise RuntimeError(str(exc)) from exc
 
 
 def make_sampler(name):
