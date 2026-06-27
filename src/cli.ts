@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
-import type { Direction, Pruner, RefineMode, RunOptions, Sampler } from "./types.js";
+import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
 const program = new Command();
 
@@ -20,6 +20,9 @@ program
   .option("--storage <uri>", "Optuna storage URI, such as sqlite:///study.db")
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--agent <name>", "headless agent", "claude")
+  .option("--model <name>", "headless model override")
+  .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
+  .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--command <command>", "override script invocation command")
   .option("--build-command <command>", "command to run once before analysis/trials; supports {script} and {work-dir}")
   .option("--refine-rounds <n>", "agentic search-space refinement rounds after the initial trials", parseNonNegativeInt, 0)
@@ -38,12 +41,24 @@ program
   .command("analyze")
   .argument("<script>", "script or executable to analyze")
   .option("--agent <name>", "headless agent", "claude")
+  .option("--model <name>", "headless model override")
+  .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
+  .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--json", "print JSON search space", false)
   .option("--output <file>", "write search space YAML to file")
   .option("--work-dir <dir>", "artifact directory", ".autotune")
   .option("--command <command>", "override script invocation command")
-  .action(async (script: string, options: { agent: string; json: boolean; output?: string; workDir: string; command?: string }) => {
-    await analyzeOnly(script, options);
+  .action(async (script: string, raw: {
+    agent: string;
+    model?: string;
+    reasoningEffort?: ReasoningEffort;
+    effort?: ReasoningEffort;
+    json: boolean;
+    output?: string;
+    workDir: string;
+    command?: string;
+  }) => {
+    await analyzeOnly(script, { ...raw, reasoningEffort: normalizeReasoningEffort(raw) });
   });
 
 program
@@ -89,6 +104,8 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
     nJobs: Number(raw.nJobs),
     workDir: String(raw.workDir),
     agent: String(raw.agent),
+    model: typeof raw.model === "string" ? raw.model : undefined,
+    reasoningEffort: normalizeReasoningEffort(raw),
     command: typeof raw.command === "string" ? raw.command : undefined,
     buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,
     refineRounds: Number(raw.refineRounds),
@@ -100,6 +117,16 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
     yes: Boolean(raw.yes),
     config: typeof raw.config === "string" ? raw.config : undefined
   };
+}
+
+function normalizeReasoningEffort(raw: Record<string, unknown>): ReasoningEffort | undefined {
+  return (
+    typeof raw.reasoningEffort === "string"
+      ? raw.reasoningEffort
+      : typeof raw.effort === "string"
+        ? raw.effort
+        : undefined
+  ) as ReasoningEffort | undefined;
 }
 
 function optionValue(raw: Record<string, unknown>, command: Command, name: string): string | undefined {

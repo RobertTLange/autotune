@@ -2,6 +2,7 @@ export type Direction = "maximize" | "minimize";
 export type Sampler = "tpe" | "random" | "cmaes" | "grid";
 export type Pruner = "none" | "median" | "hyperband";
 export type RefineMode = "ask" | "auto";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ParameterType = "float" | "int" | "categorical";
 
@@ -38,6 +39,12 @@ export interface Invocation {
   script: string;
 }
 
+export interface HeadlessOptions {
+  agent: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+}
+
 export interface RunOptions {
   trials: number;
   direction?: Direction;
@@ -46,6 +53,8 @@ export interface RunOptions {
   nJobs: number;
   workDir: string;
   agent: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
   command?: string;
   buildCommand?: string;
   refineRounds?: number;

@@ -17,7 +17,7 @@ import { readResults, renderResults, type StudyResult, type TrialResult } from "
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
-import type { Direction, Pruner, RunOptions, Sampler, SearchSpace } from "./types.js";
+import type { Direction, HeadlessOptions, Pruner, RunOptions, Sampler, SearchSpace } from "./types.js";
 
 const DEFAULT_DIRECTION: Direction = "maximize";
 const DEFAULT_SAMPLER: Sampler = "tpe";
@@ -39,6 +39,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   }
   const commandOverride = options.command ? expandCommandTemplateArgs(splitCommand(options.command), commandContext) : undefined;
   const invocation = detectInvocation(scriptPath, commandOverride);
+  const headless = pickHeadlessOptions(options);
 
   writeStatus("Checking prerequisites...");
   const prerequisites = await checkPrerequisites({ invocation, agent: options.agent });
@@ -52,7 +53,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
   const proposed = options.config
     ? await loadConfiguredSearchSpace(options.config)
-    : await runAnalysisPhase({ invocation, workDir, agent: options.agent });
+    : await runAnalysisPhase({ invocation, workDir, ...headless });
   const searchSpace = await prepareSearchSpaceForRun(proposed, options, scriptPath);
   const initialSearchSpacePath = searchSpacePathForRound(workDir, 0, refineRounds);
   writeStatus(`Saving confirmed search space: ${styles.dim(initialSearchSpacePath)}`);
@@ -62,13 +63,13 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     yes: options.yes,
     ask: options.ask,
     revise: async (current, feedback) => {
-      writeStatus(`Phase 1b: revising search space with headless ${options.agent}...`);
+      writeStatus(`Phase 1b: revising search space with ${formatHeadlessLabel(headless)}...`);
       const revised = await reviseSearchSpace({
         invocation,
         searchSpace: current,
         feedback,
         workDir,
-        agent: options.agent
+        ...headless
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
       return prepareSearchSpaceForRun(revised, options, scriptPath);
@@ -88,7 +89,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         previousResult: result,
         round,
         workDir,
-        agent: options.agent,
+        headless,
         options,
         scriptPath,
         searchSpacePath,
@@ -101,7 +102,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       invocation,
       searchSpace: confirmed,
       workDir,
-      agent: options.agent,
+      headless,
       scriptPath,
       trials: round === 0 ? options.trials : options.refineTrials ?? options.trials,
       options,
@@ -130,6 +131,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
 
 export async function analyzeOnly(script: string, options: {
   agent: string;
+  model?: string;
+  reasoningEffort?: RunOptions["reasoningEffort"];
   json: boolean;
   output?: string;
   workDir: string;
@@ -139,7 +142,7 @@ export async function analyzeOnly(script: string, options: {
   await access(scriptPath, constants.R_OK);
   const workDir = path.resolve(options.workDir);
   const invocation = detectInvocation(scriptPath, options.command);
-  const searchSpace = withEffectiveOptunaSettings(await analyzeScript({ invocation, workDir, agent: options.agent }), {});
+  const searchSpace = withEffectiveOptunaSettings(await analyzeScript({ invocation, workDir, ...pickHeadlessOptions(options) }), {});
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
@@ -210,7 +213,7 @@ async function runSearchRound(input: {
   invocation: ReturnType<typeof detectInvocation>;
   searchSpace: SearchSpace;
   workDir: string;
-  agent: string;
+  headless: HeadlessOptions;
   scriptPath: string;
   trials: number;
   options: RunOptions;
@@ -223,17 +226,17 @@ async function runSearchRound(input: {
         invocation: input.invocation,
         searchSpace: input.searchSpace,
         workDir: input.workDir,
-        agent: input.agent
+        ...input.headless
       })
     : input.invocation;
   const runnerPath = path.join(input.workDir, `${path.basename(input.scriptPath, path.extname(input.scriptPath))}_optuna.py`);
-  writeStatus(`Phase 2: generating Optuna wrapper with headless ${input.agent}...`);
+  writeStatus(`Phase 2: generating Optuna wrapper with ${formatHeadlessLabel(input.headless)}...`);
   writeStatus("This can take a minute on first run.");
   await requestWrapperGeneration({
     invocation: executionInvocation,
     searchSpace: input.searchSpace,
     workDir: input.workDir,
-    agent: input.agent,
+    ...input.headless,
     outputPath: runnerPath
   });
   writeStatus(`Writing Optuna runner: ${styles.dim(runnerPath)}`);
@@ -266,20 +269,20 @@ async function refineSearchSpaceForRound(input: {
   previousResult: StudyResult;
   round: number;
   workDir: string;
-  agent: string;
+  headless: HeadlessOptions;
   options: RunOptions;
   scriptPath: string;
   searchSpacePath: string;
   roundSearchSpacePath: string;
 }): Promise<SearchSpace> {
-  writeStatus(`Phase 3: refining search space for round ${input.round + 1} with headless ${input.agent}...`);
+  writeStatus(`Phase 3: refining search space for round ${input.round + 1} with ${formatHeadlessLabel(input.headless)}...`);
   const refined = await refineSearchSpaceFromTrials({
     invocation: input.invocation,
     searchSpace: input.current,
     trialSummary: summarizeTrialResults(input.previousResult, input.current),
     round: input.round,
     workDir: input.workDir,
-    agent: input.agent
+    ...input.headless
   });
   writeStatus(`Refinement complete: ${refined.parameters.length} parameter(s) proposed.`, "success");
   const prepared = await prepareSearchSpaceForRun(refined, input.options, input.scriptPath);
@@ -289,13 +292,13 @@ async function refineSearchSpaceForRound(input: {
     yes: input.options.yes || input.options.refineMode === "auto",
     ask: input.options.ask,
     revise: async (current, feedback) => {
-      writeStatus(`Phase 3b: revising refined space with headless ${input.agent}...`);
+      writeStatus(`Phase 3b: revising refined space with ${formatHeadlessLabel(input.headless)}...`);
       const revised = await reviseSearchSpace({
         invocation: input.invocation,
         searchSpace: current,
         feedback,
         workDir: input.workDir,
-        agent: input.agent
+        ...input.headless
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
       return prepareSearchSpaceForRun(revised, input.options, input.scriptPath);
@@ -418,8 +421,7 @@ async function prepareModifiedInvocation(input: {
   invocation: ReturnType<typeof detectInvocation>;
   searchSpace: SearchSpace;
   workDir: string;
-  agent: string;
-}): Promise<ReturnType<typeof detectInvocation>> {
+} & HeadlessOptions): Promise<ReturnType<typeof detectInvocation>> {
   const extension = path.extname(input.invocation.script);
   const baseName = path.basename(input.invocation.script, extension);
   const modifiedPath = path.join(input.workDir, `${baseName}_modified${extension}`);
@@ -432,6 +434,8 @@ async function prepareModifiedInvocation(input: {
     searchSpace: input.searchSpace,
     workDir: input.workDir,
     agent: input.agent,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
     outputPath: modifiedPath
   });
   return {
@@ -468,13 +472,27 @@ async function loadConfiguredSearchSpace(configPath: string): Promise<SearchSpac
 async function runAnalysisPhase(input: {
   invocation: ReturnType<typeof detectInvocation>;
   workDir: string;
-  agent: string;
-}): Promise<SearchSpace> {
-  writeStatus(`Phase 1: analyzing ${styles.dim(input.invocation.script)} with headless ${input.agent}...`);
+} & HeadlessOptions): Promise<SearchSpace> {
+  writeStatus(`Phase 1: analyzing ${styles.dim(input.invocation.script)} with ${formatHeadlessLabel(input)}...`);
   writeStatus("This can take a minute on first run.");
   const searchSpace = await analyzeScript(input);
   writeStatus(`Analysis complete: ${searchSpace.parameters.length} parameter(s) proposed.`, "success");
   return searchSpace;
+}
+
+function pickHeadlessOptions(options: HeadlessOptions): HeadlessOptions {
+  return {
+    agent: options.agent,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort
+  };
+}
+
+function formatHeadlessLabel(options: HeadlessOptions): string {
+  const details = [options.model, options.reasoningEffort ? `effort=${options.reasoningEffort}` : undefined]
+    .filter(Boolean)
+    .join(", ");
+  return details ? `headless ${options.agent} (${details})` : `headless ${options.agent}`;
 }
 
 async function resolveReadableScript(script: string): Promise<string> {

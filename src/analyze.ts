@@ -9,24 +9,16 @@ import {
   renderReviseSearchSpacePrompt,
   type TrialResultSummary
 } from "./prompts.js";
-import type { Invocation, SearchSpace } from "./types.js";
+import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export async function analyzeScript(input: {
   invocation: Invocation;
   workDir: string;
-  agent: string;
-}): Promise<SearchSpace> {
+} & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "analyze_prompt.md");
   await writeFile(promptPath, renderAnalyzePrompt({ invocation: input.invocation }), "utf8");
-  const output = await retryHeadless([
-    input.agent,
-    "--prompt-file",
-    promptPath,
-    "--work-dir",
-    path.dirname(input.invocation.script),
-    "--json"
-  ]);
+  const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   return extractHeadlessJson(output);
 }
 
@@ -34,9 +26,8 @@ export async function requestWrapperGeneration(input: {
   invocation: Invocation;
   searchSpace: SearchSpace;
   workDir: string;
-  agent: string;
   outputPath: string;
-}): Promise<void> {
+} & HeadlessOptions): Promise<void> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "generate_prompt.md");
   await writeFile(
@@ -48,14 +39,7 @@ export async function requestWrapperGeneration(input: {
     }),
     "utf8"
   );
-  await retryHeadless([
-    input.agent,
-    "--prompt-file",
-    promptPath,
-    "--work-dir",
-    path.dirname(input.invocation.script),
-    "--json"
-  ]);
+  await retryHeadless(buildHeadlessArgs(input, promptPath));
 }
 
 export async function reviseSearchSpace(input: {
@@ -63,8 +47,7 @@ export async function reviseSearchSpace(input: {
   searchSpace: SearchSpace;
   feedback: string;
   workDir: string;
-  agent: string;
-}): Promise<SearchSpace> {
+} & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "revise_prompt.md");
   await writeFile(
@@ -76,14 +59,7 @@ export async function reviseSearchSpace(input: {
     }),
     "utf8"
   );
-  const output = await retryHeadless([
-    input.agent,
-    "--prompt-file",
-    promptPath,
-    "--work-dir",
-    path.dirname(input.invocation.script),
-    "--json"
-  ]);
+  const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   return extractHeadlessJson(output);
 }
 
@@ -93,8 +69,7 @@ export async function refineSearchSpaceFromTrials(input: {
   trialSummary: TrialResultSummary;
   round: number;
   workDir: string;
-  agent: string;
-}): Promise<SearchSpace> {
+} & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, `refine_prompt.round_${input.round}.md`);
   await writeFile(
@@ -107,14 +82,7 @@ export async function refineSearchSpaceFromTrials(input: {
     }),
     "utf8"
   );
-  const output = await retryHeadless([
-    input.agent,
-    "--prompt-file",
-    promptPath,
-    "--work-dir",
-    path.dirname(input.invocation.script),
-    "--json"
-  ]);
+  const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   return extractHeadlessJson(output);
 }
 
@@ -122,9 +90,8 @@ export async function generateModifiedScript(input: {
   invocation: Invocation;
   searchSpace: SearchSpace;
   workDir: string;
-  agent: string;
   outputPath: string;
-}): Promise<string> {
+} & HeadlessOptions): Promise<string> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "modified_prompt.md");
   await writeFile(
@@ -136,14 +103,7 @@ export async function generateModifiedScript(input: {
     }),
     "utf8"
   );
-  const output = await retryHeadless([
-    input.agent,
-    "--prompt-file",
-    promptPath,
-    "--work-dir",
-    path.dirname(input.invocation.script),
-    "--json"
-  ]);
+  const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   const parsed = extractHeadlessObject(output);
   if (typeof parsed.code !== "string" || parsed.code.trim().length === 0) {
     throw new Error("headless modified script response must contain a non-empty code string");
@@ -151,6 +111,18 @@ export async function generateModifiedScript(input: {
   await writeFile(input.outputPath, parsed.code, "utf8");
   await chmod(input.outputPath, 0o755);
   return input.outputPath;
+}
+
+function buildHeadlessArgs(input: { invocation: Invocation } & HeadlessOptions, promptPath: string): string[] {
+  const args = [input.agent];
+  if (input.model) {
+    args.push("--model", input.model);
+  }
+  if (input.reasoningEffort) {
+    args.push("--reasoning-effort", input.reasoningEffort);
+  }
+  args.push("--prompt-file", promptPath, "--work-dir", path.dirname(input.invocation.script), "--json");
+  return args;
 }
 
 async function retryHeadless(args: string[]): Promise<string> {

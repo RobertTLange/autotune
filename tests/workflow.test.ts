@@ -7,6 +7,7 @@ import { writeSearchSpace } from "../src/search-space.js";
 describe("runAutotune", () => {
   const originalPath = process.env.PATH;
   const originalHeadless = process.env.AUTOTUNE_HEADLESS_BIN;
+  const originalHeadlessArgLog = process.env.AUTOTUNE_HEADLESS_ARG_LOG;
 
   afterEach(() => {
     process.env.PATH = originalPath;
@@ -14,6 +15,11 @@ describe("runAutotune", () => {
       delete process.env.AUTOTUNE_HEADLESS_BIN;
     } else {
       process.env.AUTOTUNE_HEADLESS_BIN = originalHeadless;
+    }
+    if (originalHeadlessArgLog === undefined) {
+      delete process.env.AUTOTUNE_HEADLESS_ARG_LOG;
+    } else {
+      process.env.AUTOTUNE_HEADLESS_ARG_LOG = originalHeadlessArgLog;
     }
   });
 
@@ -80,18 +86,23 @@ describe("runAutotune", () => {
     const binDir = path.join(dir, "bin");
     const script = path.join(dir, "train.py");
     const output = path.join(dir, "space.yaml");
+    const argLog = path.join(dir, "headless-args.jsonl");
     await writeFile(script, "print('autotune_metric=1')\n", "utf8");
     await writeFakeHeadless(path.join(binDir, "headless"));
     process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
 
     await analyzeOnly(script, {
       agent: "claude",
+      model: "claude-opus-4-6",
+      reasoningEffort: "xhigh",
       json: false,
       output,
       workDir: path.join(dir, ".autotune")
     });
 
     expect(await readFile(output, "utf8")).toContain("reasoning: test metric");
+    expect(await readFile(argLog, "utf8")).toContain('"--model","claude-opus-4-6","--reasoning-effort","xhigh"');
   });
 
   it("renders previous results and resumes from an existing runner", async () => {
@@ -366,6 +377,48 @@ describe("runAutotune", () => {
       await readFile(path.join(workDir, "results.round_1.json"), "utf8")
     );
   });
+
+  it("passes model and reasoning effort to each headless phase", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-headless-options-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const argLog = path.join(dir, "headless-args.jsonl");
+    await writeFile(script, "x = 0\nprint('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
+
+    await runAutotune(script, {
+      trials: 2,
+      refineRounds: 1,
+      refineTrials: 2,
+      refineMode: "auto",
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      json: true,
+      yes: true,
+      config: await writeWrapperSearchSpace(dir)
+    });
+
+    const calls = (await readFile(argLog, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as string[]);
+    const agentCalls = calls.filter((args) => !args.includes("--check"));
+    expect(agentCalls.length).toBeGreaterThanOrEqual(3);
+    for (const args of agentCalls) {
+      expect(args).toEqual(expect.arrayContaining(["codex", "--model", "gpt-5.5", "--reasoning-effort", "high"]));
+    }
+  });
 });
 
 async function captureStderr(action: () => Promise<void>): Promise<string[]> {
@@ -438,6 +491,9 @@ async function writeFakeHeadless(filePath: string): Promise<void> {
 if (process.argv.includes('--check')) {
   console.log('claude ok');
   process.exit(0);
+}
+if (process.env.AUTOTUNE_HEADLESS_ARG_LOG) {
+  require('node:fs').appendFileSync(process.env.AUTOTUNE_HEADLESS_ARG_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
 }
 if (process.argv.join(' ').includes('modified_prompt')) {
   console.log(JSON.stringify({
