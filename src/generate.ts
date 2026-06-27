@@ -159,6 +159,7 @@ def run_trial_command(argv):
 
 def objective(trial):
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
+    print(f"[{timestamp()}] Trial {trial.number} params {json.dumps(params, sort_keys=True)}", file=sys.stderr, flush=True)
     argv = build_argv(params)
     result = run_trial_command(argv)
     if result["returncode"] != 0:
