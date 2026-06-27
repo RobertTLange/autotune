@@ -1,8 +1,34 @@
-# autotune
+<p align="center">
+  <img src="docs/logo.png" alt="Autotune hyperparameter optimization flow" width="200" style="border-radius: 24px;" />
+</p>
 
-Automatic hyperparameter optimization CLI for scripts that print an `autotune_metric=<value>` line.
+<h1 align="center">Autotune</h1>
 
-`autotune` analyzes a script with `headless`, proposes an Optuna search space, asks for confirmation or feedback, then runs an Optuna study without modifying the original script. If a script is missing CLI parsing or metric output, autotune can ask the agent to generate a compatible copy for the run.
+<p align="center">
+  Agent-assisted hyperparameter optimization for scripts that report one metric line.
+</p>
+
+<p align="center">
+  <img alt="Node.js 22+" src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white" />
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-ESM-3178C6?logo=typescript&logoColor=white" />
+  <img alt="Optuna" src="https://img.shields.io/badge/Optuna-powered-214478" />
+  <img alt="npm package" src="https://img.shields.io/badge/npm-%40roberttlange%2Fautotune-CB3837?logo=npm&logoColor=white" />
+</p>
+
+Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation or feedback, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
+
+## How It Works
+
+Autotune operates in clear phases:
+
+1. **Prerequisites**: checks `python3`, Optuna, the selected `headless` agent, and the target runtime.
+2. **Analysis**: asks the agent to inspect your script and propose tunable parameters, direction, sampler, and pruner.
+3. **Confirmation**: shows the proposed space and accepts `Y`, `feedback`, `edit`, or `n`.
+4. **Compatibility**: when needed, asks the agent to generate a modified copy that adds CLI flags or `autotune_metric` output.
+5. **Optuna Run**: writes a Python runner, launches trials, reports progress, and stores results.
+6. **Refinement**: optionally runs extra agentic rounds that revise the search space from completed trial evidence.
+
+The original script is left untouched.
 
 ## Requirements
 
@@ -10,7 +36,7 @@ Automatic hyperparameter optimization CLI for scripts that print an `autotune_me
 - `python3` 3.9+
 - Python package: `optuna`
 - `headless` CLI, or `npx -y @roberttlange/headless`
-- The runtime for the script being tuned, such as `python3`, `bash`, `julia`, `Rscript`, or `ruby`
+- The runtime for the script being tuned, such as `python3`, `bash`, `julia`, `Rscript`, `ruby`, or a compiled binary
 
 ## Install
 
@@ -37,10 +63,12 @@ autotune_metric=0.9432
 
 If multiple metric lines are printed, the last one wins. If a trial exits non-zero or does not print a metric, that trial is pruned and the study continues.
 
-## Usage
+Autotune prompts the agent to keep objective measurement fixed. Proposed parameters should change the candidate behavior being evaluated, not the metric formula, evaluation input set, aggregation, thresholds, baselines, reporting, or measurement-only random seeds.
+
+## Core Usage
 
 ```bash
-autotune run train.py --trials 50 --direction maximize
+autotune run train.py --trials 50 --agent codex
 ```
 
 Common flags:
@@ -55,7 +83,7 @@ autotune run train.py \
   --output results.json
 ```
 
-When `--direction`, `--sampler`, or `--pruner` are omitted, autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
+When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
 
 By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
 
@@ -71,9 +99,31 @@ Run search with this space? [Y/feedback/edit/n]
 
 Use `--yes` only when you want to accept the first proposed search space without review.
 
-If the analyzed script does not accept the proposed CLI flags or does not print `autotune_metric=<value>`, autotune can ask `headless` to generate a modified copy. The original script is left untouched, and the Optuna runner invokes the modified copy.
+## Commands
 
-Autotune prompts the agent to keep objective measurement fixed. Proposed parameters should change the candidate behavior being evaluated, not the metric formula, evaluation input set, aggregation, thresholds, baselines, reporting, or measurement-only random seeds.
+```bash
+autotune analyze <script> [--json] [--output search_space.yaml]
+autotune doctor [script] [--agent codex]
+autotune run <script> --trials N [flags]
+autotune results [results.json] [--top 10] [--json]
+autotune resume --storage sqlite:///study.db --trials N
+```
+
+Use `doctor` to verify prerequisites before a run:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH autotune doctor examples/mnist_cnn_no_cli.py --agent codex
+```
+
+Use built-in help for full flag details:
+
+```bash
+autotune --help
+autotune run --help
+autotune results --help
+```
+
+## Runtime Commands
 
 Use a custom runtime command without invoking a shell:
 
@@ -92,13 +142,15 @@ autotune run model.cpp \
 
 `--build-command` and `--command` support `{script}` and `{work-dir}` placeholders.
 
-Skip Phase 1 analysis with a known search space:
+Skip analysis with a known search space:
 
 ```bash
 autotune run train.py --trials 20 --config search_space.yaml --yes
 ```
 
-Run multiple agentic refinement rounds:
+## Agentic Refinement
+
+Run multiple refinement rounds:
 
 ```bash
 autotune run train.py \
@@ -108,12 +160,9 @@ autotune run train.py \
   --refine-mode ask
 ```
 
-After each round, autotune summarizes completed trials and asks the agent to revise the search space.
-The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove
-variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before
-each revised space; `--refine-mode auto` accepts revised spaces automatically. Each round starts a new
-Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json`. The latest round is also
-written to `search_space.yaml` and `results.json`.
+After each round, Autotune summarizes completed trials and asks the agent to revise the search space. The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before each revised space; `--refine-mode auto` accepts revised spaces automatically.
+
+Each round starts a new Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json`. The latest round is also written to `search_space.yaml` and `results.json`.
 
 ## Search Space Format
 
@@ -145,25 +194,11 @@ optuna:
 reasoning: accuracy-style metric
 ```
 
-## Commands
+## Examples
 
-```bash
-autotune analyze <script> [--json] [--output search_space.yaml]
-autotune doctor [script] [--agent codex]
-autotune run <script> --trials N [flags]
-autotune results [results.json] [--top 10] [--json]
-autotune resume --storage sqlite:///study.db --trials N
-```
+### MNIST CNN
 
-Use `doctor` to verify prerequisites before a run:
-
-```bash
-PATH=$PWD/.venv/bin:$PATH autotune doctor examples/mnist_cnn_no_cli.py --agent codex
-```
-
-## MNIST CNN Example
-
-`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so autotune asks the agent to create a compatible copy for the run.
+`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
 
 Install runtime packages first if needed:
 
@@ -181,9 +216,9 @@ PATH=$PWD/.venv/bin:$PATH autotune run examples/mnist_cnn_no_cli.py \
   --json
 ```
 
-Expected behavior: the agent proposes a search space, autotune asks for confirmation or feedback, then generates a compatible copy that accepts hyperparameter flags and prints validation accuracy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+Expected behavior: the agent proposes a search space, Autotune asks for confirmation or feedback, then generates a compatible copy that accepts hyperparameter flags and prints validation accuracy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
 
-## C++ Example
+### C++
 
 `examples/pid_controller.cpp` is a single-file C++ simulation with manual flag parsing and built-in metric output. It tunes PID controller gains against a fixed tracking scenario with a disturbance.
 
