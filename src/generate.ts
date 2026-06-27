@@ -18,6 +18,7 @@ export function renderOptunaRunner(input: {
     study_name: input.studyName,
     parameters: input.searchSpace.parameters,
     results_path: input.resultsPath,
+    max_output_bytes: 65536,
     timeout
   };
 
@@ -27,6 +28,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -69,14 +71,91 @@ def parse_metric(stdout):
     raise ValueError("No autotune_metric= line found in trial stdout")
 
 
+class OutputCapture:
+    def __init__(self, max_chars):
+        self.max_chars = max_chars
+        self.tail = ""
+        self.pending = ""
+        self.metric = None
+
+    def feed(self, text, parse_metrics=False):
+        self.tail = (self.tail + text)[-self.max_chars:]
+        if parse_metrics:
+            self.pending += text
+            self.pending = self.pending[-self.max_chars:]
+            while "\\n" in self.pending:
+                line, self.pending = self.pending.split("\\n", 1)
+                self.parse_metric_line(line)
+
+    def finish(self, parse_metrics=False):
+        if parse_metrics and self.pending:
+            self.parse_metric_line(self.pending)
+            self.pending = ""
+
+    def parse_metric_line(self, line):
+        if line.startswith("autotune_metric="):
+            self.metric = float(line.split("=", 1)[1].strip())
+
+
+def drain_stream(stream, capture, parse_metrics=False):
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            capture.feed(chunk, parse_metrics=parse_metrics)
+    finally:
+        capture.finish(parse_metrics=parse_metrics)
+
+
+def kill_process_tree(process):
+    if hasattr(os, "killpg"):
+        os.killpg(process.pid, 9)
+    else:
+        process.kill()
+
+
+def run_trial_command(argv):
+    max_output_bytes = CONFIG.get("max_output_bytes", 65536)
+    stdout_capture = OutputCapture(max_output_bytes)
+    stderr_capture = OutputCapture(max_output_bytes)
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=hasattr(os, "setsid"),
+    )
+    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True))
+    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture))
+    stdout_thread.start()
+    stderr_thread.start()
+    try:
+        returncode = process.wait(timeout=CONFIG["timeout"])
+    except subprocess.TimeoutExpired as exc:
+        kill_process_tree(process)
+        returncode = process.wait()
+        raise RuntimeError(f"Trial command timed out after {CONFIG['timeout']}s") from exc
+    finally:
+        stdout_thread.join()
+        stderr_thread.join()
+    return {
+        "returncode": returncode,
+        "stdout": stdout_capture.tail,
+        "stderr": stderr_capture.tail,
+        "metric": stdout_capture.metric,
+    }
+
+
 def objective(trial):
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
     argv = build_argv(params)
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=CONFIG["timeout"])
-    if result.returncode != 0:
-        raise RuntimeError(f"Trial command exited {result.returncode}: {result.stderr[-1000:]}")
+    result = run_trial_command(argv)
+    if result["returncode"] != 0:
+        raise RuntimeError(f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
     try:
-        return parse_metric(result.stdout)
+        return result["metric"] if result["metric"] is not None else parse_metric(result["stdout"])
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 

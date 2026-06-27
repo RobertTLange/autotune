@@ -1,6 +1,9 @@
-import { spawn } from "node:child_process";
 import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
+import { runCommand } from "./process.js";
+
+const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
+const HEADLESS_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 export function extractHeadlessJson(output: string): SearchSpace {
   const candidates = collectCandidates(output, "search-space");
@@ -50,29 +53,19 @@ export async function runHeadless(args: string[], options: { cwd: string; bin?: 
 }
 
 async function spawnCapture(bin: string, args: string[], cwd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
+  try {
+    const { stdout, stderr } = await runCommand(bin, args, {
+      cwd,
+      timeoutMs: HEADLESS_TIMEOUT_MS,
+      maxOutputBytes: HEADLESS_MAX_OUTPUT_BYTES
     });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      const output = stdout + (stderr ? `\n${stderr}` : "");
-      if (code === 0) {
-        resolve(output);
-      } else {
-        reject(new Error(`headless exited with ${code}: ${output.trim()}`));
-      }
-    });
-  });
+    return stdout + (stderr ? `\n${stderr}` : "");
+  } catch (error) {
+    if (isMissingExecutable(error)) {
+      throw error;
+    }
+    throw new Error(`headless failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function isMissingExecutable(error: unknown): boolean {

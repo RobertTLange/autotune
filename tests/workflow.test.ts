@@ -52,7 +52,7 @@ describe("runAutotune", () => {
     const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
     const result = JSON.parse(await readFile(path.join(workDir, "results.json"), "utf8"));
     expect(searchSpace).toContain("cli_flag: --x");
-    expect(runner).toContain("subprocess.run(argv");
+    expect(runner).toContain("subprocess.Popen(");
     expect(result.best_trial.params).toEqual({ x: 0.5 });
     expect(progress).toEqual(
       expect.arrayContaining([

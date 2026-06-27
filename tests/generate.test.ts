@@ -18,7 +18,10 @@ describe("renderOptunaRunner", () => {
       outputPath: "/tmp/runner.py",
       resultsPath: "/tmp/results.json"
     });
-    expect(code).toContain("subprocess.run(argv");
+    expect(code).toContain("subprocess.Popen(");
+    expect(code).toContain("class OutputCapture");
+    expect(code).toContain("self.pending = self.pending[-self.max_chars:]");
+    expect(code).toContain("threading.Thread");
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
