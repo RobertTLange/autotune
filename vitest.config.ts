@@ -13,8 +13,7 @@ export default defineConfig({
         functions: 80,
         lines: 80
       },
-      include: ["src/**/*.ts"],
-      exclude: ["src/cli.ts"]
+      include: ["src/**/*.ts"]
     }
   }
 });

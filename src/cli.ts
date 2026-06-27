@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
+import { pathToFileURL } from "node:url";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
-const program = new Command();
+export function createProgram(): Command {
+  const program = new Command();
 
-program
-  .name("autotune")
-  .description("Automatic hyperparameter optimization CLI powered by headless and Optuna.")
-  .version("0.1.0");
+  program
+    .name("autotune")
+    .description("Automatic hyperparameter optimization CLI powered by headless and Optuna.")
+    .version("0.1.0");
 
-program
+  program
   .command("run")
   .argument("<script>", "script or executable to optimize")
   .requiredOption("--trials <n>", "number of Optuna trials", parsePositiveInt)
@@ -38,7 +40,7 @@ program
     await runAutotune(script, normalizeRunOptions(raw, command));
   });
 
-program
+  program
   .command("analyze")
   .argument("<script>", "script or executable to analyze")
   .option("--agent <name>", "headless agent", "claude")
@@ -62,7 +64,7 @@ program
     await analyzeOnly(script, { ...raw, reasoningEffort: normalizeReasoningEffort(raw) });
   });
 
-program
+  program
   .command("doctor")
   .argument("[script]", "optional script to check runtime detection")
   .option("--agent <name>", "headless agent", "claude")
@@ -71,7 +73,7 @@ program
     await doctorAutotune({ script, agent: options.agent, command: options.command });
   });
 
-program
+  program
   .command("results")
   .argument("[dir]", "artifact directory or results JSON file", ".autotune")
   .option("--json", "print JSON", false)
@@ -80,7 +82,7 @@ program
     await showResults({ dir, json: options.json, top: options.top });
   });
 
-program
+  program
   .command("resume")
   .requiredOption("--storage <uri>", "Optuna storage URI")
   .option("--study-name <name>", "Optuna study name")
@@ -92,12 +94,17 @@ program
     await resumeStudy(options);
   });
 
-program.parseAsync(process.argv).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+  return program;
+}
 
-function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
+if (isMainModule()) {
+  createProgram().parseAsync(process.argv).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
+
+export function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
   return {
     trials: Number(raw.trials),
     direction: optionValue(raw, command, "direction") as Direction | undefined,
@@ -122,7 +129,7 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
   };
 }
 
-function normalizeReasoningEffort(raw: Record<string, unknown>): ReasoningEffort | undefined {
+export function normalizeReasoningEffort(raw: Record<string, unknown>): ReasoningEffort | undefined {
   return (
     typeof raw.reasoningEffort === "string"
       ? raw.reasoningEffort
@@ -140,7 +147,7 @@ function optionValue(raw: Record<string, unknown>, command: Command, name: strin
   return command.getOptionValueSource(name) === undefined ? undefined : value;
 }
 
-function parsePositiveInt(value: string): number {
+export function parsePositiveInt(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`expected positive integer, got ${value}`);
@@ -148,10 +155,14 @@ function parsePositiveInt(value: string): number {
   return parsed;
 }
 
-function parseNonNegativeInt(value: string): number {
+export function parseNonNegativeInt(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new Error(`expected non-negative integer, got ${value}`);
   }
   return parsed;
+}
+
+function isMainModule(): boolean {
+  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 }
