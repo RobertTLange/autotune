@@ -62,6 +62,23 @@ Use `--effort low|medium|high|xhigh` as a shorter alias for `--reasoning-effort`
 
 When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
 
+By default, each run gets its own timestamped artifact directory next to the target script:
+
+```text
+autotune/
+  latest.json
+  <script-name>/
+    latest.json
+    runs/
+      2026-06-27T181650000Z-<run-id>/
+        analyze_prompt.md
+        search_space.yaml
+        train_optuna.py
+        results.json
+```
+
+`latest.json` points at the newest run, so `autotune results` can read the latest run from an `autotune/` directory. If the script lives in a subdirectory, run `autotune results <script-dir>/autotune` or run the command from that script directory. The script name keeps its extension, such as `train.py`, so sibling scripts do not share artifact roots. Pass `--work-dir <dir>` when you want an exact artifact directory instead of the timestamped default. Pass `--output <file>` when you want to copy the final JSON results to a specific file.
+
 By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
 
 ```text
@@ -82,7 +99,7 @@ Use `--yes` only when you want to accept the first proposed search space without
 autotune analyze <script> [--agent codex] [--model MODEL] [--reasoning-effort high]
 autotune doctor [script] [--agent codex]
 autotune run <script> --trials N [--agent codex] [--model MODEL] [--reasoning-effort high]
-autotune results [results.json] [--top 10] [--json]
+autotune results [autotune|run-dir|results.json] [--top 10] [--json]
 autotune resume --storage sqlite:///study.db --trials N
 ```
 
@@ -139,7 +156,7 @@ autotune run train.py \
 
 After each round, Autotune summarizes completed trials and asks the agent to revise the search space. The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before each revised space; `--refine-mode auto` accepts revised spaces automatically.
 
-Each round starts a new Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json`. The latest round is also written to `search_space.yaml` and `results.json`.
+Each round starts a new Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json` inside the run directory. The latest round is also written to `search_space.yaml` and `results.json`.
 
 ## Search Space Format
 

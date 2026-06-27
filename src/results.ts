@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
+import { resolveResultsFile } from "./artifacts.js";
 import { formatNumber, formatTable, styles } from "./terminal.js";
 
 export interface TrialResult {
@@ -17,8 +17,8 @@ export interface StudyResult {
   all_trials: TrialResult[];
 }
 
-export async function readResults(location = ".autotune"): Promise<StudyResult> {
-  const file = location.endsWith(".json") ? location : path.join(location, "results.json");
+export async function readResults(location = "autotune"): Promise<StudyResult> {
+  const file = await resolveResultsFile(location);
   return JSON.parse(await readFile(file, "utf8")) as StudyResult;
 }
 

@@ -7,6 +7,7 @@ import {
   refineSearchSpaceFromTrials,
   reviseSearchSpace
 } from "./analyze.js";
+import { resolveRunArtifactLayout, resolveRunDirectory, writeLatestRun } from "./artifacts.js";
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation, splitCommand } from "./detect.js";
@@ -30,7 +31,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
 
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
-  const workDir = path.resolve(options.workDir);
+  const artifactLayout = resolveRunArtifactLayout(scriptPath, options.workDir);
+  const workDir = artifactLayout.workDir;
   await mkdir(workDir, { recursive: true });
   const commandContext = { scriptPath, workDir };
   if (options.buildCommand) {
@@ -42,7 +44,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const refineRounds = options.refineRounds ?? 0;
   const initialBudget = searchBudgetForOptions(options, refineRounds);
   const searchSpacePath = path.join(workDir, "search_space.yaml");
-  const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
+  const finalResultsPath = path.join(workDir, "results.json");
+  const outputResultsPath = options.output ? path.resolve(options.output) : undefined;
   const studyName = options.studyName ?? defaultStudyName(scriptPath);
   const configuredSearchSpace = options.config
     ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
@@ -132,12 +135,17 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   if (!result) {
     throw new Error("no trial results produced");
   }
+  if (outputResultsPath && path.resolve(outputResultsPath) !== path.resolve(finalResultsPath)) {
+    await mkdir(path.dirname(outputResultsPath), { recursive: true });
+    await copyFile(finalResultsPath, outputResultsPath);
+  }
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
   } else {
     console.log(renderResults(result));
-    writeStatus(`Results saved to ${styles.dim(finalResultsPath)}`, "success");
+    writeStatus(`Results saved to ${styles.dim(outputResultsPath ?? finalResultsPath)}`, "success");
   }
+  await writeLatestRun(artifactLayout);
 }
 
 export async function analyzeOnly(script: string, options: {
@@ -192,7 +200,7 @@ export async function resumeStudy(options: {
   direction: "maximize" | "minimize";
   studyName?: string;
 }): Promise<void> {
-  const workDir = path.resolve(options.workDir);
+  const workDir = await resolveRunDirectory(options.workDir);
   const searchSpace = await readSearchSpace(path.join(workDir, "search_space.yaml"));
   const runnerPath = await findRunner(workDir);
   const resultsPath = path.join(workDir, "results.json");

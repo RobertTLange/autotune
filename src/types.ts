@@ -52,7 +52,7 @@ export interface RunOptions {
   sampler?: Sampler;
   pruner?: Pruner;
   nJobs: number;
-  workDir: string;
+  workDir?: string;
   agent: string;
   model?: string;
   reasoningEffort?: ReasoningEffort;

@@ -35,7 +35,7 @@ export function createProgram(): Command {
   .addOption(new Option("--refine-mode <mode>", "refinement approval mode").choices(["ask", "auto"]).default("ask"))
   .option("--json", "print JSON results", false)
   .option("--output <file>", "write JSON results to file")
-  .option("--work-dir <dir>", "artifact directory", ".autotune")
+  .option("--work-dir <dir>", "artifact directory")
   .option("--yes", "skip confirmation prompts", false)
   .option("--config <file>", "pre-defined search space YAML/JSON")
   .action(async (script: string, raw: Record<string, unknown>, command: Command) => {
@@ -51,7 +51,7 @@ export function createProgram(): Command {
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--json", "print JSON search space", false)
   .option("--output <file>", "write search space YAML to file")
-  .option("--work-dir <dir>", "artifact directory", ".autotune")
+  .option("--work-dir <dir>", "artifact directory", "autotune")
   .option("--command <command>", "override script invocation command")
   .action(async (script: string, raw: {
     agent: string;
@@ -77,7 +77,7 @@ export function createProgram(): Command {
 
   program
   .command("results")
-  .argument("[dir]", "artifact directory or results JSON file", ".autotune")
+  .argument("[dir]", "artifact directory or results JSON file", "autotune")
   .option("--json", "print JSON", false)
   .option("--top <n>", "number of top trials", parsePositiveInt, 10)
   .action(async (dir: string, options: { json: boolean; top: number }) => {
@@ -90,7 +90,7 @@ export function createProgram(): Command {
   .option("--study-name <name>", "Optuna study name")
   .requiredOption("--trials <n>", "additional trials", parsePositiveInt)
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
-  .option("--work-dir <dir>", "artifact directory", ".autotune")
+  .option("--work-dir <dir>", "artifact directory", "autotune")
   .addOption(new Option("--direction <direction>", "fallback direction").choices(["maximize", "minimize"]).default("maximize"))
   .action(async (options: { storage: string; studyName?: string; trials: number; nJobs: number; workDir: string; direction: Direction }) => {
     await resumeStudy(options);
@@ -113,7 +113,7 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     sampler: optionValue(raw, command, "sampler") as Sampler | undefined,
     pruner: optionValue(raw, command, "pruner") as Pruner | undefined,
     nJobs: Number(raw.nJobs),
-    workDir: String(raw.workDir),
+    workDir: typeof raw.workDir === "string" ? raw.workDir : undefined,
     agent: String(raw.agent),
     model: typeof raw.model === "string" ? raw.model : undefined,
     reasoningEffort: normalizeReasoningEffort(raw),

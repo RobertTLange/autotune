@@ -69,6 +69,41 @@ describe("runAutotune", () => {
     );
   });
 
+  it("uses a timestamped default run directory next to the script", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-default-workdir-"));
+    const binDir = path.join(dir, "bin");
+    const script = path.join(dir, "train.py");
+    const output = path.join(dir, "chosen-results.json");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      agent: "claude",
+      json: true,
+      output,
+      yes: true
+    });
+
+    const latestPath = path.join(dir, "autotune", "train.py", "latest.json");
+    const latest = JSON.parse(await readFile(latestPath, "utf8")) as { run_dir: string; work_dir: string };
+    const rootLatest = JSON.parse(await readFile(path.join(dir, "autotune", "latest.json"), "utf8")) as { run_dir: string };
+    const runDir = path.join(dir, "autotune", "train.py", latest.run_dir);
+    expect(latest.run_dir).toMatch(/^runs\/\d{4}-\d{2}-\d{2}T\d{6}\d{3}Z-[0-9a-f-]{36}$/);
+    expect(rootLatest.run_dir).toBe(path.join("train.py", latest.run_dir));
+    expect(latest.work_dir).toBe(runDir);
+    expect(await readFile(path.join(runDir, "results.json"), "utf8")).toContain("best_trial");
+    expect(await readFile(output, "utf8")).toContain("best_trial");
+    expect(await readFile(path.join(runDir, "analyze_prompt.md"), "utf8")).toContain("initial_trials: 2");
+  });
+
   it("rejects invalid trial counts before spawning tools", async () => {
     await expect(
       runAutotune("train.py", {
