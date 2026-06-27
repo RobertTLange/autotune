@@ -51,6 +51,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const refineRounds = options.refineRounds ?? 0;
   const searchSpacePath = path.join(workDir, "search_space.yaml");
   const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
+  const studyName = options.studyName ?? defaultStudyName(scriptPath);
   const proposed = options.config
     ? await loadConfiguredSearchSpace(options.config)
     : await runAnalysisPhase({ invocation, workDir, ...headless });
@@ -107,6 +108,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       trials: round === 0 ? options.trials : options.refineTrials ?? options.trials,
       options,
       resultsPath: roundResultsPath,
+      studyName: studyNameForRound(studyName, round, refineRounds),
       round,
       totalRounds: refineRounds
     });
@@ -179,6 +181,7 @@ export async function resumeStudy(options: {
   trials: number;
   nJobs: number;
   direction: "maximize" | "minimize";
+  studyName?: string;
 }): Promise<void> {
   const workDir = path.resolve(options.workDir);
   const searchSpace = await readSearchSpace(path.join(workDir, "search_space.yaml"));
@@ -189,10 +192,11 @@ export async function resumeStudy(options: {
     trials: options.trials,
     direction: searchSpace.direction ?? options.direction,
     sampler: searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER,
-    pruner: searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
-    nJobs: options.nJobs,
-    storage: options.storage,
-    output: resultsPath
+      pruner: searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
+      nJobs: options.nJobs,
+      storage: options.storage,
+      studyName: options.studyName,
+      output: resultsPath
   });
   console.log(renderResults(await readResults(resultsPath)));
 }
@@ -218,6 +222,7 @@ async function runSearchRound(input: {
   trials: number;
   options: RunOptions;
   resultsPath: string;
+  studyName: string;
   round: number;
   totalRounds: number;
 }): Promise<StudyResult> {
@@ -244,7 +249,8 @@ async function runSearchRound(input: {
     invocation: executionInvocation,
     searchSpace: input.searchSpace,
     outputPath: runnerPath,
-    resultsPath: input.resultsPath
+    resultsPath: input.resultsPath,
+    studyName: input.studyName
   });
 
   const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
@@ -257,6 +263,7 @@ async function runSearchRound(input: {
     pruner: input.searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
     nJobs: input.options.nJobs,
     storage: input.options.storage,
+    studyName: input.studyName,
     output: input.resultsPath
   });
   writeStatus(`${label}Trials complete.`, "success");
@@ -533,4 +540,12 @@ async function findRunner(workDir: string): Promise<string> {
     throw new Error(`no *_optuna.py runner found in ${workDir}`);
   }
   return path.join(workDir, runner);
+}
+
+function defaultStudyName(scriptPath: string): string {
+  return `${path.basename(scriptPath, path.extname(scriptPath))}_autotune`;
+}
+
+function studyNameForRound(studyName: string, round: number, refineRounds: number): string {
+  return refineRounds > 0 ? `${studyName}_round_${round}` : studyName;
 }

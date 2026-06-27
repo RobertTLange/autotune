@@ -7,6 +7,7 @@ export function renderOptunaRunner(input: {
   searchSpace: SearchSpace;
   outputPath: string;
   resultsPath: string;
+  studyName?: string;
   timeoutSeconds?: number;
 }): string {
   const timeout = input.timeoutSeconds ?? 900;
@@ -14,6 +15,7 @@ export function renderOptunaRunner(input: {
     command: input.invocation.command,
     script: input.invocation.script,
     script_arg_mode: input.invocation.scriptArgument ?? inferScriptArgument(input.invocation),
+    study_name: input.studyName,
     parameters: input.searchSpace.parameters,
     results_path: input.resultsPath,
     timeout
@@ -170,6 +172,7 @@ def main():
     parser.add_argument("--sampler", default="tpe")
     parser.add_argument("--pruner", default="none")
     parser.add_argument("--storage")
+    parser.add_argument("--study-name", default=CONFIG.get("study_name"))
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--output", default=CONFIG["results_path"])
     args = parser.parse_args()
@@ -178,6 +181,7 @@ def main():
     CURRENT_TRIAL_TARGET = args.trials
     study = optuna.create_study(
         direction=args.direction,
+        study_name=args.study_name,
         storage=args.storage,
         load_if_exists=bool(args.storage),
         sampler=make_sampler(args.sampler),
@@ -210,6 +214,7 @@ export async function writeOptunaRunner(input: {
   searchSpace: SearchSpace;
   outputPath: string;
   resultsPath: string;
+  studyName?: string;
   timeoutSeconds?: number;
 }): Promise<void> {
   await mkdir(path.dirname(input.outputPath), { recursive: true });

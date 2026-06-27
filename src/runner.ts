@@ -8,6 +8,7 @@ export async function runPythonRunner(input: {
   pruner: string;
   nJobs: number;
   storage?: string;
+  studyName?: string;
   output?: string;
 }): Promise<string> {
   const args = [
@@ -26,6 +27,9 @@ export async function runPythonRunner(input: {
 
   if (input.storage) {
     args.push("--storage", input.storage);
+  }
+  if (input.studyName) {
+    args.push("--study-name", input.studyName);
   }
   if (input.output) {
     args.push("--output", input.output);

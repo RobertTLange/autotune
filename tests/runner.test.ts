@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runPythonRunner } from "../src/runner.js";
@@ -26,10 +26,11 @@ describe("runPythonRunner", () => {
       sampler: "tpe",
       pruner: "none",
       nJobs: 2,
+      studyName: "train_autotune",
       output
     });
-    // Python fake runner exits after writing argv. If shell interpolation happened, this test would fail.
-    expect(true).toBe(true);
+    const args = JSON.parse(await readFile(output, "utf8")) as string[];
+    expect(args).toEqual(expect.arrayContaining(["--study-name", "train_autotune"]));
   });
 
   it("forwards runner stderr progress", async () => {

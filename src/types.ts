@@ -64,6 +64,7 @@ export interface RunOptions {
   json: boolean;
   output?: string;
   storage?: string;
+  studyName?: string;
   yes: boolean;
   config?: string;
   ask?: (prompt: string) => Promise<string>;

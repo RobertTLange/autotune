@@ -18,6 +18,7 @@ program
   .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid"]))
   .addOption(new Option("--pruner <pruner>", "Optuna pruner").choices(["none", "median", "hyperband"]))
   .option("--storage <uri>", "Optuna storage URI, such as sqlite:///study.db")
+  .option("--study-name <name>", "Optuna study name for persistent storage")
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--agent <name>", "headless agent", "claude")
   .option("--model <name>", "headless model override")
@@ -82,11 +83,12 @@ program
 program
   .command("resume")
   .requiredOption("--storage <uri>", "Optuna storage URI")
+  .option("--study-name <name>", "Optuna study name")
   .requiredOption("--trials <n>", "additional trials", parsePositiveInt)
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--work-dir <dir>", "artifact directory", ".autotune")
   .addOption(new Option("--direction <direction>", "fallback direction").choices(["maximize", "minimize"]).default("maximize"))
-  .action(async (options: { storage: string; trials: number; nJobs: number; workDir: string; direction: Direction }) => {
+  .action(async (options: { storage: string; studyName?: string; trials: number; nJobs: number; workDir: string; direction: Direction }) => {
     await resumeStudy(options);
   });
 
@@ -114,6 +116,7 @@ function normalizeRunOptions(raw: Record<string, unknown>, command: Command): Ru
     json: Boolean(raw.json),
     output: typeof raw.output === "string" ? raw.output : undefined,
     storage: typeof raw.storage === "string" ? raw.storage : undefined,
+    studyName: typeof raw.studyName === "string" ? raw.studyName : undefined,
     yes: Boolean(raw.yes),
     config: typeof raw.config === "string" ? raw.config : undefined
   };
