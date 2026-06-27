@@ -73,28 +73,29 @@ function isMissingExecutable(error: unknown): boolean {
 }
 
 function collectCandidates(output: string, mode: "search-space" | "object"): string[] {
-  const candidates: string[] = [];
+  const structured: string[] = [];
+  const fallback: string[] = [];
   const trimmed = output.trim();
   if (trimmed) {
-    candidates.push(trimmed);
+    fallback.push(trimmed);
   }
 
   for (const line of output.split(/\r?\n/)) {
     const value = extractTextFromJsonLine(line, mode);
     if (value) {
-      candidates.push(value);
+      structured.push(value);
     }
   }
 
   const fenced = [...output.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1] ?? "");
-  candidates.push(...fenced);
+  fallback.push(...fenced);
 
   const object = extractBalancedObject(output);
   if (object) {
-    candidates.push(object);
+    fallback.push(object);
   }
 
-  return candidates.filter(Boolean).reverse();
+  return [...structured.reverse(), ...fallback.reverse()].filter(Boolean);
 }
 
 function extractTextFromJsonLine(line: string, mode: "search-space" | "object"): string | undefined {

@@ -38,6 +38,23 @@ describe("extractHeadlessJson", () => {
     );
     expect(result.direction).toBe("maximize");
   });
+
+  it("prefers final JSONL text over earlier logged objects", () => {
+    const result = extractHeadlessJson(
+      [
+        JSON.stringify({ type: "tool", output: '{"parameters":[],"has_arg_parsing":true,"needs_wrapper":false,"direction":"minimize"}' }),
+        JSON.stringify({
+          type: "item.completed",
+          item: {
+            type: "agent_message",
+            text: '{"parameters":[],"has_arg_parsing":true,"needs_wrapper":false,"direction":"maximize"}'
+          }
+        })
+      ].join("\n")
+    );
+
+    expect(result.direction).toBe("maximize");
+  });
 });
 
 describe("extractHeadlessObject", () => {
@@ -48,6 +65,17 @@ describe("extractHeadlessObject", () => {
           type: "item.completed",
           item: { type: "agent_message", text: '{"code":"print(1)"}' }
         })
+      )
+    ).toEqual({ code: "print(1)" });
+  });
+
+  it("prefers final code objects over earlier logged objects", () => {
+    expect(
+      extractHeadlessObject(
+        [
+          JSON.stringify({ type: "tool", output: '{"code":"print(0)"}' }),
+          JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: '{"code":"print(1)"}' } })
+        ].join("\n")
       )
     ).toEqual({ code: "print(1)" });
   });
