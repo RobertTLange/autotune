@@ -217,6 +217,37 @@ describe("runAutotune", () => {
     expect(runner).not.toContain(script);
   });
 
+  it("rewrites explicit script slots to generated modified copies", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-wrapper-command-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "x = 0\nprint('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      command: `python3 -u ${script}`,
+      json: true,
+      yes: true,
+      config: await writeWrapperSearchSpace(dir)
+    });
+
+    const modified = path.join(workDir, "train_modified.py");
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain(modified);
+    expect(runner).not.toContain(`-u\\",\\"${script}`);
+  });
+
   it("generates a modified script copy when metric output is missing", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-metric-"));
     const binDir = path.join(dir, "bin");

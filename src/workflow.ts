@@ -457,6 +457,12 @@ function modifiedCopyReason(searchSpace: SearchSpace): string {
 }
 
 function commandForModifiedScript(invocation: ReturnType<typeof detectInvocation>, modifiedPath: string): string[] {
+  const replaced = invocation.command.map((arg) =>
+    path.resolve(arg) === path.resolve(invocation.script) ? modifiedPath : arg
+  );
+  if (replaced.some((arg, index) => arg !== invocation.command[index])) {
+    return replaced;
+  }
   if (invocation.command.length === 1 && path.resolve(invocation.command[0] ?? "") === path.resolve(invocation.script)) {
     return [modifiedPath];
   }
