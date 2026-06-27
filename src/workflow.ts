@@ -39,22 +39,30 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const commandOverride = options.command ? expandCommandTemplateArgs(splitCommand(options.command), commandContext) : undefined;
   const invocation = detectInvocation(scriptPath, commandOverride);
   const headless = pickHeadlessOptions(options);
+  const refineRounds = options.refineRounds ?? 0;
+  const searchSpacePath = path.join(workDir, "search_space.yaml");
+  const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
+  const studyName = options.studyName ?? defaultStudyName(scriptPath);
+  const configuredSearchSpace = options.config
+    ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
+    : undefined;
 
   writeStatus("Checking prerequisites...");
-  const prerequisites = await checkPrerequisites({ invocation, agent: options.agent });
+  const prerequisites = await checkPrerequisites({
+    invocation,
+    agent: options.agent,
+    skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
+  });
   writeStatus(`python3 ${prerequisites.python}`, "success");
   writeStatus(`optuna ${prerequisites.optuna}`, "success");
   writeStatus(`headless ${prerequisites.headless}`, "success");
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
-  const refineRounds = options.refineRounds ?? 0;
-  const searchSpacePath = path.join(workDir, "search_space.yaml");
-  const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
-  const studyName = options.studyName ?? defaultStudyName(scriptPath);
-  const proposed = options.config
-    ? await loadConfiguredSearchSpace(options.config)
-    : await runAnalysisPhase({ invocation, workDir, ...headless });
-  const searchSpace = await prepareSearchSpaceForRun(proposed, options, scriptPath);
+  const searchSpace = configuredSearchSpace ?? await prepareSearchSpaceForRun(
+    await runAnalysisPhase({ invocation, workDir, ...headless }),
+    options,
+    scriptPath
+  );
   const initialSearchSpacePath = searchSpacePathForRound(workDir, 0, refineRounds);
   writeStatus(`Saving confirmed search space: ${styles.dim(initialSearchSpacePath)}`);
   let confirmed = await confirmSearchSpace({
@@ -412,6 +420,19 @@ async function scriptContainsMetricOutput(scriptPath: string): Promise<boolean> 
 
 function needsModifiedCopy(searchSpace: SearchSpace): boolean {
   return searchSpace.needs_wrapper || searchSpace.has_metric_output === false;
+}
+
+function shouldSkipHeadlessPrerequisite(input: {
+  searchSpace?: SearchSpace;
+  options: Pick<RunOptions, "yes">;
+  refineRounds: number;
+}): boolean {
+  return Boolean(
+    input.searchSpace &&
+      input.options.yes &&
+      input.refineRounds === 0 &&
+      !needsModifiedCopy(input.searchSpace)
+  );
 }
 
 async function prepareModifiedInvocation(input: {

@@ -80,6 +80,32 @@ describe("runAutotune", () => {
     ).rejects.toThrow(/trials/);
   });
 
+  it("skips headless prerequisites for accepted compatible configs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-config-no-headless-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    delete process.env.AUTOTUNE_HEADLESS_BIN;
+
+    await runAutotune(script, {
+      trials: 2,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "definitely-missing-agent",
+      json: true,
+      yes: true,
+      config: await writeOptunaSearchSpace(dir)
+    });
+
+    expect(await readFile(path.join(workDir, "results.json"), "utf8")).toContain("best_trial");
+  });
+
   it("runs analyze-only and writes search-space output", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-"));
     const binDir = path.join(dir, "bin");
