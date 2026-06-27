@@ -77,6 +77,7 @@ class OutputCapture:
         self.tail = ""
         self.pending = ""
         self.metric = None
+        self.metric_error = None
 
     def feed(self, text, parse_metrics=False):
         self.tail = (self.tail + text)[-self.max_chars:]
@@ -94,7 +95,11 @@ class OutputCapture:
 
     def parse_metric_line(self, line):
         if line.startswith("autotune_metric="):
-            self.metric = float(line.split("=", 1)[1].strip())
+            try:
+                self.metric = float(line.split("=", 1)[1].strip())
+                self.metric_error = None
+            except Exception as exc:
+                self.metric_error = exc
 
 
 def drain_stream(stream, capture, parse_metrics=False):
@@ -145,6 +150,7 @@ def run_trial_command(argv):
         "stdout": stdout_capture.tail,
         "stderr": stderr_capture.tail,
         "metric": stdout_capture.metric,
+        "metric_error": stdout_capture.metric_error,
     }
 
 
@@ -154,6 +160,8 @@ def objective(trial):
     result = run_trial_command(argv)
     if result["returncode"] != 0:
         raise RuntimeError(f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
+    if result["metric_error"] is not None:
+        raise RuntimeError(str(result["metric_error"])) from result["metric_error"]
     try:
         return result["metric"] if result["metric"] is not None else parse_metric(result["stdout"])
     except Exception as exc:

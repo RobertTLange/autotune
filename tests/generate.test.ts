@@ -21,6 +21,7 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("subprocess.Popen(");
     expect(code).toContain("class OutputCapture");
     expect(code).toContain("self.pending = self.pending[-self.max_chars:]");
+    expect(code).toContain("metric_error");
     expect(code).toContain("threading.Thread");
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
