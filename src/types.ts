@@ -70,3 +70,13 @@ export interface RunOptions {
   config?: string;
   ask?: (prompt: string) => Promise<string>;
 }
+
+export interface SearchBudget {
+  trials: number;
+  timeoutSeconds?: number;
+  refineRounds?: number;
+  refineTrials?: number;
+  refineMode?: RefineMode;
+  currentRefinementRound?: number;
+  currentRoundTrials?: number;
+}

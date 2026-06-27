@@ -50,9 +50,12 @@ describe("runAutotune", () => {
     });
 
     const searchSpace = await readFile(path.join(workDir, "search_space.yaml"), "utf8");
+    const analyzePrompt = await readFile(path.join(workDir, "analyze_prompt.md"), "utf8");
     const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
     const result = JSON.parse(await readFile(path.join(workDir, "results.json"), "utf8"));
     expect(searchSpace).toContain("cli_flag: --x");
+    expect(analyzePrompt).toContain("initial_trials: 2");
+    expect(analyzePrompt).toContain("per_trial_timeout_seconds: 1800");
     expect(runner).toContain("subprocess.Popen(");
     expect(runner).toContain('\\"timeout\\":1800');
     expect(result.best_trial.params).toEqual({ x: 0.5 });
@@ -294,6 +297,7 @@ describe("runAutotune", () => {
 
     await runAutotune(script, {
       trials: 2,
+      timeoutSeconds: 1800,
       direction: "maximize",
       sampler: "tpe",
       pruner: "none",
@@ -306,8 +310,12 @@ describe("runAutotune", () => {
     });
 
     const searchSpace = await readFile(path.join(workDir, "search_space.yaml"), "utf8");
+    const revisePrompt = await readFile(path.join(workDir, "revise_prompt.md"), "utf8");
     expect(searchSpace).toContain("low: -1");
     expect(searchSpace).toContain("high: 2");
+    expect(revisePrompt).toContain("initial_trials: 2");
+    expect(revisePrompt).toContain("total_planned_trials: 2");
+    expect(revisePrompt).toContain("per_trial_timeout_seconds: 1800");
   });
 
   it("generates a modified script copy when the search space needs a wrapper", async () => {
@@ -528,6 +536,8 @@ describe("runAutotune", () => {
     expect(await readFile(path.join(workDir, "results.round_0.json"), "utf8")).toContain("best_trial");
     expect(await readFile(path.join(workDir, "results.round_1.json"), "utf8")).toContain("best_trial");
     expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("Trial result summary");
+    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("current_refinement_round: 1");
+    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("current_round_trials: 3");
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toBe(
       await readFile(path.join(workDir, "results.round_1.json"), "utf8")
     );

@@ -16,7 +16,7 @@ import { readResults, renderResults, type StudyResult, type TrialResult } from "
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
-import type { Direction, HeadlessOptions, Pruner, RunOptions, Sampler, SearchSpace } from "./types.js";
+import type { Direction, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchSpace } from "./types.js";
 
 const DEFAULT_DIRECTION: Direction = "maximize";
 const DEFAULT_SAMPLER: Sampler = "tpe";
@@ -40,6 +40,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const invocation = detectInvocation(scriptPath, commandOverride);
   const headless = pickHeadlessOptions(options);
   const refineRounds = options.refineRounds ?? 0;
+  const initialBudget = searchBudgetForOptions(options, refineRounds);
   const searchSpacePath = path.join(workDir, "search_space.yaml");
   const finalResultsPath = options.output ? path.resolve(options.output) : path.join(workDir, "results.json");
   const studyName = options.studyName ?? defaultStudyName(scriptPath);
@@ -59,7 +60,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
   const searchSpace = configuredSearchSpace ?? await prepareSearchSpaceForRun(
-    await runAnalysisPhase({ invocation, workDir, ...headless }),
+    await runAnalysisPhase({ invocation, workDir, budget: initialBudget, ...headless }),
     options,
     scriptPath
   );
@@ -76,6 +77,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         invocation,
         searchSpace: current,
         feedback,
+        budget: initialBudget,
         workDir,
         ...headless
       });
@@ -287,6 +289,7 @@ async function refineSearchSpaceForRound(input: {
     searchSpace: input.current,
     trialSummary: summarizeTrialResults(input.previousResult, input.current),
     round: input.round,
+    budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
     workDir: input.workDir,
     ...input.headless
   });
@@ -303,6 +306,7 @@ async function refineSearchSpaceForRound(input: {
         invocation: input.invocation,
         searchSpace: current,
         feedback,
+        budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
         workDir: input.workDir,
         ...input.headless
       });
@@ -497,12 +501,26 @@ async function loadConfiguredSearchSpace(configPath: string): Promise<SearchSpac
 async function runAnalysisPhase(input: {
   invocation: ReturnType<typeof detectInvocation>;
   workDir: string;
+  budget?: SearchBudget;
 } & HeadlessOptions): Promise<SearchSpace> {
   writeStatus(`Phase 1: analyzing ${styles.dim(input.invocation.script)} with ${formatHeadlessLabel(input)}...`);
   writeStatus("This can take a minute on first run.");
   const searchSpace = await analyzeScript(input);
   writeStatus(`Analysis complete: ${searchSpace.parameters.length} parameter(s) proposed.`, "success");
   return searchSpace;
+}
+
+function searchBudgetForOptions(options: RunOptions, refineRounds: number, currentRefinementRound?: number): SearchBudget {
+  const refineTrials = options.refineTrials ?? options.trials;
+  return {
+    trials: options.trials,
+    timeoutSeconds: options.timeoutSeconds,
+    refineRounds,
+    refineTrials,
+    refineMode: options.refineMode,
+    currentRefinementRound,
+    currentRoundTrials: currentRefinementRound === undefined ? options.trials : refineTrials
+  };
 }
 
 function pickHeadlessOptions(options: HeadlessOptions): HeadlessOptions {

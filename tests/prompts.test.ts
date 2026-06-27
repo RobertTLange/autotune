@@ -85,6 +85,63 @@ describe("prompt Optuna config contract", () => {
   });
 });
 
+describe("prompt budget contract", () => {
+  it("includes trial budget and timeout during analysis", () => {
+    const prompt = renderAnalyzePrompt({
+      invocation,
+      budget: { trials: 5, timeoutSeconds: 1800 }
+    });
+
+    expect(prompt).toContain("initial_trials: 5");
+    expect(prompt).toContain("total_planned_trials: 5");
+    expect(prompt).toContain("per_trial_timeout_seconds: 1800");
+    expect(prompt).toContain("1-3 high-impact");
+  });
+
+  it("includes budget when revising from feedback", () => {
+    const prompt = renderReviseSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      feedback: "keep it tiny",
+      budget: { trials: 5, timeoutSeconds: 900 }
+    });
+
+    expect(prompt).toContain("initial_trials: 5");
+    expect(prompt).toContain("Scale the search-space breadth");
+  });
+
+  it("includes refinement metadata during refinement", () => {
+    const prompt = renderRefineSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      round: 1,
+      budget: {
+        trials: 20,
+        timeoutSeconds: 1800,
+        refineRounds: 2,
+        refineTrials: 10,
+        refineMode: "auto",
+        currentRefinementRound: 1,
+        currentRoundTrials: 10
+      },
+      trialSummary: {
+        direction: "maximize",
+        n_trials: 20,
+        best_trial: { number: 3, value: 0.9, params: { lr: 0.002 }, state: "COMPLETE" },
+        top_trials: [{ number: 3, value: 0.9, params: { lr: 0.002 }, state: "COMPLETE" }],
+        parameter_ranges: [{ name: "lr", low: 0.0001, high: 0.01, best_value: 0.002 }]
+      }
+    });
+
+    expect(prompt).toContain("total_planned_trials: 40");
+    expect(prompt).toContain("refinement_rounds: 2");
+    expect(prompt).toContain("refinement_trials_per_round: 10");
+    expect(prompt).toContain("refinement_mode: auto");
+    expect(prompt).toContain("current_refinement_round: 1");
+    expect(prompt).toContain("current_round_trials: 10");
+  });
+});
+
 describe("prompt invocation contract", () => {
   it("does not append the source path for standalone runtime commands", () => {
     const prompt = renderAnalyzePrompt({

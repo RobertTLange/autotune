@@ -1,4 +1,4 @@
-import type { Invocation, SearchSpace } from "./types.js";
+import type { Invocation, SearchBudget, SearchSpace } from "./types.js";
 
 export interface TrialResultSummary {
   direction: "maximize" | "minimize";
@@ -8,11 +8,12 @@ export interface TrialResultSummary {
   parameter_ranges: unknown[];
 }
 
-export function renderAnalyzePrompt(input: { invocation: Invocation }): string {
+export function renderAnalyzePrompt(input: { invocation: Invocation; budget?: SearchBudget }): string {
   return `Analyze the following script for hyperparameter tuning.
 
 The script language is: ${input.invocation.language}
 The script is invoked via: ${formatInvocation(input.invocation)}
+${renderBudget(input.budget)}
 
 Identify all tunable hyperparameters and propose Optuna search spaces.
 The optimization metric is reported via printing "autotune_metric=<value>" to stdout.
@@ -63,12 +64,14 @@ export function renderReviseSearchSpacePrompt(input: {
   invocation: Invocation;
   searchSpace: SearchSpace;
   feedback: string;
+  budget?: SearchBudget;
 }): string {
   return `Revise this Optuna hyperparameter search space using the user's feedback.
 
 Script language: ${input.invocation.language}
 Invocation command argv: ${JSON.stringify(input.invocation.command)}
 Script path: ${input.invocation.script}
+${renderBudget(input.budget)}
 
 Current search space JSON:
 ${JSON.stringify(input.searchSpace, null, 2)}
@@ -99,12 +102,14 @@ export function renderRefineSearchSpacePrompt(input: {
   searchSpace: SearchSpace;
   round: number;
   trialSummary: TrialResultSummary;
+  budget?: SearchBudget;
 }): string {
   return `Refine this Optuna hyperparameter search space for round ${input.round} using completed trial evidence.
 
 Script language: ${input.invocation.language}
 Invocation command argv: ${JSON.stringify(input.invocation.command)}
 Script path: ${input.invocation.script}
+${renderBudget(input.budget)}
 
 Current search space JSON:
 ${JSON.stringify(input.searchSpace, null, 2)}
@@ -134,6 +139,39 @@ Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or
 be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
 
 Output valid revised JSON only.`;
+}
+
+function renderBudget(budget: SearchBudget | undefined): string {
+  if (!budget) {
+    return "";
+  }
+  const refineRounds = budget.refineRounds ?? 0;
+  const refineTrials = budget.refineTrials ?? budget.trials;
+  const totalTrials = budget.trials + refineRounds * refineTrials;
+  const lines = [
+    "",
+    "Search budget and refinement metadata:",
+    `- initial_trials: ${budget.trials}`,
+    `- total_planned_trials: ${totalTrials}`,
+    `- per_trial_timeout_seconds: ${budget.timeoutSeconds ?? 900}`,
+    `- refinement_rounds: ${refineRounds}`,
+    `- refinement_trials_per_round: ${refineRounds > 0 ? refineTrials : 0}`,
+    `- refinement_mode: ${budget.refineMode ?? "ask"}`
+  ];
+  if (budget.currentRefinementRound !== undefined) {
+    lines.push(`- current_refinement_round: ${budget.currentRefinementRound}`);
+  }
+  if (budget.currentRoundTrials !== undefined) {
+    lines.push(`- current_round_trials: ${budget.currentRoundTrials}`);
+  }
+  lines.push(
+    "Scale the search-space breadth to this budget. With 10 or fewer total trials, prefer 1-3 high-impact",
+    "parameters with tight, defensible ranges over a large high-dimensional space. Account for the per-trial",
+    "timeout and avoid proposing ranges or parameters that are likely to make trials exceed it. When refinement",
+    "rounds are planned, use the initial space for broad but budget-aware exploration and later rounds to narrow",
+    "or adjust ranges from completed trial evidence."
+  );
+  return lines.join("\n");
 }
 
 export function renderModifiedScriptPrompt(input: {
