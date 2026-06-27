@@ -41,6 +41,7 @@ describe("runAutotune", () => {
         sampler: "tpe",
         pruner: "none",
         nJobs: 1,
+        timeoutSeconds: 1800,
         workDir,
         agent: "claude",
         json: true,
@@ -53,6 +54,7 @@ describe("runAutotune", () => {
     const result = JSON.parse(await readFile(path.join(workDir, "results.json"), "utf8"));
     expect(searchSpace).toContain("cli_flag: --x");
     expect(runner).toContain("subprocess.Popen(");
+    expect(runner).toContain('\\"timeout\\":1800');
     expect(result.best_trial.params).toEqual({ x: 0.5 });
     expect(progress).toEqual(
       expect.arrayContaining([

@@ -89,7 +89,7 @@ autotune resume --storage sqlite:///study.db --trials N
 Use `doctor` to verify prerequisites before a run:
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH autotune doctor examples/mnist_cnn_no_cli.py --agent codex
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js doctor examples/mnist_cnn.py --agent codex
 ```
 
 Use built-in help for full flag details:
@@ -175,25 +175,48 @@ reasoning: accuracy-style metric
 
 ### MNIST CNN
 
-`examples/mnist_cnn_no_cli.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
+`examples/mnist_cnn.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
 
 Install runtime packages first if needed:
 
 ```bash
-python3 -m pip install optuna
-uv pip install --python .venv/bin/python torch torchvision
+uv venv .venv
+uv pip install --python .venv/bin/python optuna torch torchvision
 ```
 
 Run:
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH autotune run examples/mnist_cnn_no_cli.py \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist_cnn.py \
   --trials 8 \
   --agent codex \
   --json
 ```
 
 Expected behavior: the agent proposes a search space, Autotune asks for confirmation or feedback, then generates a compatible copy that accepts hyperparameter flags and prints validation accuracy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+
+### CIFAR-10 ResNet
+
+`examples/cifar10_resnet.py` trains a CIFAR-style ResNet-18 on the full CIFAR-10 training set with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for each trial.
+
+Install runtime packages first if needed:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python optuna torch torchvision
+```
+
+Run:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_resnet.py \
+  --trials 4 \
+  --timeout-seconds 1800 \
+  --agent codex \
+  --json
+```
+
+Expected behavior: the agent proposes a search space for values such as learning rate, momentum, weight decay, batch size, dropout, and epochs, then generates a compatible copy that accepts trial flags and prints validation accuracy. Each trial is a real full-data training run and may take about 15 minutes on a GPU depending on hardware, so the example raises the per-trial timeout to 30 minutes. The first run downloads CIFAR-10 into `/tmp/autotune-cifar10-data`.
 
 ### C++
 

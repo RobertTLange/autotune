@@ -26,6 +26,7 @@ describe("CLI option normalization", () => {
       nJobs: 1,
       workDir: ".autotune",
       agent: "claude",
+      timeoutSeconds: 1800,
       refineRounds: 0,
       refineMode: "ask",
       json: false,
@@ -39,7 +40,8 @@ describe("CLI option normalization", () => {
       sampler: undefined,
       pruner: undefined,
       storage: "sqlite:///study.db",
-      studyName: "custom"
+      studyName: "custom",
+      timeoutSeconds: 1800
     });
   });
 

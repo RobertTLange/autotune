@@ -58,6 +58,7 @@ export interface RunOptions {
   reasoningEffort?: ReasoningEffort;
   command?: string;
   buildCommand?: string;
+  timeoutSeconds?: number;
   refineRounds?: number;
   refineTrials?: number;
   refineMode?: RefineMode;

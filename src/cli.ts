@@ -28,6 +28,7 @@ export function createProgram(): Command {
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--command <command>", "override script invocation command")
   .option("--build-command <command>", "command to run once before analysis/trials; supports {script} and {work-dir}")
+  .option("--timeout-seconds <n>", "per-trial timeout in seconds", parsePositiveInt)
   .option("--refine-rounds <n>", "agentic search-space refinement rounds after the initial trials", parseNonNegativeInt, 0)
   .option("--refine-trials <n>", "trials per refinement round; defaults to --trials", parsePositiveInt)
   .addOption(new Option("--refine-mode <mode>", "refinement approval mode").choices(["ask", "auto"]).default("ask"))
@@ -117,6 +118,7 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     reasoningEffort: normalizeReasoningEffort(raw),
     command: typeof raw.command === "string" ? raw.command : undefined,
     buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,
+    timeoutSeconds: typeof raw.timeoutSeconds === "number" ? raw.timeoutSeconds : undefined,
     refineRounds: Number(raw.refineRounds),
     refineTrials: typeof raw.refineTrials === "number" ? raw.refineTrials : undefined,
     refineMode: raw.refineMode as RefineMode,

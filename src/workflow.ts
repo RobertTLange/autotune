@@ -248,7 +248,8 @@ async function runSearchRound(input: {
     searchSpace: input.searchSpace,
     outputPath: runnerPath,
     resultsPath: input.resultsPath,
-    studyName: input.studyName
+    studyName: input.studyName,
+    timeoutSeconds: input.options.timeoutSeconds
   });
 
   const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
