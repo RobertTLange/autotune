@@ -2,6 +2,7 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { runCommand } from "./process.js";
+import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
 import type { Invocation } from "./types.js";
 
 export interface PrerequisiteReport {
@@ -84,7 +85,7 @@ export async function checkHeadless(agent: string): Promise<string> {
     ({ stdout, stderr } = await runCommand(bin, ["--check"]));
   } catch (error) {
     if (bin === "headless" && isMissingExecutable(error)) {
-      ({ stdout, stderr } = await runCommand("npx", ["-y", "@roberttlange/headless", "--check"]));
+      ({ stdout, stderr } = await runCommand("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, "--check"]));
     } else {
       throw error;
     }

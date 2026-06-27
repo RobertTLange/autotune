@@ -4,6 +4,7 @@ import { runCommand } from "./process.js";
 
 const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
 const HEADLESS_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+export const FALLBACK_HEADLESS_PACKAGE = "@roberttlange/headless@0.4.0";
 
 export function extractHeadlessJson(output: string): SearchSpace {
   const candidates = collectCandidates(output, "search-space");
@@ -46,7 +47,7 @@ export async function runHeadless(args: string[], options: { cwd: string; bin?: 
     return await spawnCapture(bin, args, options.cwd);
   } catch (error) {
     if (!options.bin && !process.env.AUTOTUNE_HEADLESS_BIN && isMissingExecutable(error)) {
-      return spawnCapture("npx", ["-y", "@roberttlange/headless", ...args], options.cwd);
+      return spawnCapture("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, ...args], options.cwd);
     }
     throw error;
   }

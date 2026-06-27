@@ -1,4 +1,10 @@
-import { extractHeadlessJson, extractHeadlessObject } from "../src/headless.js";
+import { FALLBACK_HEADLESS_PACKAGE, extractHeadlessJson, extractHeadlessObject } from "../src/headless.js";
+
+describe("headless fallback package", () => {
+  it("uses a pinned npx package spec", () => {
+    expect(FALLBACK_HEADLESS_PACKAGE).toMatch(/^@roberttlange\/headless@\d+\.\d+\.\d+$/);
+  });
+});
 
 describe("extractHeadlessJson", () => {
   it("extracts plain JSON from agent output", () => {
