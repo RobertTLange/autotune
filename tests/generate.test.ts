@@ -25,6 +25,7 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("threading.Thread");
     expect(code).toContain("sys.stderr.write(chunk)");
     expect(code).toContain("CONFIG = json.loads");
+    expect(code).toContain("shutil.get_terminal_size");
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
     expect(code).toContain("def print_progress_header");

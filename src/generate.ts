@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -339,20 +340,30 @@ def format_number(value):
     return str(value)
 
 
-def format_params(params, max_chars=88):
+def format_params(params, max_chars):
     text = " ".join(f"{name}={format_number(value)}" for name, value in sorted(params.items()))
     if len(text) <= max_chars:
         return text
+    if max_chars <= 3:
+        return "." * max_chars
     return text[: max_chars - 3] + "..."
 
 
 def progress_columns():
+    terminal_width = shutil.get_terminal_size((120, 24)).columns
+    prefix_width = 11
+    separator_width = 8
+    fixed_columns = [
+        ("Trial", 7, "right"),
+        ("State", 8, "left"),
+        ("Value", 10, "right"),
+        ("Best", 10, "right"),
+    ]
+    fixed_width = sum(width for _, width, _ in fixed_columns)
+    params_width = max(8, terminal_width - prefix_width - separator_width - fixed_width)
     return [
-        ("Trial", 8, "right"),
-        ("State", 10, "left"),
-        ("Value", 12, "right"),
-        ("Best", 12, "right"),
-        ("Params", 88, "left"),
+        *fixed_columns,
+        ("Params", params_width, "left"),
     ]
 
 
@@ -360,10 +371,10 @@ def progress_prefix():
     return style(f"[{timestamp()}]", "2")
 
 
-def progress_row(values):
+def progress_row(values, columns):
     return "  ".join(
         pad_cell(value, width, align)
-        for value, (_, width, align) in zip(values, progress_columns())
+        for value, (_, width, align) in zip(values, columns)
     )
 
 
@@ -372,16 +383,18 @@ def print_progress_header():
     if PROGRESS_HEADER_PRINTED:
         return
     columns = progress_columns()
-    print(f"{progress_prefix()} {style(progress_row([name for name, _, _ in columns]), '1')}", file=sys.stderr, flush=True)
-    print(f"{progress_prefix()} {style(progress_row(['-' * width for _, width, _ in columns]), '2')}", file=sys.stderr, flush=True)
+    print(f"{progress_prefix()} {style(progress_row([name for name, _, _ in columns], columns), '1')}", file=sys.stderr, flush=True)
+    print(f"{progress_prefix()} {style(progress_row(['-' * width for _, width, _ in columns], columns), '2')}", file=sys.stderr, flush=True)
     PROGRESS_HEADER_PRINTED = True
 
 
 def print_progress_row(trial_label, state, value, best, params):
     with PROGRESS_LOCK:
         print_progress_header()
+        columns = progress_columns()
+        params_width = columns[-1][1]
         print(
-            f"{progress_prefix()} {progress_row([trial_label, style_state(state), format_number(value), format_number(best), format_params(params)])}",
+            f"{progress_prefix()} {progress_row([trial_label, style_state(state), format_number(value), format_number(best), format_params(params, params_width)], columns)}",
             file=sys.stderr,
             flush=True,
         )
