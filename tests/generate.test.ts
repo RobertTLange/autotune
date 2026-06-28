@@ -27,6 +27,12 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
+    expect(code).toContain("def write_results");
+    expect(code).toContain("threading.get_ident()");
+    expect(code).toContain("os.replace(tmp_path, output_path)");
+    expect(code).toContain("def on_trial_complete(study, trial):");
+    expect(code).toContain("write_results(study, args.direction, output_path)");
+    expect(code).toContain("callbacks=[on_trial_complete]");
     expect(code).toContain("file=sys.stderr");
     expect(code).toContain("params {json.dumps(effective_params(params), sort_keys=True)}");
     expect(code).toContain("def timestamp");

@@ -269,6 +269,15 @@ def serialize_study(study, direction):
     }
 
 
+def write_results(study, direction, output_path):
+    result = serialize_study(study, direction)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(f"{output_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    os.replace(tmp_path, output_path)
+    return result
+
+
 def timestamp():
     return datetime.now().strftime("%H:%M:%S")
 
@@ -332,11 +341,14 @@ def main():
     )
     BASELINE_FINISHED_COUNT = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
     SEED_TRIAL_COUNT = add_seed_trials(study)
-    study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[report_progress])
-    result = serialize_study(study, args.direction)
     output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    def on_trial_complete(study, trial):
+        report_progress(study, trial)
+        write_results(study, args.direction, output_path)
+
+    study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+    result = write_results(study, args.direction, output_path)
     print(json.dumps(result))
     if result["best_trial"] is None:
         print(f"[{timestamp()}] all trials failed", file=sys.stderr)
