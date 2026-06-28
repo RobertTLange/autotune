@@ -34,6 +34,7 @@ export function renderOptunaRunner(input: {
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -47,6 +48,10 @@ CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
 CURRENT_TRIAL_TARGET = 0
 BASELINE_FINISHED_COUNT = 0
 SEED_TRIAL_COUNT = 0
+STARTED_TRIAL_COUNT = 0
+PROGRESS_HEADER_PRINTED = False
+PROGRESS_LOCK = threading.Lock()
+ANSI_PATTERN = re.compile(r"\\033\\[[0-9;]*m")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
@@ -177,8 +182,12 @@ def run_trial_command(argv):
 
 
 def objective(trial):
+    global STARTED_TRIAL_COUNT
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
-    print(f"[{timestamp()}] Trial {trial.number} params {json.dumps(effective_params(params), sort_keys=True)}", file=sys.stderr, flush=True)
+    with PROGRESS_LOCK:
+        STARTED_TRIAL_COUNT += 1
+        started = STARTED_TRIAL_COUNT
+    print_progress_row(f"{started}/{CURRENT_TRIAL_TARGET}", "RUNNING", None, None, effective_params(params))
     argv = build_argv(params)
     result = run_trial_command(argv)
     if result["returncode"] != 0:
@@ -297,6 +306,8 @@ def style(text, code):
 
 
 def style_state(state):
+    if state == "RUNNING":
+        return style(state, "36")
     if state == "COMPLETE":
         return style(state, "32")
     if state == "PRUNED":
@@ -306,13 +317,85 @@ def style_state(state):
     return state
 
 
-def report_progress(study, trial):
+def visible_width(text):
+    return len(ANSI_PATTERN.sub("", str(text)))
+
+
+def pad_cell(value, width, align="left"):
+    value = str(value)
+    padding = " " * max(0, width - visible_width(value))
+    return f"{padding}{value}" if align == "right" else f"{value}{padding}"
+
+
+def format_number(value):
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def format_params(params, max_chars=88):
+    text = " ".join(f"{name}={format_number(value)}" for name, value in sorted(params.items()))
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3] + "..."
+
+
+def progress_columns():
+    return [
+        ("Trial", 8, "right"),
+        ("State", 10, "left"),
+        ("Value", 12, "right"),
+        ("Best", 12, "right"),
+        ("Params", 88, "left"),
+    ]
+
+
+def progress_prefix():
+    return style(f"[{timestamp()}]", "2")
+
+
+def progress_row(values):
+    return "  ".join(
+        pad_cell(value, width, align)
+        for value, (_, width, align) in zip(values, progress_columns())
+    )
+
+
+def print_progress_header():
+    global PROGRESS_HEADER_PRINTED
+    if PROGRESS_HEADER_PRINTED:
+        return
+    columns = progress_columns()
+    print(f"{progress_prefix()} {style(progress_row([name for name, _, _ in columns]), '1')}", file=sys.stderr, flush=True)
+    print(f"{progress_prefix()} {style(progress_row(['-' * width for _, width, _ in columns]), '2')}", file=sys.stderr, flush=True)
+    PROGRESS_HEADER_PRINTED = True
+
+
+def print_progress_row(trial_label, state, value, best, params):
+    with PROGRESS_LOCK:
+        print_progress_header()
+        print(
+            f"{progress_prefix()} {progress_row([trial_label, style_state(state), format_number(value), format_number(best), format_params(params)])}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def current_best_value(study):
     complete = [item for item in study.trials if item.state == TrialState.COMPLETE]
+    return study.best_value if complete else None
+
+
+def report_progress(study, trial):
     finished = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
     finished_new = max(0, finished - BASELINE_FINISHED_COUNT - SEED_TRIAL_COUNT)
-    value = f" value={trial.value}" if trial.value is not None else ""
-    best = f" best={study.best_value}" if complete else ""
-    print(f"[{timestamp()}] Trial {finished_new}/{CURRENT_TRIAL_TARGET} {style_state(trial.state.name)}{value}{best}", file=sys.stderr, flush=True)
+    print_progress_row(f"{finished_new}/{CURRENT_TRIAL_TARGET}", trial.state.name, trial.value, current_best_value(study), effective_params(trial.params))
 
 
 def main():

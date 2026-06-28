@@ -27,6 +27,9 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("CONFIG = json.loads");
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
+    expect(code).toContain("def print_progress_header");
+    expect(code).toContain("def print_progress_row");
+    expect(code).toContain("def format_params");
     expect(code).toContain("def write_results");
     expect(code).toContain("threading.get_ident()");
     expect(code).toContain("os.replace(tmp_path, output_path)");
@@ -34,11 +37,13 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("write_results(study, args.direction, output_path)");
     expect(code).toContain("callbacks=[on_trial_complete]");
     expect(code).toContain("file=sys.stderr");
-    expect(code).toContain("params {json.dumps(effective_params(params), sort_keys=True)}");
+    expect(code).toContain('"RUNNING"');
+    expect(code).toContain('"Params"');
+    expect(code).not.toContain("params {json.dumps(effective_params(params), sort_keys=True)}");
     expect(code).toContain("def timestamp");
-    expect(code).toContain("[{timestamp()}] Trial");
-    expect(code).toContain("value=");
-    expect(code).toContain("best=");
+    expect(code).toContain('"Trial"');
+    expect(code).toContain('"Value"');
+    expect(code).toContain('"Best"');
     expect(code).toContain("trial.suggest_float");
     expect(code).not.toContain("shell=True");
   });
