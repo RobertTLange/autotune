@@ -249,7 +249,7 @@ For a sequential transfer ablation, run:
 ./examples/run_cifar10_transfer_ablation.sh
 ```
 
-The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 50-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
+The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 40-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
 
 ### C++
 
