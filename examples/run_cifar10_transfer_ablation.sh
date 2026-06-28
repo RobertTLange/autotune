@@ -11,15 +11,15 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 
 INITIAL_TRIALS=20
 REFINE_ROUNDS=2
-REFINE_TRIALS=10
+REFINE_TRIALS=15
 TOTAL_NEW_TRIALS=$((INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
 
 RUN_GROUP="${RUN_GROUP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUT_ROOT="${OUT_ROOT:-$ROOT_DIR/examples/autotune/cifar10_resnet_transfer_ablation/$RUN_GROUP}"
 INITIAL_CONFIG="${INITIAL_CONFIG:-$OUT_ROOT/search_space.initial.yaml}"
 
-if [[ "$TOTAL_NEW_TRIALS" -ne 40 ]]; then
-  echo "Expected 40 total new trials, got $TOTAL_NEW_TRIALS" >&2
+if [[ "$TOTAL_NEW_TRIALS" -ne 50 ]]; then
+  echo "Expected 50 total new trials, got $TOTAL_NEW_TRIALS" >&2
   exit 1
 fi
 
