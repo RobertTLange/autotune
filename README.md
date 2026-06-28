@@ -79,6 +79,8 @@ autotune/
 
 `latest.json` points at the newest run, so `autotune results` can read the latest run from an `autotune/` directory. If the script lives in a subdirectory, run `autotune results <script-dir>/autotune` or run the command from that script directory. The script name keeps its extension, such as `train.py`, so sibling scripts do not share artifact roots. Pass `--work-dir <dir>` when you want an exact artifact directory instead of the timestamped default. Pass `--output <file>` when you want to copy the final JSON results to a specific file.
 
+During trials, Autotune prints a compact colored progress table to stderr. The generated runner refreshes its run-local `results.json` after every completed trial, so `autotune results <run-dir>` can inspect long runs before they finish.
+
 By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
 
 ```text
@@ -240,6 +242,14 @@ PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_resnet.py \
 ```
 
 Expected behavior: the agent proposes a search space for values such as learning rate, momentum, weight decay, batch size, dropout, and epochs, then generates a compatible copy that accepts trial flags and prints validation accuracy. Each trial is a real full-data training run and may take about 15 minutes on a GPU depending on hardware, so the example raises the per-trial timeout to 30 minutes. The first run downloads CIFAR-10 into `/tmp/autotune-cifar10-data`.
+
+For a sequential transfer ablation, run:
+
+```bash
+./examples/run_cifar10_transfer_ablation.sh
+```
+
+The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 50-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
 
 ### C++
 
