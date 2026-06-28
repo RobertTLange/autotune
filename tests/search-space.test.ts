@@ -68,6 +68,49 @@ optuna:
     });
   });
 
+  it("parses fixed parameters", () => {
+    expect(
+      parseSearchSpaceText(`
+parameters:
+  - name: lr
+    cli_flag: --lr
+    type: float
+    low: 0.001
+    high: 0.1
+fixed_parameters:
+  - name: batch_size
+    cli_flag: --batch-size
+    value: 128
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+`)
+    ).toMatchObject({
+      parameters: [{ name: "lr" }],
+      fixed_parameters: [{ name: "batch_size", cli_flag: "--batch-size", value: 128 }]
+    });
+  });
+
+  it("rejects duplicate active and fixed parameter names", () => {
+    expect(() =>
+      parseSearchSpaceText(`
+parameters:
+  - name: lr
+    cli_flag: --lr
+    type: float
+    low: 0.001
+    high: 0.1
+fixed_parameters:
+  - name: lr
+    cli_flag: --fixed-lr
+    value: 0.01
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+`)
+    ).toThrow(/duplicate parameter name/i);
+  });
+
   it("rejects unsupported Optuna settings", () => {
     expect(() =>
       parseSearchSpaceText(`

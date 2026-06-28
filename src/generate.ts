@@ -2,6 +2,11 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Invocation, SearchSpace } from "./types.js";
 
+export interface SeedTrial {
+  value: number;
+  params: Record<string, string | number | boolean>;
+}
+
 export function renderOptunaRunner(input: {
   invocation: Invocation;
   searchSpace: SearchSpace;
@@ -9,6 +14,7 @@ export function renderOptunaRunner(input: {
   resultsPath: string;
   studyName?: string;
   timeoutSeconds?: number;
+  seedTrials?: SeedTrial[];
 }): string {
   const timeout = input.timeoutSeconds ?? 900;
   const payload = {
@@ -17,6 +23,8 @@ export function renderOptunaRunner(input: {
     script_arg_mode: input.invocation.scriptArgument ?? inferScriptArgument(input.invocation),
     study_name: input.studyName,
     parameters: input.searchSpace.parameters,
+    fixed_parameters: input.searchSpace.fixed_parameters ?? [],
+    seed_trials: input.seedTrials ?? [],
     results_path: input.resultsPath,
     max_output_bytes: 65536,
     timeout
@@ -37,6 +45,8 @@ from optuna.trial import TrialState
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
 CURRENT_TRIAL_TARGET = 0
+BASELINE_FINISHED_COUNT = 0
+SEED_TRIAL_COUNT = 0
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
@@ -61,7 +71,16 @@ def build_argv(params):
         argv = command + [script]
     for parameter in CONFIG["parameters"]:
         argv.extend([parameter["cli_flag"], str(params[parameter["name"]])])
+    for parameter in CONFIG.get("fixed_parameters", []):
+        argv.extend([parameter["cli_flag"], str(parameter["value"])])
     return argv
+
+
+def effective_params(params):
+    effective = dict(params)
+    for parameter in CONFIG.get("fixed_parameters", []):
+        effective[parameter["name"]] = parameter["value"]
+    return effective
 
 
 def parse_metric(stdout):
@@ -159,7 +178,7 @@ def run_trial_command(argv):
 
 def objective(trial):
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
-    print(f"[{timestamp()}] Trial {trial.number} params {json.dumps(params, sort_keys=True)}", file=sys.stderr, flush=True)
+    print(f"[{timestamp()}] Trial {trial.number} params {json.dumps(effective_params(params), sort_keys=True)}", file=sys.stderr, flush=True)
     argv = build_argv(params)
     result = run_trial_command(argv)
     if result["returncode"] != 0:
@@ -199,11 +218,41 @@ def make_pruner(name):
     raise ValueError(f"Unsupported pruner: {name}")
 
 
+def distribution_for_parameter(parameter):
+    if parameter["type"] == "float":
+        return optuna.distributions.FloatDistribution(parameter["low"], parameter["high"], log=parameter.get("log", False))
+    if parameter["type"] == "int":
+        return optuna.distributions.IntDistribution(int(parameter["low"]), int(parameter["high"]))
+    if parameter["type"] == "categorical":
+        return optuna.distributions.CategoricalDistribution(parameter["choices"])
+    raise ValueError(f"Unsupported parameter type: {parameter['type']}")
+
+
+def add_seed_trials(study):
+    parameters = CONFIG["parameters"]
+    if not parameters or study.trials:
+        return 0
+    distributions = {parameter["name"]: distribution_for_parameter(parameter) for parameter in parameters}
+    active_names = set(distributions)
+    count = 0
+    for seed in CONFIG.get("seed_trials", []):
+        params = {name: value for name, value in seed["params"].items() if name in active_names}
+        if set(params) != active_names:
+            print(f"[{timestamp()}] skipped transferred seed trial with incomplete active params", file=sys.stderr, flush=True)
+            continue
+        try:
+            study.add_trial(optuna.trial.create_trial(params=params, distributions=distributions, value=seed["value"]))
+            count += 1
+        except Exception as exc:
+            print(f"[{timestamp()}] skipped transferred seed trial: {exc}", file=sys.stderr, flush=True)
+    return count
+
+
 def serialize_trial(trial):
     return {
         "number": trial.number,
         "value": trial.value,
-        "params": trial.params,
+        "params": effective_params(trial.params),
         "state": trial.state.name,
     }
 
@@ -251,9 +300,10 @@ def style_state(state):
 def report_progress(study, trial):
     complete = [item for item in study.trials if item.state == TrialState.COMPLETE]
     finished = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
+    finished_new = max(0, finished - BASELINE_FINISHED_COUNT - SEED_TRIAL_COUNT)
     value = f" value={trial.value}" if trial.value is not None else ""
     best = f" best={study.best_value}" if complete else ""
-    print(f"[{timestamp()}] Trial {finished}/{CURRENT_TRIAL_TARGET} {style_state(trial.state.name)}{value}{best}", file=sys.stderr, flush=True)
+    print(f"[{timestamp()}] Trial {finished_new}/{CURRENT_TRIAL_TARGET} {style_state(trial.state.name)}{value}{best}", file=sys.stderr, flush=True)
 
 
 def main():
@@ -269,6 +319,8 @@ def main():
     args = parser.parse_args()
 
     global CURRENT_TRIAL_TARGET
+    global BASELINE_FINISHED_COUNT
+    global SEED_TRIAL_COUNT
     CURRENT_TRIAL_TARGET = args.trials
     study = optuna.create_study(
         direction=args.direction,
@@ -278,6 +330,8 @@ def main():
         sampler=make_sampler(args.sampler),
         pruner=make_pruner(args.pruner),
     )
+    BASELINE_FINISHED_COUNT = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
+    SEED_TRIAL_COUNT = add_seed_trials(study)
     study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[report_progress])
     result = serialize_study(study, args.direction)
     output_path = Path(args.output)
@@ -307,6 +361,7 @@ export async function writeOptunaRunner(input: {
   resultsPath: string;
   studyName?: string;
   timeoutSeconds?: number;
+  seedTrials?: SeedTrial[];
 }): Promise<void> {
   await mkdir(path.dirname(input.outputPath), { recursive: true });
   await writeFile(input.outputPath, renderOptunaRunner(input), "utf8");

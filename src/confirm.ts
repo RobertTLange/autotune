@@ -76,6 +76,16 @@ export function printSearchSpace(searchSpace: SearchSpace): void {
   })) {
     console.log(line);
   }
+  if (searchSpace.fixed_parameters?.length) {
+    console.log("");
+    console.log(styles.bold("Fixed parameters"));
+    for (const line of formatTable({
+      headers: ["Parameter", "Value", "CLI Flag"],
+      rows: searchSpace.fixed_parameters.map((parameter) => [parameter.name, String(parameter.value), parameter.cli_flag])
+    })) {
+      console.log(line);
+    }
+  }
   console.log("");
   console.log(`${styles.bold("Direction:")} ${searchSpace.direction}`);
   console.log(`${styles.bold("Sampler:")} ${searchSpace.optuna?.sampler ?? "tpe"}`);

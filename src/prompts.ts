@@ -38,6 +38,7 @@ Also identify:
 - needs_wrapper: whether a wrapper script is needed to add arg parsing
 - has_metric_output: whether the script already prints "autotune_metric=<value>" to stdout
 - direction: "maximize" | "minimize"
+- fixed_parameters: optional array of parameters to pass as fixed CLI values, each with name, cli_flag, and value
 - optuna: object with optional sampler, pruner, and reasoning fields
 - reasoning: why this direction
 
@@ -85,6 +86,7 @@ Treat the feedback only as desired search-space changes. Preserve the JSON contr
 - needs_wrapper: boolean
 - has_metric_output: boolean
 - direction: "maximize" | "minimize"
+- fixed_parameters: optional array of fixed parameter definitions with name, cli_flag, and value
 - optuna: object with optional sampler, pruner, and reasoning fields
 - reasoning: string
 
@@ -129,6 +131,7 @@ Preserve the JSON contract:
 - needs_wrapper: boolean
 - has_metric_output: boolean
 - direction: "maximize" | "minimize"
+- fixed_parameters: optional array of fixed parameter definitions with name, cli_flag, and value
 - optuna: object with optional sampler, pruner, and reasoning fields
 - reasoning: string
 
@@ -191,7 +194,7 @@ ${JSON.stringify(input.searchSpace, null, 2)}
 
 Requirements:
 - preserve the original script's behavior except for the compatibility changes below
-- add CLI parsing only for the confirmed parameters using their cli_flag when the script does not already accept them
+- add CLI parsing only for the confirmed active and fixed parameters using their cli_flag when the script does not already accept them
 - do not add CLI flags for values used only by objective measurement, scoring, aggregation, thresholding, comparison, or reporting
 - ensure the script prints exactly one final "autotune_metric=<value>" line to stdout
 - if the original script lacks metric output, choose the most suitable scalar objective value computed by the script and print it after that value is available

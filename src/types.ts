@@ -17,8 +17,15 @@ export interface SearchParameter {
   current_value?: unknown;
 }
 
+export interface FixedParameter {
+  name: string;
+  cli_flag: string;
+  value: string | number | boolean;
+}
+
 export interface SearchSpace {
   parameters: ReadonlyArray<SearchParameter>;
+  fixed_parameters?: ReadonlyArray<FixedParameter>;
   has_arg_parsing: boolean;
   needs_wrapper: boolean;
   has_metric_output?: boolean;
@@ -62,6 +69,8 @@ export interface RunOptions {
   refineRounds?: number;
   refineTrials?: number;
   refineMode?: RefineMode;
+  refineTransferFixedParams?: boolean;
+  refineTransferTrials?: boolean;
   json: boolean;
   output?: string;
   storage?: string;

@@ -3,6 +3,7 @@ import { symlink, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  createProgram,
   isMainModule,
   normalizeReasoningEffort,
   normalizeRunOptions,
@@ -33,6 +34,8 @@ describe("CLI option normalization", () => {
       timeoutSeconds: 1800,
       refineRounds: 0,
       refineMode: "ask",
+      refineTransferFixedParams: true,
+      refineTransferTrials: true,
       json: false,
       storage: "sqlite:///study.db",
       studyName: "custom",
@@ -45,8 +48,40 @@ describe("CLI option normalization", () => {
       pruner: undefined,
       storage: "sqlite:///study.db",
       studyName: "custom",
-      timeoutSeconds: 1800
+      timeoutSeconds: 1800,
+      refineTransferFixedParams: true,
+      refineTransferTrials: true
     });
+  });
+
+  it("preserves disabled refinement transfer options", () => {
+    const command = new Command()
+      .option("--no-refine-transfer-fixed-params")
+      .option("--no-refine-transfer-trials");
+    command.parse(["--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"], { from: "user" });
+    const raw = {
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      timeoutSeconds: 1800,
+      refineRounds: 1,
+      refineMode: "auto",
+      ...command.opts(),
+      json: false,
+      yes: true
+    };
+
+    expect(normalizeRunOptions(raw, command)).toMatchObject({
+      refineTransferFixedParams: false,
+      refineTransferTrials: false
+    });
+  });
+
+  it("exposes refinement transfer opt-out flags on run", () => {
+    const runCommand = createProgram().commands.find((command) => command.name() === "run");
+    expect(runCommand?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(["--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"])
+    );
   });
 
   it("validates integer options", () => {

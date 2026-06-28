@@ -33,6 +33,8 @@ export function createProgram(): Command {
   .option("--refine-rounds <n>", "agentic search-space refinement rounds after the initial trials", parseNonNegativeInt, 0)
   .option("--refine-trials <n>", "trials per refinement round; defaults to --trials", parsePositiveInt)
   .addOption(new Option("--refine-mode <mode>", "refinement approval mode").choices(["ask", "auto"]).default("ask"))
+  .option("--no-refine-transfer-fixed-params", "do not fix dropped refinement parameters at previous-best values")
+  .option("--no-refine-transfer-trials", "do not seed refinement rounds with compatible previous trials")
   .option("--json", "print JSON results", false)
   .option("--output <file>", "write JSON results to file")
   .option("--work-dir <dir>", "artifact directory")
@@ -123,6 +125,8 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     refineRounds: Number(raw.refineRounds),
     refineTrials: typeof raw.refineTrials === "number" ? raw.refineTrials : undefined,
     refineMode: raw.refineMode as RefineMode,
+    refineTransferFixedParams: raw.refineTransferFixedParams !== false,
+    refineTransferTrials: raw.refineTransferTrials !== false,
     json: Boolean(raw.json),
     output: typeof raw.output === "string" ? raw.output : undefined,
     storage: typeof raw.storage === "string" ? raw.storage : undefined,

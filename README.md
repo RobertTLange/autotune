@@ -156,6 +156,8 @@ autotune run train.py \
 
 After each round, Autotune summarizes completed trials and asks the agent to revise the search space. The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before each revised space; `--refine-mode auto` accepts revised spaces automatically.
 
+By default, refinement transfers useful context into the next round. If a parameter is removed from the active search space, Autotune fixes it at the previous best value and passes that fixed CLI flag to every later trial. It also seeds the next Optuna study with previous completed trials whose full effective parameter configuration is still valid for the refined active and fixed space. Disable these behaviors with `--no-refine-transfer-fixed-params` or `--no-refine-transfer-trials`.
+
 Each round starts a new Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json` inside the run directory. The latest round is also written to `search_space.yaml` and `results.json`.
 
 ## Search Space Format
@@ -177,6 +179,10 @@ parameters:
     cli_flag: --optimizer
     type: categorical
     choices: [adam, sgd]
+fixed_parameters:
+  - name: weight_decay
+    cli_flag: --weight-decay
+    value: 0.0005
 has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true

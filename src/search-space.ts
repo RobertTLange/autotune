@@ -52,9 +52,16 @@ const parameterSchema = z
     }
   });
 
+const fixedParameterSchema = z.object({
+  name: z.string().min(1),
+  cli_flag: z.string().regex(/^--[A-Za-z0-9][A-Za-z0-9-]*$/),
+  value: primitiveSchema
+});
+
 const searchSpaceSchema = z
   .object({
     parameters: z.array(parameterSchema),
+    fixed_parameters: z.array(fixedParameterSchema).optional(),
     has_arg_parsing: z.boolean(),
     needs_wrapper: z.boolean(),
     has_metric_output: z.boolean().default(true),
@@ -70,8 +77,9 @@ const searchSpaceSchema = z
     reasoning: z.string().optional()
   })
   .superRefine((searchSpace, ctx) => {
-    addDuplicateIssue(searchSpace.parameters, "name", "parameter name", ctx);
-    addDuplicateIssue(searchSpace.parameters, "cli_flag", "cli_flag", ctx);
+    const allParameters = [...searchSpace.parameters, ...(searchSpace.fixed_parameters ?? [])];
+    addDuplicateIssue(allParameters, "name", "parameter name", ctx);
+    addDuplicateIssue(allParameters, "cli_flag", "cli_flag", ctx);
   });
 
 function addDuplicateIssue(

@@ -53,7 +53,7 @@ describe("prompt metric-boundary contract", () => {
       outputPath: "/tmp/train_modified.py"
     });
 
-    expect(prompt).toContain("only for the confirmed parameters");
+    expect(prompt).toContain("active and fixed parameters");
     expect(prompt).toContain("do not add CLI flags for values used only by objective measurement");
     expect(prompt).toContain("preserve the original objective computation exactly");
   });
@@ -64,6 +64,7 @@ describe("prompt Optuna config contract", () => {
     const prompt = renderAnalyzePrompt({ invocation });
 
     expect(prompt).toContain("optuna");
+    expect(prompt).toContain("fixed_parameters");
     expect(prompt).toContain("sampler");
     expect(prompt).toContain("pruner");
     expect(prompt).toContain("Do not propose storage");
@@ -78,6 +79,7 @@ describe("prompt Optuna config contract", () => {
     });
 
     expect(prompt).toContain("optuna");
+    expect(prompt).toContain("fixed_parameters");
     expect(prompt).toContain("sampler");
     expect(prompt).toContain("pruner");
     expect(prompt).toContain("Do not add storage");

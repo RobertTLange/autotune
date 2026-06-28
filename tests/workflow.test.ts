@@ -578,6 +578,176 @@ describe("runAutotune", () => {
     );
   });
 
+  it("fixes dropped parameters and seeds valid previous trials during refinement", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-transfer-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 3,
+      best_trial: { number: 0, value: 1, params: { x: 0.5, y: 0.5, z: "keep" }, state: "COMPLETE" },
+      all_trials: [
+        { number: 0, value: 1, params: { x: 0.5, y: 0.5, z: "keep" }, state: "COMPLETE" },
+        { number: 1, value: 0.8, params: { x: 0.6, y: 0.2, z: "keep" }, state: "COMPLETE" },
+        { number: 2, value: 0.7, params: { x: 0.9, y: 0.5, z: "keep" }, state: "COMPLETE" }
+      ]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"), { refinedFixed: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 3,
+      refineRounds: 1,
+      refineTrials: 2,
+      refineMode: "auto",
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeTwoParameterSearchSpace(dir)
+    });
+
+    const searchSpace = await readFile(path.join(workDir, "search_space.round_1.yaml"), "utf8");
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(searchSpace).toContain("fixed_parameters");
+    expect(searchSpace).toContain("name: y");
+    expect(searchSpace).toContain("value: 0.5");
+    expect(searchSpace).toContain("name: z");
+    expect(searchSpace).toContain("value: keep");
+    expect(runner).toContain('\\"fixed_parameters\\":[{\\"name\\":\\"z\\",\\"cli_flag\\":\\"--z\\",\\"value\\":\\"keep\\"},{\\"name\\":\\"y\\",\\"cli_flag\\":\\"--y\\",\\"value\\":0.5}]');
+    expect(runner).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.5,\\"y\\":0.5,\\"z\\":\\"keep\\"}}]');
+    expect(runner).not.toContain('\\"x\\":0.9');
+  });
+
+  it("rejects transferred trials with stale params outside the refined effective space", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-stale-seed-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 1,
+      best_trial: { number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" },
+      all_trials: [{ number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" }]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      refineTransferFixedParams: false,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeTwoParameterSearchSpace(dir)
+    });
+
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"fixed_parameters\\":[]');
+    expect(runner).toContain('\\"seed_trials\\":[]');
+  });
+
+  it("keeps dropped parameters fixed after feedback revises a refined space", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-feedback-transfer-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 1,
+      best_trial: { number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" },
+      all_trials: [{ number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" }]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    const answers = ["Y", "feedback", "make x wider", "Y"];
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "ask",
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: false,
+      ask: async () => answers.shift() ?? "Y",
+      config: await writeTwoParameterSearchSpace(dir)
+    });
+
+    const searchSpace = await readFile(path.join(workDir, "search_space.round_1.yaml"), "utf8");
+    expect(searchSpace).toContain("high: 2");
+    expect(searchSpace).toContain("fixed_parameters");
+    expect(searchSpace).toContain("name: y");
+    expect(searchSpace).toContain("value: 0.5");
+  });
+
+  it("can disable refinement transfer behavior", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-no-transfer-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 1,
+      best_trial: { number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" },
+      all_trials: [{ number: 0, value: 1, params: { x: 0.5, y: 0.5 }, state: "COMPLETE" }]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      refineTransferFixedParams: false,
+      refineTransferTrials: false,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeTwoParameterSearchSpace(dir)
+    });
+
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"fixed_parameters\\":[]');
+    expect(runner).toContain('\\"seed_trials\\":[]');
+  });
+
   it("passes model and reasoning effort to each headless phase", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-headless-options-"));
     const binDir = path.join(dir, "bin");
@@ -683,7 +853,35 @@ console.log(JSON.stringify(result));
   await chmod(filePath, 0o755);
 }
 
-async function writeFakeHeadless(filePath: string): Promise<void> {
+async function writeFakePythonWithResult(filePath: string, result: unknown): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(
+    filePath,
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('Python 3.12.0');
+  process.exit(0);
+}
+if (args[0] === '-c') {
+  console.log('3.6.1');
+  process.exit(0);
+}
+const outputIndex = args.indexOf('--output');
+const output = outputIndex >= 0 ? args[outputIndex + 1] : '.autotune/results.json';
+const result = ${JSON.stringify(result)};
+fs.mkdirSync(require('node:path').dirname(output), { recursive: true });
+fs.writeFileSync(output, JSON.stringify(result));
+fs.writeFileSync(output + '.argv.json', JSON.stringify(args));
+console.log(JSON.stringify(result));
+`,
+    "utf8"
+  );
+  await chmod(filePath, 0o755);
+}
+
+async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean } = {}): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
     filePath,
@@ -704,6 +902,7 @@ if (process.argv.join(' ').includes('modified_prompt')) {
 if (process.argv.join(' ').includes('refine_prompt')) {
   console.log(JSON.stringify({
     parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }],
+    ${options.refinedFixed ? "fixed_parameters: [{ name: 'z', cli_flag: '--z', value: 'keep' }]," : ""}
     has_arg_parsing: true,
     needs_wrapper: false,
     direction: 'maximize',
@@ -748,6 +947,21 @@ async function writeWrapperSearchSpace(dir: string): Promise<string> {
     needs_wrapper: true,
     direction: "maximize",
     reasoning: "script has hardcoded x"
+  });
+  return filePath;
+}
+
+async function writeTwoParameterSearchSpace(dir: string): Promise<string> {
+  const filePath = path.join(dir, "two-parameter-space.yaml");
+  await writeSearchSpace(filePath, {
+    parameters: [
+      { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+      { name: "y", cli_flag: "--y", type: "float", low: 0, high: 1 }
+    ],
+    has_arg_parsing: true,
+    needs_wrapper: false,
+    direction: "maximize",
+    reasoning: "two parameter test space"
   });
   return filePath;
 }

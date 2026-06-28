@@ -28,7 +28,7 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("autotune_metric=");
     expect(code).toContain("def report_progress");
     expect(code).toContain("file=sys.stderr");
-    expect(code).toContain("params {json.dumps(params, sort_keys=True)}");
+    expect(code).toContain("params {json.dumps(effective_params(params), sort_keys=True)}");
     expect(code).toContain("def timestamp");
     expect(code).toContain("[{timestamp()}] Trial");
     expect(code).toContain("value=");
@@ -81,6 +81,30 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("raise RuntimeError(f\"Trial command exited");
     expect(code).toContain("raise RuntimeError(str(exc)) from exc");
     expect(code).not.toContain("raise optuna.TrialPruned");
+  });
+
+  it("renders fixed parameters and transferred seed trials", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: {
+        ...searchSpace,
+        fixed_parameters: [{ name: "y", cli_flag: "--y", value: 0.5 }]
+      },
+      seedTrials: [{ value: 1, params: { x: 0.25, y: 0.5 } }],
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('\\"fixed_parameters\\":[{\\"name\\":\\"y\\",\\"cli_flag\\":\\"--y\\",\\"value\\":0.5}]');
+    expect(code).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.25,\\"y\\":0.5}}]');
+    expect(code).toContain("def effective_params");
+    expect(code).toContain("def add_seed_trials");
+    expect(code).toContain("optuna.trial.create_trial");
+    expect(code).toContain("SEED_TRIAL_COUNT");
+    expect(code).toContain("BASELINE_FINISHED_COUNT");
+    expect(code).toContain("if not parameters or study.trials:");
+    expect(code).toContain("skipped transferred seed trial");
+    expect(code).toContain("argv.extend([parameter[\"cli_flag\"], str(parameter[\"value\"])])");
   });
 
   it("writes an executable runner file", async () => {

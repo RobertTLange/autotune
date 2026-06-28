@@ -11,13 +11,13 @@ import { resolveRunArtifactLayout, resolveRunDirectory, writeLatestRun } from ".
 import { checkDoctorPrerequisites, checkPrerequisites, type DoctorCheck } from "./check.js";
 import { confirmSearchSpace } from "./confirm.js";
 import { detectInvocation, splitCommand } from "./detect.js";
-import { writeOptunaRunner } from "./generate.js";
+import { writeOptunaRunner, type SeedTrial } from "./generate.js";
 import { runCommand } from "./process.js";
 import { readResults, renderResults, type StudyResult, type TrialResult } from "./results.js";
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
-import type { Direction, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchSpace } from "./types.js";
+import type { Direction, FixedParameter, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchParameter, SearchSpace } from "./types.js";
 
 const DEFAULT_DIRECTION: Direction = "maximize";
 const DEFAULT_SAMPLER: Sampler = "tpe";
@@ -111,6 +111,9 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     }
 
     const roundResultsPath = resultsPathForRound(workDir, finalResultsPath, round, refineRounds);
+    const seedTrials = round > 0 && result && options.refineTransferTrials !== false
+      ? seedTrialsForSearchSpace(result, confirmed)
+      : [];
     result = await runSearchRound({
       invocation,
       searchSpace: confirmed,
@@ -121,6 +124,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       options,
       resultsPath: roundResultsPath,
       studyName: studyNameForRound(studyName, round, refineRounds),
+      seedTrials,
       round,
       totalRounds: refineRounds
     });
@@ -240,6 +244,7 @@ async function runSearchRound(input: {
   options: RunOptions;
   resultsPath: string;
   studyName: string;
+  seedTrials: SeedTrial[];
   round: number;
   totalRounds: number;
 }): Promise<StudyResult> {
@@ -259,7 +264,8 @@ async function runSearchRound(input: {
     outputPath: runnerPath,
     resultsPath: input.resultsPath,
     studyName: input.studyName,
-    timeoutSeconds: input.options.timeoutSeconds
+    timeoutSeconds: input.options.timeoutSeconds,
+    seedTrials: input.seedTrials
   });
 
   const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
@@ -302,7 +308,13 @@ async function refineSearchSpaceForRound(input: {
     ...input.headless
   });
   writeStatus(`Refinement complete: ${refined.parameters.length} parameter(s) proposed.`, "success");
-  const prepared = await prepareSearchSpaceForRun(refined, input.options, input.scriptPath);
+  const prepared = await prepareRefinedSearchSpaceForRun({
+    candidate: refined,
+    previous: input.current,
+    result: input.previousResult,
+    options: input.options,
+    scriptPath: input.scriptPath
+  });
   const confirmed = await confirmSearchSpace({
     searchSpace: prepared,
     filePath: input.roundSearchSpacePath,
@@ -319,11 +331,35 @@ async function refineSearchSpaceForRound(input: {
         ...input.headless
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
-      return prepareSearchSpaceForRun(revised, input.options, input.scriptPath);
+      return prepareRefinedSearchSpaceForRun({
+        candidate: revised,
+        previous: input.current,
+        result: input.previousResult,
+        options: input.options,
+        scriptPath: input.scriptPath
+      });
     }
   });
   await writeSearchSpace(input.searchSpacePath, confirmed);
   return confirmed;
+}
+
+async function prepareRefinedSearchSpaceForRun(input: {
+  candidate: SearchSpace;
+  previous: SearchSpace;
+  result: StudyResult;
+  options: RunOptions;
+  scriptPath: string;
+}): Promise<SearchSpace> {
+  const prepared = await prepareSearchSpaceForRun(input.candidate, input.options, input.scriptPath);
+  if (input.options.refineTransferFixedParams === false) {
+    return prepared;
+  }
+  return transferDroppedParameters({
+    previous: input.previous,
+    refined: prepared,
+    result: input.result
+  });
 }
 
 function summarizeTrialResults(result: StudyResult, searchSpace: SearchSpace) {
@@ -344,6 +380,84 @@ function summarizeTrialResults(result: StudyResult, searchSpace: SearchSpace) {
       sampled_values: uniqueSampledValues(result.all_trials, parameter.name).slice(0, 10)
     }))
   };
+}
+
+function transferDroppedParameters(input: {
+  previous: SearchSpace;
+  refined: SearchSpace;
+  result: StudyResult;
+}): SearchSpace {
+  const bestParams = input.result.best_trial?.params;
+  if (!bestParams) {
+    return input.refined;
+  }
+  const activeNames = new Set(input.refined.parameters.map((parameter) => parameter.name));
+  const fixed = new Map<string, FixedParameter>(
+    (input.refined.fixed_parameters ?? []).map((parameter) => [parameter.name, parameter])
+  );
+  for (const parameter of input.previous.fixed_parameters ?? []) {
+    if (!activeNames.has(parameter.name)) {
+      fixed.set(parameter.name, parameter);
+    }
+  }
+  for (const parameter of input.previous.parameters) {
+    if (activeNames.has(parameter.name)) {
+      continue;
+    }
+    const value = bestParams[parameter.name];
+    if (isPrimitive(value)) {
+      fixed.set(parameter.name, { name: parameter.name, cli_flag: parameter.cli_flag, value });
+    }
+  }
+  return { ...input.refined, fixed_parameters: [...fixed.values()] };
+}
+
+function seedTrialsForSearchSpace(result: StudyResult, searchSpace: SearchSpace): SeedTrial[] {
+  return completedTrials(result)
+    .filter((trial) => trial.value !== null && trialIsValidForSearchSpace(trial, searchSpace))
+    .map((trial) => ({ value: Number(trial.value), params: primitiveParams(trial.params) }));
+}
+
+function trialIsValidForSearchSpace(trial: TrialResult, searchSpace: SearchSpace): boolean {
+  const activeNames = new Set(searchSpace.parameters.map((parameter) => parameter.name));
+  const fixedNames = new Set((searchSpace.fixed_parameters ?? []).map((parameter) => parameter.name));
+  for (const name of Object.keys(trial.params)) {
+    if (!activeNames.has(name) && !fixedNames.has(name)) {
+      return false;
+    }
+  }
+  for (const fixed of searchSpace.fixed_parameters ?? []) {
+    if (trial.params[fixed.name] !== fixed.value) {
+      return false;
+    }
+  }
+  for (const parameter of searchSpace.parameters) {
+    if (!parameterValueIsValid(parameter, trial.params[parameter.name])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function parameterValueIsValid(parameter: SearchParameter, value: unknown): boolean {
+  if (parameter.type === "categorical") {
+    return (parameter.choices ?? []).some((choice) => choice === value);
+  }
+  if (typeof value !== "number" || typeof parameter.low !== "number" || typeof parameter.high !== "number") {
+    return false;
+  }
+  if (value < parameter.low || value > parameter.high) {
+    return false;
+  }
+  return parameter.type !== "int" || Number.isInteger(value);
+}
+
+function primitiveParams(params: Record<string, unknown>): Record<string, string | number | boolean> {
+  return Object.fromEntries(Object.entries(params).filter((entry): entry is [string, string | number | boolean] => isPrimitive(entry[1])));
+}
+
+function isPrimitive(value: unknown): value is string | number | boolean {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
 }
 
 function completedTrials(result: StudyResult): TrialResult[] {

@@ -16,6 +16,7 @@ describe("printSearchSpace", () => {
           { name: "lr", cli_flag: "--lr", type: "float", low: 0.001, high: 0.1, log: true },
           { name: "optimizer", cli_flag: "--optimizer", type: "categorical", choices: ["adam", "sgd"] }
         ],
+        fixed_parameters: [{ name: "batch_size", cli_flag: "--batch-size", value: 128 }],
         has_arg_parsing: true,
         needs_wrapper: false,
         optuna: { sampler: "random", pruner: "median", reasoning: "short iterative trials" },
@@ -32,6 +33,8 @@ describe("printSearchSpace", () => {
     expect(lines.join("\n")).toContain("---------  -----------  ----------------  -----------  -------");
     expect(lines.join("\n")).toContain("lr         float        [0.001, 0.1] log  --lr");
     expect(lines.join("\n")).toContain("optimizer  categorical  [adam, sgd]       --optimizer");
+    expect(lines.join("\n")).toContain("Fixed parameters");
+    expect(lines.join("\n")).toContain("batch_size  128    --batch-size");
     expect(lines.join("\n")).toContain("Sampler: random");
     expect(lines.join("\n")).toContain("Pruner: median");
     expect(lines.join("\n")).toContain("short iterative trials");
