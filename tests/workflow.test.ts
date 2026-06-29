@@ -690,6 +690,44 @@ describe("runAutotune", () => {
     expect(runner).toContain('\\"seed_trials\\":[]');
   });
 
+  it("fills added active parameters from current_value when transferring trials", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-added-param-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 1,
+      best_trial: { number: 0, value: 1, params: { x: 0.5 }, state: "COMPLETE" },
+      all_trials: [{ number: 0, value: 1, params: { x: 0.5 }, state: "COMPLETE" }]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"), { addedParamCurrentValue: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      refineTransferFixedParams: false,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeSingleParameterSearchSpace(dir)
+    });
+
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.5,\\"y\\":0.25},\\"source_round\\":0,\\"source_trial_number\\":0}]');
+  });
+
   it("keeps dropped parameters fixed after feedback revises a refined space", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-feedback-transfer-"));
     const binDir = path.join(dir, "bin");
@@ -905,7 +943,7 @@ console.log(JSON.stringify(result));
   await chmod(filePath, 0o755);
 }
 
-async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean } = {}): Promise<void> {
+async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean } = {}): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
     filePath,
@@ -925,7 +963,9 @@ if (process.argv.join(' ').includes('modified_prompt')) {
 }
 if (process.argv.join(' ').includes('refine_prompt')) {
   console.log(JSON.stringify({
-    parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }],
+    parameters: ${options.addedParamCurrentValue
+      ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }, { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1, current_value: 0.25 }]"
+      : "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }]"},
     ${options.refinedFixed ? "fixed_parameters: [{ name: 'z', cli_flag: '--z', value: 'keep' }]," : ""}
     has_arg_parsing: true,
     needs_wrapper: false,
@@ -986,6 +1026,18 @@ async function writeTwoParameterSearchSpace(dir: string): Promise<string> {
     needs_wrapper: false,
     direction: "maximize",
     reasoning: "two parameter test space"
+  });
+  return filePath;
+}
+
+async function writeSingleParameterSearchSpace(dir: string): Promise<string> {
+  const filePath = path.join(dir, "single-parameter-space.yaml");
+  await writeSearchSpace(filePath, {
+    parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+    has_arg_parsing: true,
+    needs_wrapper: false,
+    direction: "maximize",
+    reasoning: "single parameter test space"
   });
   return filePath;
 }

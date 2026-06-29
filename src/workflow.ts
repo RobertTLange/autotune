@@ -504,34 +504,42 @@ function transferDroppedParameters(input: {
 
 function seedTrialsForSearchSpace(result: StudyResult, searchSpace: SearchSpace, sourceRound: number): SeedTrial[] {
   return completedTrials(result)
-    .filter((trial) => trial.value !== null && trialIsValidForSearchSpace(trial, searchSpace))
-    .map((trial) => ({
-      value: Number(trial.value),
-      params: primitiveParams(trial.params),
-      source_round: sourceRound,
-      source_trial_number: trial.number
-    }));
+    .map((trial) => seedTrialForSearchSpace(trial, searchSpace, sourceRound))
+    .filter((trial): trial is SeedTrial => trial !== undefined);
 }
 
-function trialIsValidForSearchSpace(trial: TrialResult, searchSpace: SearchSpace): boolean {
+function seedTrialForSearchSpace(trial: TrialResult, searchSpace: SearchSpace, sourceRound: number): SeedTrial | undefined {
+  if (trial.value === null) {
+    return undefined;
+  }
   const activeNames = new Set(searchSpace.parameters.map((parameter) => parameter.name));
   const fixedNames = new Set((searchSpace.fixed_parameters ?? []).map((parameter) => parameter.name));
   for (const name of Object.keys(trial.params)) {
     if (!activeNames.has(name) && !fixedNames.has(name)) {
-      return false;
+      return undefined;
     }
   }
   for (const fixed of searchSpace.fixed_parameters ?? []) {
     if (trial.params[fixed.name] !== fixed.value) {
-      return false;
+      return undefined;
     }
   }
+  const params = primitiveParams(trial.params);
   for (const parameter of searchSpace.parameters) {
-    if (!parameterValueIsValid(parameter, trial.params[parameter.name])) {
-      return false;
+    if (parameterValueIsValid(parameter, params[parameter.name])) {
+      continue;
     }
+    if (!isPrimitive(parameter.current_value) || !parameterValueIsValid(parameter, parameter.current_value)) {
+      return undefined;
+    }
+    params[parameter.name] = parameter.current_value;
   }
-  return true;
+  return {
+    value: Number(trial.value),
+    params,
+    source_round: sourceRound,
+    source_trial_number: trial.number
+  };
 }
 
 function parameterValueIsValid(parameter: SearchParameter, value: unknown): boolean {
