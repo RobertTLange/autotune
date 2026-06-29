@@ -255,6 +255,45 @@ For a sequential transfer ablation, run:
 
 The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 40-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
 
+### CIFAR-10 Speedrun
+
+`examples/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit hyperparameter flags and prints the combined speedrun score as `autotune_metric`. The score maximizes fast training while applying the original exponential penalty below 94% mean TTA validation accuracy.
+
+Install runtime packages first if needed:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python optuna torch torchvision numpy scipy
+```
+
+Run a practical smoke-scoring search:
+
+```bash
+CIFAR10_SPEEDRUN_NUM_RUNS=5 \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
+  --trials 20 \
+  --timeout-seconds 1800 \
+  --direction maximize \
+  --agent codex \
+  --agent-guidance "Tune only training hyperparameters and preserve the CIFAR-10 speedrun scoring protocol." \
+  --json
+```
+
+For full Agentic Scientist-style scoring, use the same command with 100 timed runs:
+
+```bash
+CIFAR10_SPEEDRUN_NUM_RUNS=100 \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
+  --trials 20 \
+  --timeout-seconds 1800 \
+  --direction maximize \
+  --agent codex \
+  --agent-guidance "Tune only training hyperparameters and preserve the CIFAR-10 speedrun scoring protocol." \
+  --json
+```
+
+Scoring controls are environment-only and should not be included in the search space: `CIFAR10_SPEEDRUN_NUM_RUNS` controls the timed-run count, and `CIFAR10_SPEEDRUN_MAX_TIME_PER_RUN` defaults to `3.0` seconds for early termination. You can also set `CIFAR10_SPEEDRUN_DATA_DIR` to override the default `~/data/cifar10` cache and `CIFAR10_SPEEDRUN_RESULTS_JSON` to write the per-trial metrics JSON.
+
 ### C++
 
 `examples/pid_controller.cpp` is a single-file C++ simulation with manual flag parsing and built-in metric output. It tunes PID controller gains against a fixed tracking scenario with a disturbance.
