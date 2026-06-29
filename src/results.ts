@@ -7,6 +7,7 @@ export interface TrialResult {
   value: number | null;
   params: Record<string, unknown>;
   state?: string;
+  user_attrs?: Record<string, unknown>;
 }
 
 export interface StudyResult {

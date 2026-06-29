@@ -112,7 +112,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
 
     const roundResultsPath = resultsPathForRound(workDir, finalResultsPath, round, refineRounds);
     const seedTrials = round > 0 && result && options.refineTransferTrials !== false
-      ? seedTrialsForSearchSpace(result, confirmed)
+      ? seedTrialsForSearchSpace(result, confirmed, round - 1)
       : [];
     result = await runSearchRound({
       invocation,
@@ -412,10 +412,15 @@ function transferDroppedParameters(input: {
   return { ...input.refined, fixed_parameters: [...fixed.values()] };
 }
 
-function seedTrialsForSearchSpace(result: StudyResult, searchSpace: SearchSpace): SeedTrial[] {
+function seedTrialsForSearchSpace(result: StudyResult, searchSpace: SearchSpace, sourceRound: number): SeedTrial[] {
   return completedTrials(result)
     .filter((trial) => trial.value !== null && trialIsValidForSearchSpace(trial, searchSpace))
-    .map((trial) => ({ value: Number(trial.value), params: primitiveParams(trial.params) }));
+    .map((trial) => ({
+      value: Number(trial.value),
+      params: primitiveParams(trial.params),
+      source_round: sourceRound,
+      source_trial_number: trial.number
+    }));
 }
 
 function trialIsValidForSearchSpace(trial: TrialResult, searchSpace: SearchSpace): boolean {

@@ -623,7 +623,7 @@ describe("runAutotune", () => {
     expect(searchSpace).toContain("name: z");
     expect(searchSpace).toContain("value: keep");
     expect(runner).toContain('\\"fixed_parameters\\":[{\\"name\\":\\"z\\",\\"cli_flag\\":\\"--z\\",\\"value\\":\\"keep\\"},{\\"name\\":\\"y\\",\\"cli_flag\\":\\"--y\\",\\"value\\":0.5}]');
-    expect(runner).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.5,\\"y\\":0.5,\\"z\\":\\"keep\\"}}]');
+    expect(runner).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.5,\\"y\\":0.5,\\"z\\":\\"keep\\"},\\"source_round\\":0,\\"source_trial_number\\":0}]');
     expect(runner).not.toContain('\\"x\\":0.9');
   });
 

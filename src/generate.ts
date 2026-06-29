@@ -5,6 +5,8 @@ import type { Invocation, SearchSpace } from "./types.js";
 export interface SeedTrial {
   value: number;
   params: Record<string, string | number | boolean>;
+  source_round?: number;
+  source_trial_number?: number;
 }
 
 export function renderOptunaRunner(input: {
@@ -32,6 +34,7 @@ export function renderOptunaRunner(input: {
 
   return `#!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -87,6 +90,49 @@ def effective_params(params):
     for parameter in CONFIG.get("fixed_parameters", []):
         effective[parameter["name"]] = parameter["value"]
     return effective
+
+
+def parameter_type_by_name():
+    mapping = {parameter["name"]: parameter["type"] for parameter in CONFIG["parameters"]}
+    for parameter in CONFIG.get("fixed_parameters", []):
+        mapping.setdefault(parameter["name"], type(parameter["value"]).__name__)
+    return mapping
+
+
+def canonical_param_value(name, value):
+    parameter_type = parameter_type_by_name().get(name)
+    if parameter_type == "float":
+        return float(value)
+    if parameter_type == "int":
+        return int(value)
+    return value
+
+
+def canonical_params(params):
+    return {name: canonical_param_value(name, value) for name, value in sorted(params.items())}
+
+
+def effective_param_hash(params):
+    encoded = json.dumps(canonical_params(params), sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def existing_trial_hashes(study):
+    hashes = set()
+    for trial in study.trials:
+        try:
+            hashes.add(effective_param_hash(effective_params(trial.params)))
+        except Exception:
+            continue
+    return hashes
+
+
+def autotune_user_attrs(trial):
+    return {
+        name: value
+        for name, value in trial.user_attrs.items()
+        if name.startswith("autotune_")
+    }
 
 
 def parse_metric(stdout):
@@ -185,6 +231,7 @@ def run_trial_command(argv):
 def objective(trial):
     global STARTED_TRIAL_COUNT
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
+    trial.set_user_attr("autotune_effective_param_hash", effective_param_hash(effective_params(params)))
     with PROGRESS_LOCK:
         STARTED_TRIAL_COUNT += 1
         started = STARTED_TRIAL_COUNT
@@ -240,18 +287,32 @@ def distribution_for_parameter(parameter):
 
 def add_seed_trials(study):
     parameters = CONFIG["parameters"]
-    if not parameters or study.trials:
+    if not parameters:
         return 0
     distributions = {parameter["name"]: distribution_for_parameter(parameter) for parameter in parameters}
     active_names = set(distributions)
+    existing_hashes = existing_trial_hashes(study)
     count = 0
     for seed in CONFIG.get("seed_trials", []):
         params = {name: value for name, value in seed["params"].items() if name in active_names}
         if set(params) != active_names:
             print(f"[{timestamp()}] skipped transferred seed trial with incomplete active params", file=sys.stderr, flush=True)
             continue
+        seed_hash = effective_param_hash(effective_params(params))
+        if seed_hash in existing_hashes:
+            print(f"[{timestamp()}] skipped duplicate transferred seed trial", file=sys.stderr, flush=True)
+            continue
+        seed_attrs = {
+            "autotune_transfer": True,
+            "autotune_effective_param_hash": seed_hash,
+        }
+        if "source_round" in seed:
+            seed_attrs["autotune_source_round"] = seed["source_round"]
+        if "source_trial_number" in seed:
+            seed_attrs["autotune_source_trial_number"] = seed["source_trial_number"]
         try:
-            study.add_trial(optuna.trial.create_trial(params=params, distributions=distributions, value=seed["value"]))
+            study.add_trial(optuna.trial.create_trial(params=params, distributions=distributions, value=seed["value"], user_attrs=seed_attrs))
+            existing_hashes.add(seed_hash)
             count += 1
         except Exception as exc:
             print(f"[{timestamp()}] skipped transferred seed trial: {exc}", file=sys.stderr, flush=True)
@@ -264,6 +325,7 @@ def serialize_trial(trial):
         "value": trial.value,
         "params": effective_params(trial.params),
         "state": trial.state.name,
+        "user_attrs": autotune_user_attrs(trial),
     }
 
 

@@ -1,5 +1,6 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { renderOptunaRunner, writeOptunaRunner } from "../src/generate.js";
 
@@ -111,11 +112,21 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.25,\\"y\\":0.5}}]');
     expect(code).toContain("def effective_params");
     expect(code).toContain("def add_seed_trials");
+    expect(code).toContain("def effective_param_hash");
+    expect(code).toContain("existing_hashes");
     expect(code).toContain("optuna.trial.create_trial");
+    expect(code).toContain("user_attrs=seed_attrs");
+    expect(code).toContain('"autotune_transfer": True');
+    expect(code).toContain('"autotune_effective_param_hash": seed_hash');
+    expect(code).toContain("def autotune_user_attrs");
+    expect(code).toContain('if name.startswith("autotune_")');
+    expect(code).toContain('"user_attrs": autotune_user_attrs(trial)');
     expect(code).toContain("SEED_TRIAL_COUNT");
     expect(code).toContain("BASELINE_FINISHED_COUNT");
-    expect(code).toContain("if not parameters or study.trials:");
+    expect(code).toContain("if not parameters:");
+    expect(code).not.toContain("if not parameters or study.trials:");
     expect(code).toContain("skipped transferred seed trial");
+    expect(code).toContain("skipped duplicate transferred seed trial");
     expect(code).toContain("argv.extend([parameter[\"cli_flag\"], str(parameter[\"value\"])])");
   });
 
@@ -131,4 +142,73 @@ describe("renderOptunaRunner", () => {
     await writeFile(path.join(dir, "train.py"), "print('autotune_metric=1')\n");
     expect(await readFile(runner, "utf8")).toContain("def objective");
   });
+
+  it("imports transferred seeds idempotently with provenance", async () => {
+    if (!(await pythonHasOptuna())) {
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-seed-runner-"));
+    const train = path.join(dir, "train.py");
+    const runner = path.join(dir, "train_optuna.py");
+    const results = path.join(dir, "results.json");
+    const storage = `sqlite:///${path.join(dir, "study.db")}`;
+    await writeFile(train, "print('autotune_metric=0.5')\n", "utf8");
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: results,
+      studyName: "seed_transfer_test",
+      seedTrials: [
+        { value: 1, params: { x: 1 }, source_round: 0, source_trial_number: 7 },
+        { value: 1, params: { x: 1.0 }, source_round: 0, source_trial_number: 7 }
+      ]
+    });
+
+    await runPython([runner, "--trials", "0", "--direction", "minimize", "--sampler", "random", "--pruner", "none", "--n-jobs", "1", "--storage", storage]);
+    await runPython([runner, "--trials", "0", "--direction", "minimize", "--sampler", "random", "--pruner", "none", "--n-jobs", "1", "--storage", storage]);
+
+    const result = JSON.parse(await readFile(results, "utf8"));
+    expect(result.all_trials).toHaveLength(1);
+    expect(result.all_trials[0].params).toEqual({ x: 1 });
+    expect(result.all_trials[0].user_attrs).toMatchObject({
+      autotune_transfer: true,
+      autotune_source_round: 0,
+      autotune_source_trial_number: 7
+    });
+    expect(Object.keys(result.all_trials[0].user_attrs).every((key) => key.startsWith("autotune_"))).toBe(true);
+  });
 });
+
+async function pythonHasOptuna(): Promise<boolean> {
+  try {
+    await runPython(["-c", "import optuna"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runPython(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(`python3 ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
+    });
+  });
+}
