@@ -12,10 +12,22 @@ describe("packaged examples", () => {
     expect(readme).toContain("examples/cifar10_resnet.py");
     expect(readme).toContain("examples/cifar10_speedrun.py");
     expect(readme).toContain("examples/nanochat_benchmark.py");
+    expect(readme).toContain("examples/README.md");
     expect(readme).not.toContain("mnist_cnn_no_cli.py");
     expect(packageJson.files).toContain("examples/*.py");
     expect(packageJson.files).toContain("examples/*.yaml");
     expect(packageJson.files).toContain("examples/*.sh");
+    expect(packageJson.files).toContain("examples/README.md");
+  });
+
+  it("documents benchmark setup details in examples README", async () => {
+    const readme = await readFile(path.join("examples", "README.md"), "utf8");
+
+    expect(readme).toContain("CIFAR10_SPEEDRUN_DATA_DIR");
+    expect(readme).toContain("CIFAR10_SPEEDRUN_NUM_RUNS=100");
+    expect(readme).toContain("NANOCHAT_DIR");
+    expect(readme).toContain("python -m nanochat.dataset");
+    expect(readme).toContain("NANOCHAT_BENCHMARK_NUM_ITERATIONS");
   });
 
   it("keeps deep-learning examples intentionally agent-compatible", async () => {

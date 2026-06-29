@@ -203,6 +203,8 @@ reasoning: accuracy-style metric
 
 ## Examples
 
+See `examples/README.md` for benchmark setup details, dataset/cache controls, and smoke-vs-full run guidance.
+
 ### MNIST CNN
 
 `examples/mnist_cnn.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
@@ -258,18 +260,11 @@ The script analyzes CIFAR-10 once, reuses the same initial search space, then ru
 
 ### CIFAR-10 Speedrun
 
-`examples/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit hyperparameter flags and prints the combined speedrun score as `autotune_metric`. The score maximizes fast training while applying the original exponential penalty below 94% mean TTA validation accuracy.
-
-Install runtime packages first if needed:
+`examples/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit hyperparameter flags and prints the combined speedrun score as `autotune_metric`. See `examples/README.md` for data cache and full scoring controls.
 
 ```bash
 uv venv .venv
 uv pip install --python .venv/bin/python optuna torch torchvision numpy scipy
-```
-
-Run a practical smoke-scoring search:
-
-```bash
 CIFAR10_SPEEDRUN_NUM_RUNS=5 \
 PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
   --trials 20 \
@@ -280,52 +275,14 @@ PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
   --json
 ```
 
-For full Agentic Scientist-style scoring, use the same command with 100 timed runs:
-
-```bash
-CIFAR10_SPEEDRUN_NUM_RUNS=100 \
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
-  --trials 20 \
-  --timeout-seconds 1800 \
-  --direction maximize \
-  --agent codex \
-  --agent-guidance "Tune only training hyperparameters and preserve the CIFAR-10 speedrun scoring protocol." \
-  --json
-```
-
-Scoring controls are environment-only and should not be included in the search space: `CIFAR10_SPEEDRUN_NUM_RUNS` controls the timed-run count, and `CIFAR10_SPEEDRUN_MAX_TIME_PER_RUN` defaults to `3.0` seconds for early termination. You can also set `CIFAR10_SPEEDRUN_DATA_DIR` to override the default `~/data/cifar10` cache and `CIFAR10_SPEEDRUN_RESULTS_JSON` to write the per-trial metrics JSON.
-
 ### Nanochat Benchmark
 
-`examples/nanochat_benchmark.py` is an Autotune-native wrapper for the nanochat/autoresearch validation-bits-per-byte benchmark. It uses the paper-inspired 14-hyperparameter search space in `examples/nanochat_search_space.yaml`, requires a local `karpathy/nanochat` checkout via `NANOCHAT_DIR`, and prints `autotune_metric=<val_bpb>`. CUDA out-of-memory trials are reported as `100.0`, matching the finite penalty used in the paper.
-
-Prepare nanochat separately:
-
-```bash
-git clone https://github.com/karpathy/nanochat ~/projects/nanochat
-cd ~/projects/nanochat
-uv sync --extra gpu
-```
-
-Run a paper-style TPE workload with a 24-hour cumulative trial-time budget:
+`examples/nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and uses the paper-inspired 14-hyperparameter search space in `examples/nanochat_search_space.yaml`. See `examples/README.md` for nanochat setup, data prep, and smoke-run controls.
 
 ```bash
 export NANOCHAT_DIR=~/projects/nanochat
 ./examples/run_nanochat_benchmark.sh
 ```
-
-For a shorter smoke run:
-
-```bash
-export NANOCHAT_DIR=~/projects/nanochat
-NANOCHAT_BENCHMARK_NUM_ITERATIONS=20 \
-NANOCHAT_BENCHMARK_EVAL_TOKENS=524288 \
-TRIALS=3 \
-TIME_BUDGET_SECONDS=1800 \
-./examples/run_nanochat_benchmark.sh
-```
-
-Measurement controls are environment-only and should not be tuned: `NANOCHAT_BENCHMARK_NUM_ITERATIONS`, `NANOCHAT_BENCHMARK_MAX_SEQ_LEN`, `NANOCHAT_BENCHMARK_EVAL_EVERY`, `NANOCHAT_BENCHMARK_EVAL_TOKENS`, `NANOCHAT_BENCHMARK_DEVICE_TYPE`, `NANOCHAT_BENCHMARK_RUN`, and `NANOCHAT_BENCHMARK_MODEL_TAG`. `NANOCHAT_PYTHON` can override the Python executable; otherwise the wrapper uses `$NANOCHAT_DIR/.venv/bin/python`.
 
 ### C++
 

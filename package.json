@@ -13,6 +13,7 @@
     "examples/*.cpp",
     "examples/*.yaml",
     "examples/*.sh",
+    "examples/README.md",
     "templates",
     "README.md"
   ],
