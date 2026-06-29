@@ -3,6 +3,7 @@ Refine this Optuna hyperparameter search space for round {round} using completed
 Script language: {language}
 Invocation command argv: {command_argv}
 Script path: {script}
+{agent_guidance_block}
 
 Current search space JSON:
 {search_space_json}

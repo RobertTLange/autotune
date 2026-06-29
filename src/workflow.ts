@@ -64,7 +64,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
   const searchSpace = configuredSearchSpace ?? await prepareSearchSpaceForRun(
-    await runAnalysisPhase({ invocation, workDir, budget: initialBudget, ...headless }),
+    await runAnalysisPhase({ invocation, workDir, budget: initialBudget, agentGuidance: options.agentGuidance, ...headless }),
     options,
     scriptPath
   );
@@ -82,6 +82,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         searchSpace: current,
         feedback,
         budget: initialBudget,
+        agentGuidance: options.agentGuidance,
         workDir,
         ...headless
       });
@@ -175,12 +176,16 @@ export async function analyzeOnly(script: string, options: {
   output?: string;
   workDir: string;
   command?: string;
+  agentGuidance?: string;
 }): Promise<void> {
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
   const workDir = path.resolve(options.workDir);
   const invocation = detectInvocation(scriptPath, options.command);
-  const searchSpace = withEffectiveOptunaSettings(await analyzeScript({ invocation, workDir, ...pickHeadlessOptions(options) }), {});
+  const searchSpace = withEffectiveOptunaSettings(
+    await analyzeScript({ invocation, workDir, agentGuidance: options.agentGuidance, ...pickHeadlessOptions(options) }),
+    {}
+  );
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
@@ -328,6 +333,7 @@ async function refineSearchSpaceForRound(input: {
     trialSummary: summarizeTrialResults(input.previousResult, input.current),
     round: input.round,
     budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
+    agentGuidance: input.options.agentGuidance,
     workDir: input.workDir,
     ...input.headless
   });
@@ -351,6 +357,7 @@ async function refineSearchSpaceForRound(input: {
         searchSpace: current,
         feedback,
         budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
+        agentGuidance: input.options.agentGuidance,
         workDir: input.workDir,
         ...input.headless
       });
@@ -763,6 +770,7 @@ async function runAnalysisPhase(input: {
   invocation: ReturnType<typeof detectInvocation>;
   workDir: string;
   budget?: SearchBudget;
+  agentGuidance?: string;
 } & HeadlessOptions): Promise<SearchSpace> {
   writeStatus(`Phase 1: analyzing ${styles.dim(input.invocation.script)} with ${formatHeadlessLabel(input)}...`);
   writeStatus("This can take a minute on first run.");

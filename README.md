@@ -52,6 +52,7 @@ autotune run train.py \
   --agent codex \
   --model gpt-5.5 \
   --reasoning-effort high \
+  --agent-guidance "prefer optimizer and regularization parameters" \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
@@ -61,6 +62,8 @@ autotune run train.py \
 Use `--effort low|medium|high|xhigh` as a shorter alias for `--reasoning-effort`.
 
 When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
+
+Use `--agent-guidance <text>` or `--agent-guidance-file <file>` to add advisory instructions for search-space generation and refinement, such as parameters to prefer or avoid. If both are provided, file guidance is applied first and inline guidance is appended. Guidance does not apply to modified-script generation and cannot override schema, metric comparability, or objective-measurement constraints. Guidance is sent to the agent and stored in prompt artifacts; guidance files must be regular files no larger than 65536 bytes.
 
 By default, each run gets its own timestamped artifact directory next to the target script:
 

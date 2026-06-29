@@ -62,6 +62,7 @@ export interface RunOptions {
   workDir?: string;
   agent: string;
   model?: string;
+  agentGuidance?: string;
   reasoningEffort?: ReasoningEffort;
   command?: string;
   buildCommand?: string;

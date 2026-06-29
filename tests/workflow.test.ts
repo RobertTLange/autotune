@@ -170,6 +170,27 @@ describe("runAutotune", () => {
     expect(await readFile(argLog, "utf8")).toContain('"--model","claude-opus-4-6","--reasoning-effort","xhigh"');
   });
 
+  it("includes agent guidance in analyze-only prompts", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-guidance-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await analyzeOnly(script, {
+      agent: "claude",
+      json: true,
+      workDir,
+      agentGuidance: "Prefer optimizer hyperparameters only."
+    });
+
+    const prompt = await readFile(path.join(workDir, "analyze_prompt.md"), "utf8");
+    expect(prompt).toContain("User guidance for search-space generation/refinement");
+    expect(prompt).toContain("Prefer optimizer hyperparameters only.");
+  });
+
   it("renders previous results and resumes from an existing runner", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-resume-"));
     const binDir = path.join(dir, "bin");
@@ -603,6 +624,7 @@ describe("runAutotune", () => {
       nJobs: 1,
       workDir,
       agent: "claude",
+      agentGuidance: "Keep refinement focused on x.",
       json: true,
       yes: true
     });
@@ -631,6 +653,7 @@ describe("runAutotune", () => {
     expect(manifest.rounds[1].runner_path).toContain("train_optuna.round_1.py");
     const refinePrompt = await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8");
     expect(refinePrompt).toContain("Trial result summary");
+    expect(refinePrompt).toContain("Keep refinement focused on x.");
     expect(refinePrompt).toContain("current_refinement_round: 1");
     expect(refinePrompt).toContain("current_round_trials: 3");
     expect(refinePrompt).toContain('"state_counts"');

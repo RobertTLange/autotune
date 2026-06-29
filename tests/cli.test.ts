@@ -1,5 +1,5 @@
 import { Command, Option } from "commander";
-import { symlink, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -82,6 +82,113 @@ describe("CLI option normalization", () => {
     expect(runCommand?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining(["--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"])
     );
+  });
+
+  it("exposes agent guidance options on run and analyze", () => {
+    const program = createProgram();
+    const runCommand = program.commands.find((command) => command.name() === "run");
+    const analyzeCommand = program.commands.find((command) => command.name() === "analyze");
+
+    expect(runCommand?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file"])
+    );
+    expect(analyzeCommand?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file"])
+    );
+  });
+
+  it("combines guidance file and inline guidance for run options", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-guidance-cli-"));
+    const guidanceFile = path.join(dir, "guidance.txt");
+    await writeFile(guidanceFile, "prefer compact spaces\n", "utf8");
+    const command = new Command()
+      .option("--agent-guidance <text>")
+      .option("--agent-guidance-file <file>");
+    command.parse(["--agent-guidance-file", guidanceFile, "--agent-guidance", "avoid batch size"], { from: "user" });
+    const raw = {
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    };
+
+    expect(normalizeRunOptions(raw, command)).toMatchObject({
+      agentGuidance: "prefer compact spaces\n\navoid batch size"
+    });
+  });
+
+  it("rejects empty agent guidance", async () => {
+    const command = new Command().option("--agent-guidance <text>");
+    command.parse(["--agent-guidance", "   "], { from: "user" });
+    const raw = {
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    };
+
+    expect(() => normalizeRunOptions(raw, command)).toThrow(/agent guidance/i);
+  });
+
+  it("rejects missing and empty guidance files", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-guidance-missing-"));
+    const emptyFile = path.join(dir, "empty.txt");
+    await writeFile(emptyFile, "  \n", "utf8");
+    const baseRaw = {
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true
+    };
+    const missingCommand = new Command().option("--agent-guidance-file <file>");
+    missingCommand.parse(["--agent-guidance-file", path.join(dir, "missing.txt")], { from: "user" });
+    const emptyCommand = new Command().option("--agent-guidance-file <file>");
+    emptyCommand.parse(["--agent-guidance-file", emptyFile], { from: "user" });
+
+    expect(() => normalizeRunOptions({ ...baseRaw, ...missingCommand.opts() }, missingCommand)).toThrow(/file not found/i);
+    expect(() => normalizeRunOptions({ ...baseRaw, ...emptyCommand.opts() }, emptyCommand)).toThrow(/non-empty agent guidance/i);
+  });
+
+  it("rejects non-regular, symlinked, and oversized guidance files", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-guidance-invalid-"));
+    const guidanceDir = path.join(dir, "guidance-dir");
+    const targetFile = path.join(dir, "target.txt");
+    const guidanceLink = path.join(dir, "guidance-link.txt");
+    const largeFile = path.join(dir, "large.txt");
+    await mkdir(guidanceDir);
+    await writeFile(targetFile, "prefer compact spaces\n", "utf8");
+    await symlink(targetFile, guidanceLink);
+    await writeFile(largeFile, "x".repeat(65537), "utf8");
+    const baseRaw = {
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true
+    };
+    const directoryCommand = new Command().option("--agent-guidance-file <file>");
+    directoryCommand.parse(["--agent-guidance-file", guidanceDir], { from: "user" });
+    const symlinkCommand = new Command().option("--agent-guidance-file <file>");
+    symlinkCommand.parse(["--agent-guidance-file", guidanceLink], { from: "user" });
+    const largeCommand = new Command().option("--agent-guidance-file <file>");
+    largeCommand.parse(["--agent-guidance-file", largeFile], { from: "user" });
+
+    expect(() => normalizeRunOptions({ ...baseRaw, ...directoryCommand.opts() }, directoryCommand)).toThrow(/regular file/i);
+    expect(() => normalizeRunOptions({ ...baseRaw, ...symlinkCommand.opts() }, symlinkCommand)).toThrow(/regular file/i);
+    expect(() => normalizeRunOptions({ ...baseRaw, ...largeCommand.opts() }, largeCommand)).toThrow(/65536 bytes/i);
   });
 
   it("validates integer options", () => {

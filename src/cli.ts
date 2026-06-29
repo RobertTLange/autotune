@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
-import { realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
+
+const MAX_AGENT_GUIDANCE_FILE_BYTES = 65536;
 
 export function createProgram(): Command {
   const program = new Command();
@@ -25,6 +27,8 @@ export function createProgram(): Command {
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--agent <name>", "headless agent", "claude")
   .option("--model <name>", "headless model override")
+  .option("--agent-guidance <text>", "extra guidance for search-space generation and refinement")
+  .option("--agent-guidance-file <file>", "file with extra guidance for search-space generation and refinement")
   .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--command <command>", "override script invocation command")
@@ -49,6 +53,8 @@ export function createProgram(): Command {
   .argument("<script>", "script or executable to analyze")
   .option("--agent <name>", "headless agent", "claude")
   .option("--model <name>", "headless model override")
+  .option("--agent-guidance <text>", "extra guidance for search-space generation")
+  .option("--agent-guidance-file <file>", "file with extra guidance for search-space generation")
   .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--json", "print JSON search space", false)
@@ -64,8 +70,10 @@ export function createProgram(): Command {
     output?: string;
     workDir: string;
     command?: string;
+    agentGuidance?: string;
+    agentGuidanceFile?: string;
   }) => {
-    await analyzeOnly(script, { ...raw, reasoningEffort: normalizeReasoningEffort(raw) });
+    await analyzeOnly(script, { ...raw, reasoningEffort: normalizeReasoningEffort(raw), agentGuidance: normalizeAgentGuidance(raw) });
   });
 
   program
@@ -118,6 +126,7 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     workDir: typeof raw.workDir === "string" ? raw.workDir : undefined,
     agent: String(raw.agent),
     model: typeof raw.model === "string" ? raw.model : undefined,
+    agentGuidance: normalizeAgentGuidance(raw),
     reasoningEffort: normalizeReasoningEffort(raw),
     command: typeof raw.command === "string" ? raw.command : undefined,
     buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,
@@ -134,6 +143,79 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     yes: Boolean(raw.yes),
     config: typeof raw.config === "string" ? raw.config : undefined
   };
+}
+
+export function normalizeAgentGuidance(raw: Record<string, unknown>): string | undefined {
+  const parts = [];
+  if (typeof raw.agentGuidanceFile === "string") {
+    parts.push(readGuidance(raw.agentGuidanceFile, "--agent-guidance-file"));
+  }
+  if (typeof raw.agentGuidance === "string") {
+    parts.push(trimGuidance(raw.agentGuidance, "--agent-guidance"));
+  }
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+function readGuidance(filePath: string, label: string): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) {
+      throw new Error(`${label} must point to a regular file: ${filePath}`);
+    }
+    if (stats.size > MAX_AGENT_GUIDANCE_FILE_BYTES) {
+      throw new Error(`${label} must be ${MAX_AGENT_GUIDANCE_FILE_BYTES} bytes or smaller: ${filePath}`);
+    }
+    return trimGuidance(readBoundedGuidance(fd, label, filePath), label);
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT") {
+      throw new Error(`${label} file not found: ${filePath}`);
+    }
+    if (code === "ELOOP" || code === "EISDIR") {
+      throw new Error(`${label} must point to a regular file: ${filePath}`);
+    }
+    throw error;
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+  }
+}
+
+function readBoundedGuidance(fd: number, label: string, filePath: string): string {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const remaining = MAX_AGENT_GUIDANCE_FILE_BYTES + 1 - total;
+    const buffer = Buffer.allocUnsafe(Math.min(8192, remaining));
+    const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+    if (bytesRead === 0) {
+      return Buffer.concat(chunks, total).toString("utf8");
+    }
+    total += bytesRead;
+    if (total > MAX_AGENT_GUIDANCE_FILE_BYTES) {
+      throw new Error(`${label} must be ${MAX_AGENT_GUIDANCE_FILE_BYTES} bytes or smaller: ${filePath}`);
+    }
+    chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+  }
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function trimGuidance(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(`${label} must contain non-empty agent guidance`);
+  }
+  return trimmed;
 }
 
 export function normalizeReasoningEffort(raw: Record<string, unknown>): ReasoningEffort | undefined {

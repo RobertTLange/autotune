@@ -14,10 +14,15 @@ export async function analyzeScript(input: {
   invocation: Invocation;
   workDir: string;
   budget?: SearchBudget;
+  agentGuidance?: string;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "analyze_prompt.md");
-  await writeFile(promptPath, renderAnalyzePrompt({ invocation: input.invocation, budget: input.budget }), "utf8");
+  await writeFile(
+    promptPath,
+    renderAnalyzePrompt({ invocation: input.invocation, budget: input.budget, agentGuidance: input.agentGuidance }),
+    "utf8"
+  );
   const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
   return extractHeadlessJson(output);
 }
@@ -28,6 +33,7 @@ export async function reviseSearchSpace(input: {
   feedback: string;
   workDir: string;
   budget?: SearchBudget;
+  agentGuidance?: string;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "revise_prompt.md");
@@ -37,7 +43,8 @@ export async function reviseSearchSpace(input: {
       invocation: input.invocation,
       searchSpace: input.searchSpace,
       feedback: input.feedback,
-      budget: input.budget
+      budget: input.budget,
+      agentGuidance: input.agentGuidance
     }),
     "utf8"
   );
@@ -52,6 +59,7 @@ export async function refineSearchSpaceFromTrials(input: {
   round: number;
   workDir: string;
   budget?: SearchBudget;
+  agentGuidance?: string;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, `refine_prompt.round_${input.round}.md`);
@@ -62,7 +70,8 @@ export async function refineSearchSpaceFromTrials(input: {
       searchSpace: input.searchSpace,
       trialSummary: input.trialSummary,
       round: input.round,
-      budget: input.budget
+      budget: input.budget,
+      agentGuidance: input.agentGuidance
     }),
     "utf8"
   );
