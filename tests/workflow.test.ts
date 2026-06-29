@@ -769,6 +769,44 @@ describe("runAutotune", () => {
     expect(runner).toContain('\\"seed_trials\\":[{\\"value\\":1,\\"params\\":{\\"x\\":0.5,\\"y\\":0.25},\\"source_round\\":0,\\"source_trial_number\\":0}]');
   });
 
+  it("does not replace present out-of-range parameters with current_value during transfer", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-present-outside-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), {
+      study_name: "train_autotune",
+      direction: "maximize",
+      n_trials: 1,
+      best_trial: { number: 0, value: 1, params: { x: 0.9 }, state: "COMPLETE" },
+      all_trials: [{ number: 0, value: 1, params: { x: 0.9 }, state: "COMPLETE" }]
+    });
+    await writeFakeHeadless(path.join(binDir, "headless"), { narrowedCurrentValue: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      refineTransferFixedParams: false,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeSingleParameterSearchSpace(dir)
+    });
+
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"seed_trials\\":[]');
+  });
+
   it("keeps dropped parameters fixed after feedback revises a refined space", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-feedback-transfer-"));
     const binDir = path.join(dir, "bin");
@@ -984,7 +1022,7 @@ console.log(JSON.stringify(result));
   await chmod(filePath, 0o755);
 }
 
-async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean } = {}): Promise<void> {
+async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean; narrowedCurrentValue?: boolean } = {}): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
     filePath,
@@ -1006,6 +1044,8 @@ if (process.argv.join(' ').includes('refine_prompt')) {
   console.log(JSON.stringify({
     parameters: ${options.addedParamCurrentValue
       ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }, { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1, current_value: 0.25 }]"
+      : options.narrowedCurrentValue
+        ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75, current_value: 0.5 }]"
       : "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }]"},
     ${options.refinedFixed ? "fixed_parameters: [{ name: 'z', cli_flag: '--z', value: 'keep' }]," : ""}
     has_arg_parsing: true,

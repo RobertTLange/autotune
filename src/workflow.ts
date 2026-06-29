@@ -532,7 +532,10 @@ function seedTrialForSearchSpace(trial: TrialResult, searchSpace: SearchSpace, s
   }
   const params = primitiveParams(trial.params);
   for (const parameter of searchSpace.parameters) {
-    if (parameterValueIsValid(parameter, params[parameter.name])) {
+    if (parameter.name in params) {
+      if (!parameterValueIsValid(parameter, params[parameter.name])) {
+        return undefined;
+      }
       continue;
     }
     if (!isPrimitive(parameter.current_value) || !parameterValueIsValid(parameter, parameter.current_value)) {
