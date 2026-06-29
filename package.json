@@ -11,6 +11,8 @@
     "docs/logo.png",
     "examples/*.py",
     "examples/*.cpp",
+    "examples/*.yaml",
+    "examples/*.sh",
     "templates",
     "README.md"
   ],

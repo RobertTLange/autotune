@@ -56,6 +56,7 @@ autotune run train.py \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
+  --time-budget-seconds 86400 \
   --output results.json
 ```
 
@@ -293,6 +294,38 @@ PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
 ```
 
 Scoring controls are environment-only and should not be included in the search space: `CIFAR10_SPEEDRUN_NUM_RUNS` controls the timed-run count, and `CIFAR10_SPEEDRUN_MAX_TIME_PER_RUN` defaults to `3.0` seconds for early termination. You can also set `CIFAR10_SPEEDRUN_DATA_DIR` to override the default `~/data/cifar10` cache and `CIFAR10_SPEEDRUN_RESULTS_JSON` to write the per-trial metrics JSON.
+
+### Nanochat Benchmark
+
+`examples/nanochat_benchmark.py` is an Autotune-native wrapper for the nanochat/autoresearch validation-bits-per-byte benchmark. It uses the paper-inspired 14-hyperparameter search space in `examples/nanochat_search_space.yaml`, requires a local `karpathy/nanochat` checkout via `NANOCHAT_DIR`, and prints `autotune_metric=<val_bpb>`. CUDA out-of-memory trials are reported as `100.0`, matching the finite penalty used in the paper.
+
+Prepare nanochat separately:
+
+```bash
+git clone https://github.com/karpathy/nanochat ~/projects/nanochat
+cd ~/projects/nanochat
+uv sync --extra gpu
+```
+
+Run a paper-style TPE workload with a 24-hour cumulative trial-time budget:
+
+```bash
+export NANOCHAT_DIR=~/projects/nanochat
+./examples/run_nanochat_benchmark.sh
+```
+
+For a shorter smoke run:
+
+```bash
+export NANOCHAT_DIR=~/projects/nanochat
+NANOCHAT_BENCHMARK_NUM_ITERATIONS=20 \
+NANOCHAT_BENCHMARK_EVAL_TOKENS=524288 \
+TRIALS=3 \
+TIME_BUDGET_SECONDS=1800 \
+./examples/run_nanochat_benchmark.sh
+```
+
+Measurement controls are environment-only and should not be tuned: `NANOCHAT_BENCHMARK_NUM_ITERATIONS`, `NANOCHAT_BENCHMARK_MAX_SEQ_LEN`, `NANOCHAT_BENCHMARK_EVAL_EVERY`, `NANOCHAT_BENCHMARK_EVAL_TOKENS`, `NANOCHAT_BENCHMARK_DEVICE_TYPE`, `NANOCHAT_BENCHMARK_RUN`, and `NANOCHAT_BENCHMARK_MODEL_TAG`. `NANOCHAT_PYTHON` can override the Python executable; otherwise the wrapper uses `$NANOCHAT_DIR/.venv/bin/python`.
 
 ### C++
 
