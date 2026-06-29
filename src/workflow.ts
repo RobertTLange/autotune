@@ -220,8 +220,14 @@ export async function resumeStudy(options: {
   studyName?: string;
 }): Promise<void> {
   const workDir = await resolveRunDirectory(options.workDir);
-  const searchSpace = await readSearchSpace(path.join(workDir, "search_space.yaml"));
-  const runnerPath = await findRunner(workDir);
+  const manifest = await readLatestRoundManifest(workDir);
+  const searchSpacePath = manifest?.search_space_path
+    ? path.join(workDir, manifest.search_space_path)
+    : path.join(workDir, "search_space.yaml");
+  const searchSpace = await readSearchSpace(searchSpacePath);
+  const runnerPath = manifest?.runner_path
+    ? path.join(workDir, manifest.runner_path)
+    : await findRunner(workDir);
   const resultsPath = path.join(workDir, "results.json");
   await runPythonRunner({
     runnerPath,
@@ -231,7 +237,7 @@ export async function resumeStudy(options: {
       pruner: searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
       nJobs: options.nJobs,
       storage: options.storage,
-      studyName: options.studyName,
+      studyName: options.studyName ?? manifest?.study_name,
       output: resultsPath
   });
   console.log(renderResults(await readResults(resultsPath)));
@@ -822,6 +828,23 @@ async function findRunner(workDir: string): Promise<string> {
     throw new Error(`no *_optuna.py runner found in ${workDir}`);
   }
   return path.join(workDir, runner);
+}
+
+async function readLatestRoundManifest(workDir: string): Promise<RoundManifest | undefined> {
+  try {
+    const text = await readFile(path.join(workDir, "rounds.json"), "utf8");
+    const parsed = JSON.parse(text) as { rounds?: RoundManifest[] };
+    const rounds = parsed.rounds ?? [];
+    return rounds.reduce<RoundManifest | undefined>(
+      (latest, round) => latest === undefined || round.round > latest.round ? round : latest,
+      undefined
+    );
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function defaultStudyName(scriptPath: string): string {

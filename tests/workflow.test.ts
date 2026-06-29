@@ -231,7 +231,7 @@ describe("runAutotune", () => {
       direction: "maximize"
     });
     const resumeArgv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
-    expect(resumeArgv).not.toContain("--study-name");
+    expect(resumeArgv).toEqual(expect.arrayContaining(["--study-name", "train_autotune"]));
   });
 
   it("passes round-specific study names for stored refinement rounds", async () => {
@@ -292,6 +292,47 @@ describe("runAutotune", () => {
     });
     const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
     expect(argv).toEqual(expect.arrayContaining(["--study-name", "custom_study"]));
+  });
+
+  it("uses the latest round manifest entry when resuming refined runs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-resume-manifest-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    await mkdir(workDir, { recursive: true });
+    await writeFakePython(path.join(binDir, "python3"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    await writeFile(path.join(workDir, "train_optuna.py"), "# legacy latest runner\n", "utf8");
+    await writeFile(path.join(workDir, "train_optuna.round_0.py"), "# round 0 runner\n", "utf8");
+    await writeFile(path.join(workDir, "train_optuna.round_1.py"), "# round 1 runner\n", "utf8");
+    await writeSearchSpace(path.join(workDir, "search_space.round_1.yaml"), {
+      parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0.25, high: 0.75 }],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize",
+      optuna: { sampler: "random", pruner: "none" }
+    });
+    await writeFile(
+      path.join(workDir, "rounds.json"),
+      JSON.stringify({
+        rounds: [
+          { round: 0, runner_path: "train_optuna.round_0.py", search_space_path: "search_space.round_0.yaml", study_name: "train_autotune_round_0" },
+          { round: 1, runner_path: "train_optuna.round_1.py", search_space_path: "search_space.round_1.yaml", study_name: "train_autotune_round_1" }
+        ]
+      }),
+      "utf8"
+    );
+
+    await resumeStudy({
+      workDir,
+      storage: "sqlite:///study.db",
+      trials: 1,
+      nJobs: 1,
+      direction: "maximize"
+    });
+
+    const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
+    expect(argv[0]).toBe(path.join(workDir, "train_optuna.round_1.py"));
+    expect(argv).toEqual(expect.arrayContaining(["--sampler", "random", "--study-name", "train_autotune_round_1"]));
   });
 
   it("prints doctor checks for base tools and script runtime", async () => {
