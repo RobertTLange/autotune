@@ -293,6 +293,7 @@ async function runSearchRound(input: {
     resultsPath: input.resultsPath,
     studyName: input.studyName,
     timeoutSeconds: input.options.timeoutSeconds,
+    timeBudgetSeconds: input.options.timeBudgetSeconds,
     seedTrials: input.seedTrials
   });
   await copyLatestRunnerAlias(runnerPath, input.workDir, input.scriptPath, input.totalRounds);

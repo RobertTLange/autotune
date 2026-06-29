@@ -31,6 +31,7 @@ describe("CLI option normalization", () => {
       nJobs: 1,
       workDir: ".autotune",
       agent: "claude",
+      timeBudgetSeconds: 86400,
       timeoutSeconds: 1800,
       refineRounds: 0,
       refineMode: "ask",
@@ -48,6 +49,7 @@ describe("CLI option normalization", () => {
       pruner: undefined,
       storage: "sqlite:///study.db",
       studyName: "custom",
+      timeBudgetSeconds: 86400,
       timeoutSeconds: 1800,
       refineTransferFixedParams: true,
       refineTransferTrials: true

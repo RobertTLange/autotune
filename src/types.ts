@@ -67,6 +67,7 @@ export interface RunOptions {
   command?: string;
   buildCommand?: string;
   timeoutSeconds?: number;
+  timeBudgetSeconds?: number;
   refineRounds?: number;
   refineTrials?: number;
   refineMode?: RefineMode;
