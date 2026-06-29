@@ -570,9 +570,15 @@ describe("runAutotune", () => {
     expect(await readFile(path.join(workDir, "search_space.round_1.yaml"), "utf8")).toContain("low: 0.25");
     expect(await readFile(path.join(workDir, "results.round_0.json"), "utf8")).toContain("best_trial");
     expect(await readFile(path.join(workDir, "results.round_1.json"), "utf8")).toContain("best_trial");
-    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("Trial result summary");
-    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("current_refinement_round: 1");
-    expect(await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8")).toContain("current_round_trials: 3");
+    const refinePrompt = await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8");
+    expect(refinePrompt).toContain("Trial result summary");
+    expect(refinePrompt).toContain("current_refinement_round: 1");
+    expect(refinePrompt).toContain("current_round_trials: 3");
+    expect(refinePrompt).toContain('"state_counts"');
+    expect(refinePrompt).toContain('"transfer_counts"');
+    expect(refinePrompt).toContain('"boundary_hits"');
+    expect(refinePrompt).toContain('"value_samples"');
+    expect(refinePrompt).toContain('"performance_samples"');
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toBe(
       await readFile(path.join(workDir, "results.round_1.json"), "utf8")
     );

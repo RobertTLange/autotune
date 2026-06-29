@@ -364,11 +364,15 @@ async function prepareRefinedSearchSpaceForRun(input: {
 
 function summarizeTrialResults(result: StudyResult, searchSpace: SearchSpace) {
   const topTrials = completedTrials(result).slice(0, 5);
+  const completed = completedTrials(result);
   return {
     direction: result.direction,
     n_trials: result.n_trials,
+    state_counts: countTrialStates(result.all_trials),
+    transfer_counts: countTransferredTrials(result.all_trials),
     best_trial: result.best_trial,
     top_trials: topTrials,
+    bottom_trials: completed.slice(-5).reverse(),
     parameter_ranges: searchSpace.parameters.map((parameter) => ({
       name: parameter.name,
       type: parameter.type,
@@ -377,9 +381,77 @@ function summarizeTrialResults(result: StudyResult, searchSpace: SearchSpace) {
       high: parameter.high,
       choices: parameter.choices,
       best_value: result.best_trial?.params[parameter.name],
-      sampled_values: uniqueSampledValues(result.all_trials, parameter.name).slice(0, 10)
+      sampled_values: uniqueSampledValues(result.all_trials, parameter.name).slice(0, 10),
+      value_samples: sampledParameterValues(result.all_trials, parameter.name).slice(0, 20),
+      performance_samples: performanceSamples(result, parameter.name).slice(0, 20),
+      boundary_hits: boundaryHits(result.all_trials, parameter)
     }))
   };
+}
+
+function countTrialStates(trials: TrialResult[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const trial of trials) {
+    const state = trial.state ?? "UNKNOWN";
+    counts[state] = (counts[state] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function countTransferredTrials(trials: TrialResult[]): { transferred: number; real: number } {
+  let transferred = 0;
+  let real = 0;
+  for (const trial of trials) {
+    if (trial.user_attrs?.autotune_transfer === true) {
+      transferred += 1;
+    } else {
+      real += 1;
+    }
+  }
+  return { transferred, real };
+}
+
+function sampledParameterValues(trials: TrialResult[], parameterName: string): Array<{ trial: number; state?: string; value: unknown }> {
+  return trials
+    .filter((trial) => parameterName in trial.params)
+    .map((trial) => ({ trial: trial.number, state: trial.state, value: trial.params[parameterName] }));
+}
+
+function performanceSamples(result: StudyResult, parameterName: string): Array<{ trial: number; objective: number; value: unknown; transferred: boolean }> {
+  return result.all_trials
+    .filter((trial) => typeof trial.value === "number" && parameterName in trial.params)
+    .sort((left, right) =>
+      result.direction === "maximize"
+        ? Number(right.value) - Number(left.value)
+        : Number(left.value) - Number(right.value)
+    )
+    .map((trial) => ({
+      trial: trial.number,
+      objective: Number(trial.value),
+      value: trial.params[parameterName],
+      transferred: trial.user_attrs?.autotune_transfer === true
+    }));
+}
+
+function boundaryHits(trials: TrialResult[], parameter: SearchParameter): { low: number; high: number } | undefined {
+  if (typeof parameter.low !== "number" || typeof parameter.high !== "number") {
+    return undefined;
+  }
+  let low = 0;
+  let high = 0;
+  for (const trial of trials) {
+    const value = trial.params[parameter.name];
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (value === parameter.low) {
+      low += 1;
+    }
+    if (value === parameter.high) {
+      high += 1;
+    }
+  }
+  return { low, high };
 }
 
 function transferDroppedParameters(input: {
