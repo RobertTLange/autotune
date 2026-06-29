@@ -74,6 +74,7 @@ autotune/
         analyze_prompt.md
         search_space.yaml
         train_optuna.py
+        rounds.json
         results.json
 ```
 
@@ -160,7 +161,7 @@ After each round, Autotune summarizes completed trials and asks the agent to rev
 
 By default, refinement transfers useful context into the next round. If a parameter is removed from the active search space, Autotune fixes it at the previous best value and passes that fixed CLI flag to every later trial. It also seeds the next Optuna study with previous completed trials whose full effective parameter configuration is still valid for the refined active and fixed space. Disable these behaviors with `--no-refine-transfer-fixed-params` or `--no-refine-transfer-trials`.
 
-Each round starts a new Optuna study and writes `search_space.round_N.yaml` and `results.round_N.json` inside the run directory. The latest round is also written to `search_space.yaml` and `results.json`.
+Each round starts a new Optuna study and writes `search_space.round_N.yaml`, `results.round_N.json`, and `<script>_optuna.round_N.py` inside the run directory. `rounds.json` records the round paths, study name, storage URI, seed count, and transfer settings. The latest round is also written to `search_space.yaml`, `<script>_optuna.py`, and `results.json`.
 
 ## Search Space Format
 

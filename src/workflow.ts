@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, readFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import {
@@ -47,6 +47,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const finalResultsPath = path.join(workDir, "results.json");
   const outputResultsPath = options.output ? path.resolve(options.output) : undefined;
   const studyName = options.studyName ?? defaultStudyName(scriptPath);
+  const roundManifests: RoundManifest[] = [];
   const configuredSearchSpace = options.config
     ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
     : undefined;
@@ -128,6 +129,20 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       round,
       totalRounds: refineRounds
     });
+    const manifest = buildRoundManifest({
+      workDir,
+      round,
+      totalRounds: refineRounds,
+      trials: round === 0 ? options.trials : options.refineTrials ?? options.trials,
+      searchSpacePath: searchSpacePathForRound(workDir, round, refineRounds),
+      resultsPath: roundResultsPath,
+      runnerPath: runnerPathForRound(workDir, scriptPath, round, refineRounds),
+      studyName: studyNameForRound(studyName, round, refineRounds),
+      seedCount: seedTrials.length,
+      options
+    });
+    roundManifests.push(manifest);
+    await writeRoundManifest(workDir, roundManifests);
     if (refineRounds > 0) {
       await mkdir(path.dirname(finalResultsPath), { recursive: true });
       if (path.resolve(roundResultsPath) !== path.resolve(finalResultsPath)) {
@@ -253,10 +268,12 @@ async function runSearchRound(input: {
         invocation: input.invocation,
         searchSpace: input.searchSpace,
         workDir: input.workDir,
+        round: input.round,
+        totalRounds: input.totalRounds,
         ...input.headless
       })
     : input.invocation;
-  const runnerPath = path.join(input.workDir, `${path.basename(input.scriptPath, path.extname(input.scriptPath))}_optuna.py`);
+  const runnerPath = runnerPathForRound(input.workDir, input.scriptPath, input.round, input.totalRounds);
   writeStatus(`Writing Optuna runner: ${styles.dim(runnerPath)}`);
   await writeOptunaRunner({
     invocation: executionInvocation,
@@ -267,6 +284,7 @@ async function runSearchRound(input: {
     timeoutSeconds: input.options.timeoutSeconds,
     seedTrials: input.seedTrials
   });
+  await copyLatestRunnerAlias(runnerPath, input.workDir, input.scriptPath, input.totalRounds);
 
   const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
   writeStatus(`${label}Running ${input.trials} Optuna trials...`);
@@ -583,6 +601,19 @@ function resultsPathForRound(workDir: string, finalResultsPath: string, round: n
   return refineRounds > 0 ? path.join(workDir, `results.round_${round}.json`) : finalResultsPath;
 }
 
+function runnerPathForRound(workDir: string, scriptPath: string, round: number, refineRounds: number): string {
+  const base = `${path.basename(scriptPath, path.extname(scriptPath))}_optuna`;
+  return refineRounds > 0 ? path.join(workDir, `${base}.round_${round}.py`) : path.join(workDir, `${base}.py`);
+}
+
+async function copyLatestRunnerAlias(runnerPath: string, workDir: string, scriptPath: string, refineRounds: number): Promise<void> {
+  if (refineRounds === 0) {
+    return;
+  }
+  const latestPath = path.join(workDir, `${path.basename(scriptPath, path.extname(scriptPath))}_optuna.py`);
+  await copyFile(runnerPath, latestPath);
+}
+
 async function runBuildCommand(template: string, context: CommandTemplateContext): Promise<void> {
   const command = expandCommandTemplateArgs(splitCommand(template), context);
   const [executable, ...args] = command;
@@ -643,10 +674,14 @@ async function prepareModifiedInvocation(input: {
   invocation: ReturnType<typeof detectInvocation>;
   searchSpace: SearchSpace;
   workDir: string;
+  round: number;
+  totalRounds: number;
 } & HeadlessOptions): Promise<ReturnType<typeof detectInvocation>> {
   const extension = path.extname(input.invocation.script);
   const baseName = path.basename(input.invocation.script, extension);
-  const modifiedPath = path.join(input.workDir, `${baseName}_modified${extension}`);
+  const modifiedPath = input.totalRounds > 0
+    ? path.join(input.workDir, `${baseName}_modified.round_${input.round}${extension}`)
+    : path.join(input.workDir, `${baseName}_modified${extension}`);
   writeStatus(
     `Script needs compatibility changes (${modifiedCopyReason(input.searchSpace)}); generating modified copy: ${styles.dim(modifiedPath)}`,
     "warning"
@@ -660,11 +695,21 @@ async function prepareModifiedInvocation(input: {
     reasoningEffort: input.reasoningEffort,
     outputPath: modifiedPath
   });
+  await copyLatestModifiedAlias(modifiedPath, input.workDir, input.invocation.script, input.totalRounds);
   return {
     ...input.invocation,
     script: modifiedPath,
     command: commandForModifiedScript(input.invocation, modifiedPath)
   };
+}
+
+async function copyLatestModifiedAlias(modifiedPath: string, workDir: string, scriptPath: string, refineRounds: number): Promise<void> {
+  if (refineRounds === 0) {
+    return;
+  }
+  const extension = path.extname(scriptPath);
+  const baseName = path.basename(scriptPath, extension);
+  await copyFile(modifiedPath, path.join(workDir, `${baseName}_modified${extension}`));
 }
 
 function modifiedCopyReason(searchSpace: SearchSpace): string {
@@ -777,4 +822,47 @@ function defaultStudyName(scriptPath: string): string {
 
 function studyNameForRound(studyName: string, round: number, refineRounds: number): string {
   return refineRounds > 0 ? `${studyName}_round_${round}` : studyName;
+}
+
+interface RoundManifest {
+  round: number;
+  trials: number;
+  search_space_path: string;
+  results_path: string;
+  runner_path: string;
+  study_name: string;
+  seed_count: number;
+  storage?: string;
+  refine_transfer_fixed_params: boolean;
+  refine_transfer_trials: boolean;
+}
+
+function buildRoundManifest(input: {
+  workDir: string;
+  round: number;
+  totalRounds: number;
+  trials: number;
+  searchSpacePath: string;
+  resultsPath: string;
+  runnerPath: string;
+  studyName: string;
+  seedCount: number;
+  options: RunOptions;
+}): RoundManifest {
+  return {
+    round: input.round,
+    trials: input.trials,
+    search_space_path: path.relative(input.workDir, input.searchSpacePath),
+    results_path: path.relative(input.workDir, input.resultsPath),
+    runner_path: path.relative(input.workDir, input.runnerPath),
+    study_name: input.studyName,
+    seed_count: input.seedCount,
+    storage: input.options.storage,
+    refine_transfer_fixed_params: input.options.refineTransferFixedParams !== false,
+    refine_transfer_trials: input.options.refineTransferTrials !== false
+  };
+}
+
+async function writeRoundManifest(workDir: string, rounds: RoundManifest[]): Promise<void> {
+  await writeFile(path.join(workDir, "rounds.json"), `${JSON.stringify({ rounds }, null, 2)}\n`, "utf8");
 }

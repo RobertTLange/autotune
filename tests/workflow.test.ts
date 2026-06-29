@@ -570,6 +570,24 @@ describe("runAutotune", () => {
     expect(await readFile(path.join(workDir, "search_space.round_1.yaml"), "utf8")).toContain("low: 0.25");
     expect(await readFile(path.join(workDir, "results.round_0.json"), "utf8")).toContain("best_trial");
     expect(await readFile(path.join(workDir, "results.round_1.json"), "utf8")).toContain("best_trial");
+    expect(await readFile(path.join(workDir, "train_optuna.round_0.py"), "utf8")).toContain("study_name");
+    expect(await readFile(path.join(workDir, "train_optuna.round_1.py"), "utf8")).toContain("study_name");
+    const manifest = JSON.parse(await readFile(path.join(workDir, "rounds.json"), "utf8"));
+    expect(manifest.rounds).toHaveLength(2);
+    expect(manifest.rounds[0]).toMatchObject({
+      round: 0,
+      trials: 2,
+      seed_count: 0,
+      study_name: "train_autotune_round_0"
+    });
+    expect(manifest.rounds[0].runner_path).toContain("train_optuna.round_0.py");
+    expect(manifest.rounds[1]).toMatchObject({
+      round: 1,
+      trials: 3,
+      seed_count: 1,
+      study_name: "train_autotune_round_1"
+    });
+    expect(manifest.rounds[1].runner_path).toContain("train_optuna.round_1.py");
     const refinePrompt = await readFile(path.join(workDir, "refine_prompt.round_1.md"), "utf8");
     expect(refinePrompt).toContain("Trial result summary");
     expect(refinePrompt).toContain("current_refinement_round: 1");
