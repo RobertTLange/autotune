@@ -46,9 +46,7 @@ Also propose safe optuna settings:
 - sampler: "tpe" | "random" | "cmaes" | "grid"
 - pruner: "none" | "median" | "hyperband"
 - reasoning: short explanation for the Optuna choices
-Prefer tpe for mixed or continuous spaces, random for tiny exploratory searches, grid only when all
-parameters are small categorical choices, and cmaes only for continuous numeric spaces. Prefer none
-for pruner unless the script is iterative and pruning is likely comparable across trials.
+${renderOptunaGuidance()}
 Do not propose storage. Do not propose n_jobs. These are user-controlled resource/state settings.
 
 Output valid JSON only.`;
@@ -94,7 +92,9 @@ Preserve fixed objective measurement semantics. If feedback asks to tune a value
 measure, score, aggregate, threshold, compare, or report the objective, omit it from parameters
 and explain the exclusion in reasoning.
 Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or "grid"; pruner may
-be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
+be "none", "median", or "hyperband".
+${renderOptunaGuidance()}
+Do not add storage. Do not add n_jobs.
 
 Output valid revised JSON only.`;
 }
@@ -139,7 +139,9 @@ Preserve fixed objective measurement semantics. Do not tune values used only to 
 aggregate, threshold, compare, or report the objective. Do not tune random seeds used only for
 measurement. Keep trials comparable across rounds.
 Preserve the optuna config contract: sampler may be "tpe", "random", "cmaes", or "grid"; pruner may
-be "none", "median", or "hyperband". Do not add storage. Do not add n_jobs.
+be "none", "median", or "hyperband".
+${renderOptunaGuidance()}
+Do not add storage. Do not add n_jobs.
 
 Output valid revised JSON only.`;
 }
@@ -175,6 +177,17 @@ function renderBudget(budget: SearchBudget | undefined): string {
     "or adjust ranges from completed trial evidence."
   );
   return lines.join("\n");
+}
+
+function renderOptunaGuidance(): string {
+  return [
+    "Use random for 10 or fewer total planned trials because TPESampler defaults to 10 startup trials.",
+    "Use tpe for mixed or continuous spaces when the budget exceeds the startup trials and grid is not exhaustive.",
+    "Use grid only when all active parameters are small categorical choices and the full combination count fits the trial budget.",
+    "Use cmaes only for all-numeric fixed-dimensional spaces with enough trials and no categorical parameters.",
+    "Use pruner none unless intermediate metrics can be reported to Optuna with comparable steps across trials.",
+    "A final-only autotune_metric does not make median or hyperband pruning useful."
+  ].join("\n");
 }
 
 export function renderModifiedScriptPrompt(input: {

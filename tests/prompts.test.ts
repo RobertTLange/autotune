@@ -71,6 +71,21 @@ describe("prompt Optuna config contract", () => {
     expect(prompt).toContain("Do not propose n_jobs");
   });
 
+  it("gives budget-aware sampler and pruner guidance", () => {
+    const prompt = renderAnalyzePrompt({
+      invocation,
+      budget: { trials: 8, timeoutSeconds: 600 }
+    });
+
+    expect(prompt).toContain("Use random for 10 or fewer total planned trials");
+    expect(prompt).toContain("TPESampler defaults to 10 startup trials");
+    expect(prompt).toContain("Use tpe for mixed or continuous spaces when the budget exceeds the startup trials");
+    expect(prompt).toContain("Use grid only when all active parameters are small categorical choices");
+    expect(prompt).toContain("Use cmaes only for all-numeric fixed-dimensional spaces");
+    expect(prompt).toContain("Use pruner none unless intermediate metrics can be reported to Optuna");
+    expect(prompt).toContain("A final-only autotune_metric does not make median or hyperband pruning useful");
+  });
+
   it("asks revision to preserve the Optuna config contract", () => {
     const prompt = renderReviseSearchSpacePrompt({
       invocation,
