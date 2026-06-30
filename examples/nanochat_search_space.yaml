@@ -1,0 +1,94 @@
+parameters:
+  - name: depth
+    cli_flag: --depth
+    type: int
+    low: 4
+    high: 24
+    current_value: 8
+  - name: aspect_ratio
+    cli_flag: --aspect-ratio
+    type: int
+    low: 32
+    high: 128
+    current_value: 64
+  - name: head_dim
+    cli_flag: --head-dim
+    type: categorical
+    choices: [64, 128, 256]
+    current_value: 128
+  - name: device_batch_size
+    cli_flag: --device-batch-size
+    type: categorical
+    choices: [32, 64, 128, 256]
+    current_value: 128
+  - name: total_batch_size
+    cli_flag: --total-batch-size
+    type: categorical
+    choices: [65536, 131072, 262144, 524288, 1048576, 2097152]
+    current_value: 524288
+  - name: embedding_lr
+    cli_flag: --embedding-lr
+    type: float
+    low: 0.01
+    high: 2.0
+    log: true
+    current_value: 0.6
+  - name: unembedding_lr
+    cli_flag: --unembedding-lr
+    type: float
+    low: 0.0005
+    high: 0.05
+    log: true
+    current_value: 0.004
+  - name: matrix_lr
+    cli_flag: --matrix-lr
+    type: float
+    low: 0.005
+    high: 0.2
+    log: true
+    current_value: 0.04
+  - name: scalar_lr
+    cli_flag: --scalar-lr
+    type: float
+    low: 0.05
+    high: 2.0
+    log: true
+    current_value: 0.5
+  - name: weight_decay
+    cli_flag: --weight-decay
+    type: float
+    low: 0.0
+    high: 0.5
+    current_value: 0.2
+  - name: warmup_ratio
+    cli_flag: --warmup-ratio
+    type: float
+    low: 0.0
+    high: 0.3
+    current_value: 0.0
+  - name: warmdown_ratio
+    cli_flag: --warmdown-ratio
+    type: float
+    low: 0.1
+    high: 0.8
+    current_value: 0.5
+  - name: final_lr_frac
+    cli_flag: --final-lr-frac
+    type: float
+    low: 0.0
+    high: 0.2
+    current_value: 0.0
+  - name: window_pattern
+    cli_flag: --window-pattern
+    type: categorical
+    choices: [SSSL, SSLL, SLSL, LLLL, SSSS, LSSL]
+    current_value: SSSL
+has_arg_parsing: true
+needs_wrapper: false
+has_metric_output: true
+direction: minimize
+optuna:
+  sampler: tpe
+  pruner: none
+  reasoning: Paper-inspired mixed nanochat search space; use TPE by default and no pruner because only final val_bpb is reported.
+reasoning: Minimize nanochat validation bits-per-byte; OOM trials are penalized by the wrapper with val_bpb 100.0.

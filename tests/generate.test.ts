@@ -130,6 +130,21 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("argv.extend([parameter[\"cli_flag\"], str(parameter[\"value\"])])");
   });
 
+  it("records trial duration and stops when the run time budget is exhausted", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json",
+      timeBudgetSeconds: 86400
+    });
+
+    expect(code).toContain('\\"time_budget_seconds\\":86400');
+    expect(code).toContain('trial.set_user_attr("autotune_duration_seconds"');
+    expect(code).toContain("def cumulative_trial_seconds(study):");
+    expect(code).toContain("study.stop()");
+  });
+
   it("writes an executable runner file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-generate-"));
     const runner = path.join(dir, "train_optuna.py");

@@ -1,13 +1,33 @@
-import { readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 describe("packaged examples", () => {
   it("uses concise example filenames in docs", async () => {
     const readme = await readFile("README.md", "utf8");
+    const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
     expect(readme).toContain("examples/mnist_cnn.py");
     expect(readme).toContain("examples/cifar10_resnet.py");
+    expect(readme).toContain("examples/cifar10_speedrun.py");
+    expect(readme).toContain("examples/nanochat_benchmark.py");
+    expect(readme).toContain("examples/README.md");
     expect(readme).not.toContain("mnist_cnn_no_cli.py");
+    expect(packageJson.files).toContain("examples/*.py");
+    expect(packageJson.files).toContain("examples/*.yaml");
+    expect(packageJson.files).toContain("examples/*.sh");
+    expect(packageJson.files).toContain("examples/README.md");
+  });
+
+  it("documents benchmark setup details in examples README", async () => {
+    const readme = await readFile(path.join("examples", "README.md"), "utf8");
+
+    expect(readme).toContain("CIFAR10_SPEEDRUN_DATA_DIR");
+    expect(readme).toContain("CIFAR10_SPEEDRUN_NUM_RUNS=100");
+    expect(readme).toContain("NANOCHAT_DIR");
+    expect(readme).toContain("python -m nanochat.dataset");
+    expect(readme).toContain("NANOCHAT_BENCHMARK_NUM_ITERATIONS");
   });
 
   it("keeps deep-learning examples intentionally agent-compatible", async () => {
@@ -29,4 +49,163 @@ describe("packaged examples", () => {
     expect(cifar).not.toContain("Subset(");
     expect(cifar).toContain("validation_accuracy");
   });
+
+  it("defines an Autotune-native CIFAR-10 speedrun example", async () => {
+    const speedrun = await readFile(path.join("examples", "cifar10_speedrun.py"), "utf8");
+
+    expect(speedrun).toContain("argparse.ArgumentParser");
+    expect(speedrun).toContain("autotune_metric=");
+    expect(speedrun).toContain("ACCURACY_THRESHOLD = 0.94");
+    expect(speedrun).toContain("1e6 ** (20 * accuracy_gap)");
+    expect(speedrun).toContain("CIFAR10_SPEEDRUN_NUM_RUNS");
+    expect(speedrun).not.toContain("--num-runs");
+    expect(speedrun).not.toContain("--tta-uncertain-quantile");
+  });
+
+  it("keeps CIFAR-10 speedrun CLI flags limited to training hyperparameters", async () => {
+    const speedrun = await readFile(path.join("examples", "cifar10_speedrun.py"), "utf8");
+    const flags = [...speedrun.matchAll(/parser\.add_argument\("([^"]+)"/g)].map((match) => match[1]).sort();
+
+    expect(flags).toEqual([
+      "--bias-lr",
+      "--brightness-range",
+      "--contrast-range",
+      "--head-lr",
+      "--label-smoothing",
+      "--muon-lr",
+      "--muon-momentum",
+      "--sgd-momentum",
+      "--train-epochs",
+      "--training-batch-size",
+      "--translate",
+      "--weight-decay-scale",
+      "--whiten-bias-epochs"
+    ]);
+  });
+
+  it("defines an Autotune-native nanochat benchmark wrapper", async () => {
+    const nanochat = await readFile(path.join("examples", "nanochat_benchmark.py"), "utf8");
+
+    expect(nanochat).toContain("argparse.ArgumentParser");
+    expect(nanochat).toContain("NANOCHAT_DIR");
+    expect(nanochat).toContain("autotune_metric=");
+    expect(nanochat).toContain("OOM_PENALTY = 100.0");
+    expect(nanochat).toContain("Minimum validation bpb");
+    expect(nanochat).not.toContain("shell=True");
+  });
+
+  it("keeps nanochat benchmark CLI flags limited to paper hyperparameters", async () => {
+    const nanochat = await readFile(path.join("examples", "nanochat_benchmark.py"), "utf8");
+    const flags = [...nanochat.matchAll(/parser\.add_argument\("([^"]+)"/g)].map((match) => match[1]).sort();
+
+    expect(flags).toEqual([
+      "--aspect-ratio",
+      "--depth",
+      "--device-batch-size",
+      "--embedding-lr",
+      "--final-lr-frac",
+      "--head-dim",
+      "--matrix-lr",
+      "--scalar-lr",
+      "--total-batch-size",
+      "--unembedding-lr",
+      "--warmdown-ratio",
+      "--warmup-ratio",
+      "--weight-decay",
+      "--window-pattern"
+    ]);
+  });
+
+  it("ships a parseable nanochat benchmark search space", async () => {
+    const { parseSearchSpaceText } = await import("../src/search-space.js");
+    const text = await readFile(path.join("examples", "nanochat_search_space.yaml"), "utf8");
+    const searchSpace = parseSearchSpaceText(text);
+
+    expect(searchSpace.direction).toBe("minimize");
+    expect(searchSpace.optuna).toMatchObject({ sampler: "tpe", pruner: "none" });
+    expect(searchSpace.parameters.map((parameter) => parameter.name).sort()).toEqual([
+      "aspect_ratio",
+      "depth",
+      "device_batch_size",
+      "embedding_lr",
+      "final_lr_frac",
+      "head_dim",
+      "matrix_lr",
+      "scalar_lr",
+      "total_batch_size",
+      "unembedding_lr",
+      "warmdown_ratio",
+      "warmup_ratio",
+      "weight_decay",
+      "window_pattern"
+    ]);
+  });
+
+  it("runs the nanochat benchmark wrapper against a fake nanochat command", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Step 00020 | Validation bpb: 0.345678'",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--warmup-ratio", "0.1"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      FAKE_NANOCHAT_ARGV: argvPath,
+      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
+    });
+
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(await readFile(argvPath, "utf8")).toContain("--warmup-steps\n2");
+  });
+
+  it("penalizes infeasible nanochat batch geometry", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_BENCHMARK_MAX_SEQ_LEN: "8192"
+    });
+
+    expect(output).toContain("autotune_metric=100.0");
+  });
 });
+
+function runPythonScript(args: string[], env: Record<string, string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(`python3 ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
+    });
+  });
+}

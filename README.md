@@ -56,6 +56,7 @@ autotune run train.py \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
+  --time-budget-seconds 86400 \
   --output results.json
 ```
 
@@ -202,6 +203,8 @@ reasoning: accuracy-style metric
 
 ## Examples
 
+See `examples/README.md` for benchmark setup details, dataset/cache controls, and smoke-vs-full run guidance.
+
 ### MNIST CNN
 
 `examples/mnist_cnn.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
@@ -254,6 +257,32 @@ For a sequential transfer ablation, run:
 ```
 
 The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 40-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
+
+### CIFAR-10 Speedrun
+
+`examples/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit hyperparameter flags and prints the combined speedrun score as `autotune_metric`. See `examples/README.md` for data cache and full scoring controls.
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python optuna torch torchvision numpy scipy
+CIFAR10_SPEEDRUN_NUM_RUNS=5 \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
+  --trials 20 \
+  --timeout-seconds 1800 \
+  --direction maximize \
+  --agent codex \
+  --agent-guidance "Tune only training hyperparameters and preserve the CIFAR-10 speedrun scoring protocol." \
+  --json
+```
+
+### Nanochat Benchmark
+
+`examples/nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and uses the paper-inspired 14-hyperparameter search space in `examples/nanochat_search_space.yaml`. See `examples/README.md` for nanochat setup, data prep, and smoke-run controls.
+
+```bash
+export NANOCHAT_DIR=~/projects/nanochat
+./examples/run_nanochat_benchmark.sh
+```
 
 ### C++
 

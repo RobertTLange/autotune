@@ -16,6 +16,7 @@ export function renderOptunaRunner(input: {
   resultsPath: string;
   studyName?: string;
   timeoutSeconds?: number;
+  timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
 }): string {
   const timeout = input.timeoutSeconds ?? 900;
@@ -29,7 +30,8 @@ export function renderOptunaRunner(input: {
     seed_trials: input.seedTrials ?? [],
     results_path: input.resultsPath,
     max_output_bytes: 65536,
-    timeout
+    timeout,
+    time_budget_seconds: input.timeBudgetSeconds
   };
 
   return `#!/usr/bin/env python3
@@ -42,6 +44,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -230,22 +233,26 @@ def run_trial_command(argv):
 
 def objective(trial):
     global STARTED_TRIAL_COUNT
+    started_at = time.monotonic()
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
     trial.set_user_attr("autotune_effective_param_hash", effective_param_hash(effective_params(params)))
-    with PROGRESS_LOCK:
-        STARTED_TRIAL_COUNT += 1
-        started = STARTED_TRIAL_COUNT
-    print_progress_row(f"{started}/{CURRENT_TRIAL_TARGET}", "RUNNING", None, None, effective_params(params))
-    argv = build_argv(params)
-    result = run_trial_command(argv)
-    if result["returncode"] != 0:
-        raise RuntimeError(f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
-    if result["metric_error"] is not None:
-        raise RuntimeError(str(result["metric_error"])) from result["metric_error"]
     try:
-        return result["metric"] if result["metric"] is not None else parse_metric(result["stdout"])
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
+        with PROGRESS_LOCK:
+            STARTED_TRIAL_COUNT += 1
+            started = STARTED_TRIAL_COUNT
+        print_progress_row(f"{started}/{CURRENT_TRIAL_TARGET}", "RUNNING", None, None, effective_params(params))
+        argv = build_argv(params)
+        result = run_trial_command(argv)
+        if result["returncode"] != 0:
+            raise RuntimeError(f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
+        if result["metric_error"] is not None:
+            raise RuntimeError(str(result["metric_error"])) from result["metric_error"]
+        try:
+            return result["metric"] if result["metric"] is not None else parse_metric(result["stdout"])
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
+    finally:
+        trial.set_user_attr("autotune_duration_seconds", time.monotonic() - started_at)
 
 
 def make_sampler(name):
@@ -473,6 +480,15 @@ def report_progress(study, trial):
     print_progress_row(f"{finished_new}/{CURRENT_TRIAL_TARGET}", trial.state.name, trial.value, current_best_value(study), effective_params(trial.params))
 
 
+def cumulative_trial_seconds(study):
+    total = 0.0
+    for trial in study.trials:
+        value = trial.user_attrs.get("autotune_duration_seconds")
+        if isinstance(value, (int, float)):
+            total += float(value)
+    return total
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, required=True)
@@ -504,6 +520,10 @@ def main():
     def on_trial_complete(study, trial):
         report_progress(study, trial)
         write_results(study, args.direction, output_path)
+        time_budget_seconds = CONFIG.get("time_budget_seconds")
+        if time_budget_seconds and cumulative_trial_seconds(study) >= time_budget_seconds:
+            print(f"[{timestamp()}] time budget reached: {cumulative_trial_seconds(study):.1f}s / {time_budget_seconds}s", file=sys.stderr, flush=True)
+            study.stop()
 
     study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
     result = write_results(study, args.direction, output_path)
@@ -531,6 +551,7 @@ export async function writeOptunaRunner(input: {
   resultsPath: string;
   studyName?: string;
   timeoutSeconds?: number;
+  timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
 }): Promise<void> {
   await mkdir(path.dirname(input.outputPath), { recursive: true });
