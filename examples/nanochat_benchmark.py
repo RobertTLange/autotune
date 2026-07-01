@@ -113,6 +113,8 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
     else:
         command.append("-m")
     command.append("scripts.base_train")
+    if nproc_per_node > 1:
+        command.append("--")
     command.extend([
         "--run",
         run_name,

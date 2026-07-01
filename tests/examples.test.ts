@@ -327,8 +327,7 @@ describe("packaged examples", () => {
     expect(argv).toContain("--standalone\n");
     expect(argv).toContain("--nproc_per_node=8\n");
     expect(argv).toContain("scripts.base_train\n");
-    expect(argv).toContain("scripts.base_train\n--run\n");
-    expect(argv).not.toContain("scripts.base_train\n--\n--run\n");
+    expect(argv).toContain("scripts.base_train\n--\n--run\n");
   });
 
   it("maps nanochat paired batch configs to device and total batch flags", async () => {
