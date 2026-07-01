@@ -87,6 +87,7 @@ has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true
 direction: minimize
+failure_value: 100.0
 optuna:
   sampler: tpe
   pruner: none

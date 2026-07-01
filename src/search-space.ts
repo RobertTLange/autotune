@@ -66,6 +66,7 @@ const searchSpaceSchema = z
     needs_wrapper: z.boolean(),
     has_metric_output: z.boolean().default(true),
     direction: directionSchema,
+    failure_value: z.number().optional(),
     optuna: z
       .object({
         sampler: samplerSchema.optional(),

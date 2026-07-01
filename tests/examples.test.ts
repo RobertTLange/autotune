@@ -28,6 +28,8 @@ describe("packaged examples", () => {
     expect(readme).toContain("NANOCHAT_DIR");
     expect(readme).toContain("python -m nanochat.dataset");
     expect(readme).toContain("NANOCHAT_BENCHMARK_NUM_ITERATIONS");
+    expect(readme).toContain("NANOCHAT_BENCHMARK_TARGET_SECONDS");
+    expect(readme).toContain("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND");
   });
 
   it("keeps deep-learning examples intentionally agent-compatible", async () => {
@@ -122,6 +124,7 @@ describe("packaged examples", () => {
     const searchSpace = parseSearchSpaceText(text);
 
     expect(searchSpace.direction).toBe("minimize");
+    expect(searchSpace.failure_value).toBe(100);
     expect(searchSpace.optuna).toMatchObject({ sampler: "tpe", pruner: "none" });
     expect(searchSpace.parameters.map((parameter) => parameter.name).sort()).toEqual([
       "aspect_ratio",
@@ -171,6 +174,145 @@ describe("packaged examples", () => {
     expect(await readFile(argvPath, "utf8")).toContain("--warmup-steps\n2");
   });
 
+  it("derives nanochat iterations from a target token budget", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--warmup-ratio", "0.5"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      FAKE_NANOCHAT_ARGV: argvPath,
+      NANOCHAT_BENCHMARK_TARGET_TOKENS: "1048576",
+      NANOCHAT_BENCHMARK_TARGET_SECONDS: "300",
+      NANOCHAT_BENCHMARK_TOKENS_PER_SECOND: "10000000"
+    });
+
+    const argv = await readFile(argvPath, "utf8");
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(argv).toContain("--num-iterations\n2");
+    expect(argv).toContain("--warmup-steps\n1");
+  });
+
+  it("prefers explicit nanochat iterations over a target token budget", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      FAKE_NANOCHAT_ARGV: argvPath,
+      NANOCHAT_BENCHMARK_TARGET_TOKENS: "1048576",
+      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
+    });
+
+    const argv = await readFile(argvPath, "utf8");
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(argv).toContain("--num-iterations\n20");
+  });
+
+  it("derives nanochat iterations from a calibrated time budget", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      FAKE_NANOCHAT_ARGV: argvPath,
+      NANOCHAT_BENCHMARK_TARGET_SECONDS: "300",
+      NANOCHAT_BENCHMARK_TOKENS_PER_SECOND: "10000000"
+    });
+
+    const argv = await readFile(argvPath, "utf8");
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(argv).toContain("--num-iterations\n5723");
+  });
+
+  it("can launch nanochat through torchrun for multi-GPU trials", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(
+      [
+        "examples/nanochat_benchmark.py",
+        "--device-batch-size",
+        "32",
+        "--total-batch-size",
+        "524288"
+      ],
+      {
+        NANOCHAT_DIR: nanochatDir,
+        NANOCHAT_PYTHON: fakePython,
+        FAKE_NANOCHAT_ARGV: argvPath,
+        NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8"
+      }
+    );
+
+    const argv = await readFile(argvPath, "utf8");
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(argv).toContain("torch.distributed.run\n");
+    expect(argv).toContain("--standalone\n");
+    expect(argv).toContain("--nproc_per_node=8\n");
+    expect(argv).toContain("scripts.base_train\n");
+    expect(argv).toContain("scripts.base_train\n--run\n");
+    expect(argv).not.toContain("scripts.base_train\n--\n--run\n");
+  });
+
   it("penalizes infeasible nanochat batch geometry", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
     const nanochatDir = path.join(dir, "nanochat");
@@ -181,6 +323,29 @@ describe("packaged examples", () => {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_BENCHMARK_MAX_SEQ_LEN: "8192"
     });
+
+    expect(output).toContain("autotune_metric=100.0");
+  });
+
+  it("accounts for torchrun world size when checking nanochat batch geometry", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+
+    const output = await runPythonScript(
+      [
+        "examples/nanochat_benchmark.py",
+        "--device-batch-size",
+        "32",
+        "--total-batch-size",
+        "65536"
+      ],
+      {
+        NANOCHAT_DIR: nanochatDir,
+        NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8"
+      }
+    );
 
     expect(output).toContain("autotune_metric=100.0");
   });

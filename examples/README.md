@@ -73,10 +73,12 @@ python -m scripts.tok_train --max-chars=2000000000
 python -m scripts.tok_eval
 ```
 
-Run the paper-style TPE workload with a 24-hour cumulative trial-time budget:
+Run the paper-style TPE workload with a 24-hour cumulative trial-time budget. The wrapper targets 300 seconds of training per trial by default, using a calibrated tokens/sec estimate to choose nanochat `--num-iterations` before launch:
 
 ```bash
 export NANOCHAT_DIR=~/projects/nanochat
+export NANOCHAT_BENCHMARK_NPROC_PER_NODE=8
+export NANOCHAT_BENCHMARK_TOKENS_PER_SECOND=10000000
 ./examples/run_nanochat_benchmark.sh
 ```
 
@@ -95,13 +97,20 @@ Measurement controls are environment-only and should not be tuned:
 
 - `NANOCHAT_DIR`: required local nanochat checkout.
 - `NANOCHAT_PYTHON`: optional Python executable; defaults to `$NANOCHAT_DIR/.venv/bin/python`.
-- `NANOCHAT_BENCHMARK_NUM_ITERATIONS`: training steps per trial; defaults to `500`.
+- `NANOCHAT_BENCHMARK_NUM_ITERATIONS`: explicit training steps per trial; overrides every target mode.
+- `NANOCHAT_BENCHMARK_TARGET_TOKENS`: approximate training tokens per trial when `NANOCHAT_BENCHMARK_NUM_ITERATIONS` is unset; overrides calibrated time mode.
+- `NANOCHAT_BENCHMARK_TARGET_SECONDS`: approximate training seconds per trial; `run_nanochat_benchmark.sh` defaults to `300`.
+- `NANOCHAT_BENCHMARK_TOKENS_PER_SECOND`: calibrated training throughput used with `NANOCHAT_BENCHMARK_TARGET_SECONDS`; `run_nanochat_benchmark.sh` defaults to `1666667`, matching roughly 500M tokens in 5 minutes on the paper's H200 setup. Set this from an observed `tok/sec` line for other hardware.
 - `NANOCHAT_BENCHMARK_MAX_SEQ_LEN`: context length; defaults to `2048`.
 - `NANOCHAT_BENCHMARK_EVAL_EVERY`: validation cadence; defaults to the trial's final step.
 - `NANOCHAT_BENCHMARK_EVAL_TOKENS`: validation token count; defaults to `524288`.
 - `NANOCHAT_BENCHMARK_DEVICE_TYPE`: optional nanochat `--device-type` override.
+- `NANOCHAT_BENCHMARK_NPROC_PER_NODE`: optional `torchrun` process count; defaults to `1`. Set to `8` on an 8-GPU H100 node.
 - `NANOCHAT_BENCHMARK_RUN`: wandb run name; defaults to `dummy`.
 - `NANOCHAT_BENCHMARK_MODEL_TAG`: checkpoint tag; defaults to a process-specific Autotune tag.
+- `NANOCHAT_TRIAL_TIMEOUT_SECONDS`: outer process timeout; defaults to `NANOCHAT_BENCHMARK_TARGET_SECONDS + 600`, matching the paper runner's training budget plus startup/compile grace.
+- `STORAGE`: Optuna storage URI; defaults to `sqlite:///$WORK_DIR/study.db` so interrupted runs can be resumed from the same work directory.
+- `STUDY_NAME`: Optuna study name; defaults to `nanochat_benchmark_autotune`.
 
 ## Packaging Notes
 

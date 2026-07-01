@@ -23,6 +23,26 @@ def env_int(name: str, default: int) -> int:
         raise SystemExit(f"{name} must be an integer") from exc
 
 
+def env_positive_int(name: str, default: int) -> int:
+    value = env_int(name, default)
+    if value < 1:
+        raise SystemExit(f"{name} must be a positive integer")
+    return value
+
+
+def env_optional_positive_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be an integer") from exc
+    if parsed < 1:
+        raise SystemExit(f"{name} must be a positive integer")
+    return parsed
+
+
 def env_str(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
@@ -62,25 +82,36 @@ def nanochat_python(root: Path) -> str:
 
 def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
     root = nanochat_dir()
-    num_iterations = env_int("NANOCHAT_BENCHMARK_NUM_ITERATIONS", 500)
-    warmup_steps = round(args.warmup_ratio * num_iterations)
+    nproc_per_node = env_positive_int("NANOCHAT_BENCHMARK_NPROC_PER_NODE", 1)
     max_seq_len = env_int("NANOCHAT_BENCHMARK_MAX_SEQ_LEN", 2048)
-    tokens_per_microbatch = args.device_batch_size * max_seq_len
+    tokens_per_microbatch = args.device_batch_size * max_seq_len * nproc_per_node
     if args.total_batch_size < tokens_per_microbatch or args.total_batch_size % tokens_per_microbatch != 0:
         raise InfeasibleConfig(
             f"total_batch_size={args.total_batch_size} is incompatible with "
-            f"device_batch_size={args.device_batch_size} and max_seq_len={max_seq_len}"
+            f"device_batch_size={args.device_batch_size}, max_seq_len={max_seq_len}, "
+            f"and nproc_per_node={nproc_per_node}"
         )
+    num_iterations = resolve_num_iterations(args.total_batch_size)
+    warmup_steps = round(args.warmup_ratio * num_iterations)
     eval_every = env_int("NANOCHAT_BENCHMARK_EVAL_EVERY", max(1, num_iterations))
     eval_tokens = env_int("NANOCHAT_BENCHMARK_EVAL_TOKENS", 524288)
     run_name = env_str("NANOCHAT_BENCHMARK_RUN", "dummy")
     model_tag = env_str("NANOCHAT_BENCHMARK_MODEL_TAG", f"autotune-nanochat-{os.getpid()}")
     device_type = os.environ.get("NANOCHAT_BENCHMARK_DEVICE_TYPE")
 
-    command = [
-        nanochat_python(root),
-        "-m",
-        "scripts.base_train",
+    command = [nanochat_python(root)]
+    if nproc_per_node > 1:
+        command.extend([
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc_per_node={nproc_per_node}",
+            "-m",
+        ])
+    else:
+        command.append("-m")
+    command.append("scripts.base_train")
+    command.extend([
         "--run",
         run_name,
         "--depth",
@@ -127,10 +158,30 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
         "-1",
         "--model-tag",
         model_tag,
-    ]
+    ])
     if device_type:
         command.extend(["--device-type", device_type])
     return command, root
+
+
+def resolve_num_iterations(total_batch_size: int) -> int:
+    explicit_iterations = env_optional_positive_int("NANOCHAT_BENCHMARK_NUM_ITERATIONS")
+    if explicit_iterations is not None:
+        return explicit_iterations
+
+    target_tokens = env_optional_positive_int("NANOCHAT_BENCHMARK_TARGET_TOKENS")
+    if target_tokens is not None:
+        return max(1, (target_tokens + total_batch_size - 1) // total_batch_size)
+
+    target_seconds = env_optional_positive_int("NANOCHAT_BENCHMARK_TARGET_SECONDS")
+    if target_seconds is not None:
+        tokens_per_second = env_optional_positive_int("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND")
+        if tokens_per_second is None:
+            raise SystemExit("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND is required with NANOCHAT_BENCHMARK_TARGET_SECONDS")
+        target_tokens = target_seconds * tokens_per_second
+        return max(1, (target_tokens + total_batch_size - 1) // total_batch_size)
+
+    return 500
 
 
 def parse_val_bpb(output: str) -> float:
@@ -204,6 +255,8 @@ def main() -> int:
         return 0
     env = dict(os.environ)
     env.setdefault("NANOCHAT_BASE_DIR", "/tmp/autotune-nanochat")
+    if env_positive_int("NANOCHAT_BENCHMARK_NPROC_PER_NODE", 1) > 1:
+        env.setdefault("OMP_NUM_THREADS", "1")
     returncode, output = run_nanochat(command, root, env)
     if returncode != 0:
         if is_oom(output):

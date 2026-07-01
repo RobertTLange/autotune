@@ -30,6 +30,7 @@ export interface SearchSpace {
   needs_wrapper: boolean;
   has_metric_output?: boolean;
   direction: Direction;
+  failure_value?: number;
   optuna?: OptunaConfig;
   reasoning?: string;
 }
