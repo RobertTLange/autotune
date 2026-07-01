@@ -83,7 +83,7 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('\\"script_arg_mode\\":\\"included\\"');
   });
 
-  it("fails infrastructure trial errors instead of pruning them", () => {
+  it("penalizes infrastructure trial errors instead of pruning them", () => {
     const code = renderOptunaRunner({
       invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
       searchSpace,
@@ -91,8 +91,13 @@ describe("renderOptunaRunner", () => {
       resultsPath: "/tmp/results.json"
     });
 
-    expect(code).toContain("raise RuntimeError(f\"Trial command exited");
-    expect(code).toContain("raise RuntimeError(str(exc)) from exc");
+    expect(code).toContain("def penalize_trial");
+    expect(code).toContain("return 100.0 if OPTIMIZATION_DIRECTION == \"minimize\" else -100.0");
+    expect(code).toContain("return penalize_trial(trial, \"timeout\", result[\"error\"])");
+    expect(code).toContain("return penalize_trial(trial, \"nonzero_exit\"");
+    expect(code).toContain("return penalize_trial(trial, \"missing_metric\", exc)");
+    expect(code).not.toContain("raise RuntimeError(f\"Trial command timed out");
+    expect(code).not.toContain("raise RuntimeError(f\"Trial command exited");
     expect(code).not.toContain("raise optuna.TrialPruned");
   });
 
@@ -143,6 +148,38 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('trial.set_user_attr("autotune_duration_seconds"');
     expect(code).toContain("def cumulative_trial_seconds(study):");
     expect(code).toContain("study.stop()");
+  });
+
+  it("keeps the latest streamed metric when a trial times out", async () => {
+    if (!(await pythonHasOptuna())) {
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-timeout-runner-"));
+    const train = path.join(dir, "train.py");
+    const runner = path.join(dir, "train_optuna.py");
+    const results = path.join(dir, "results.json");
+    await writeFile(
+      train,
+      "import time\nprint('autotune_metric=0.75', flush=True)\ntime.sleep(2)\n",
+      "utf8"
+    );
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: results,
+      timeoutSeconds: 1
+    });
+
+    await runPython([runner, "--trials", "1", "--direction", "minimize", "--sampler", "random", "--pruner", "none", "--n-jobs", "1"]);
+
+    const result = JSON.parse(await readFile(results, "utf8"));
+    expect(result.all_trials).toHaveLength(1);
+    expect(result.all_trials[0].state).toBe("COMPLETE");
+    expect(result.all_trials[0].value).toBe(0.75);
+    expect(result.all_trials[0].user_attrs).toMatchObject({
+      autotune_failure_reason: "timeout_after_metric"
+    });
   });
 
   it("writes an executable runner file", async () => {

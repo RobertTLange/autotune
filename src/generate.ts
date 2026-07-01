@@ -29,6 +29,8 @@ export function renderOptunaRunner(input: {
     fixed_parameters: input.searchSpace.fixed_parameters ?? [],
     seed_trials: input.seedTrials ?? [],
     results_path: input.resultsPath,
+    direction: input.searchSpace.direction,
+    failure_value: input.searchSpace.failure_value,
     max_output_bytes: 65536,
     timeout,
     time_budget_seconds: input.timeBudgetSeconds
@@ -58,6 +60,7 @@ SEED_TRIAL_COUNT = 0
 STARTED_TRIAL_COUNT = 0
 PROGRESS_HEADER_PRINTED = False
 PROGRESS_LOCK = threading.Lock()
+OPTIMIZATION_DIRECTION = CONFIG.get("direction", "maximize")
 ANSI_PATTERN = re.compile(r"\\033\\[[0-9;]*m")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -145,6 +148,22 @@ def parse_metric(stdout):
     raise ValueError("No autotune_metric= line found in trial stdout")
 
 
+def failure_value():
+    configured = CONFIG.get("failure_value")
+    if configured is not None:
+        return float(configured)
+    return 100.0 if OPTIMIZATION_DIRECTION == "minimize" else -100.0
+
+
+def penalize_trial(trial, reason, detail=None):
+    value = failure_value()
+    trial.set_user_attr("autotune_failure_reason", reason)
+    if detail:
+        trial.set_user_attr("autotune_failure_detail", str(detail)[-1000:])
+    print(f"[{timestamp()}] trial penalized with {value}: {reason}", file=sys.stderr, flush=True)
+    return value
+
+
 class OutputCapture:
     def __init__(self, max_chars):
         self.max_chars = max_chars
@@ -191,10 +210,13 @@ def drain_stream(stream, capture, parse_metrics=False, mirror=False):
 
 
 def kill_process_tree(process):
-    if hasattr(os, "killpg"):
-        os.killpg(process.pid, 9)
-    else:
-        process.kill()
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(process.pid, 9)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
 
 
 def run_trial_command(argv):
@@ -213,12 +235,15 @@ def run_trial_command(argv):
     stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True))
     stdout_thread.start()
     stderr_thread.start()
+    timed_out = False
+    error = None
     try:
         returncode = process.wait(timeout=CONFIG["timeout"])
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        error = f"Trial command timed out after {CONFIG['timeout']}s"
         kill_process_tree(process)
         returncode = process.wait()
-        raise RuntimeError(f"Trial command timed out after {CONFIG['timeout']}s") from exc
     finally:
         stdout_thread.join()
         stderr_thread.join()
@@ -228,6 +253,8 @@ def run_trial_command(argv):
         "stderr": stderr_capture.tail,
         "metric": stdout_capture.metric,
         "metric_error": stdout_capture.metric_error,
+        "timed_out": timed_out,
+        "error": error,
     }
 
 
@@ -243,14 +270,24 @@ def objective(trial):
         print_progress_row(f"{started}/{CURRENT_TRIAL_TARGET}", "RUNNING", None, None, effective_params(params))
         argv = build_argv(params)
         result = run_trial_command(argv)
-        if result["returncode"] != 0:
-            raise RuntimeError(f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
         if result["metric_error"] is not None:
-            raise RuntimeError(str(result["metric_error"])) from result["metric_error"]
+            return penalize_trial(trial, "invalid_metric", result["metric_error"])
+        if result["metric"] is not None:
+            if result["timed_out"]:
+                trial.set_user_attr("autotune_failure_reason", "timeout_after_metric")
+                trial.set_user_attr("autotune_failure_detail", result["error"])
+            elif result["returncode"] != 0:
+                trial.set_user_attr("autotune_failure_reason", "nonzero_exit_after_metric")
+                trial.set_user_attr("autotune_failure_detail", result["stderr"][-1000:])
+            return result["metric"]
+        if result["timed_out"]:
+            return penalize_trial(trial, "timeout", result["error"])
+        if result["returncode"] != 0:
+            return penalize_trial(trial, "nonzero_exit", f"Trial command exited {result['returncode']}: {result['stderr'][-1000:]}")
         try:
-            return result["metric"] if result["metric"] is not None else parse_metric(result["stdout"])
+            return parse_metric(result["stdout"])
         except Exception as exc:
-            raise RuntimeError(str(exc)) from exc
+            return penalize_trial(trial, "missing_metric", exc)
     finally:
         trial.set_user_attr("autotune_duration_seconds", time.monotonic() - started_at)
 
@@ -504,7 +541,9 @@ def main():
     global CURRENT_TRIAL_TARGET
     global BASELINE_FINISHED_COUNT
     global SEED_TRIAL_COUNT
+    global OPTIMIZATION_DIRECTION
     CURRENT_TRIAL_TARGET = args.trials
+    OPTIMIZATION_DIRECTION = args.direction
     study = optuna.create_study(
         direction=args.direction,
         study_name=args.study_name,
