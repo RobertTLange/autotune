@@ -52,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth", type=int, default=8)
     parser.add_argument("--aspect-ratio", type=int, default=64)
     parser.add_argument("--head-dim", type=int, default=128)
+    parser.add_argument("--batch-config", type=str)
     parser.add_argument("--device-batch-size", type=int, default=128)
     parser.add_argument("--total-batch-size", type=int, default=524288)
     parser.add_argument("--embedding-lr", type=float, default=0.6)
@@ -84,14 +85,15 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
     root = nanochat_dir()
     nproc_per_node = env_positive_int("NANOCHAT_BENCHMARK_NPROC_PER_NODE", 1)
     max_seq_len = env_int("NANOCHAT_BENCHMARK_MAX_SEQ_LEN", 2048)
-    tokens_per_microbatch = args.device_batch_size * max_seq_len * nproc_per_node
-    if args.total_batch_size < tokens_per_microbatch or args.total_batch_size % tokens_per_microbatch != 0:
+    device_batch_size, total_batch_size = resolve_batch_config(args)
+    tokens_per_microbatch = device_batch_size * max_seq_len * nproc_per_node
+    if total_batch_size < tokens_per_microbatch or total_batch_size % tokens_per_microbatch != 0:
         raise InfeasibleConfig(
-            f"total_batch_size={args.total_batch_size} is incompatible with "
-            f"device_batch_size={args.device_batch_size}, max_seq_len={max_seq_len}, "
+            f"total_batch_size={total_batch_size} is incompatible with "
+            f"device_batch_size={device_batch_size}, max_seq_len={max_seq_len}, "
             f"and nproc_per_node={nproc_per_node}"
         )
-    num_iterations = resolve_num_iterations(args.total_batch_size)
+    num_iterations = resolve_num_iterations(total_batch_size)
     warmup_steps = round(args.warmup_ratio * num_iterations)
     eval_every = env_int("NANOCHAT_BENCHMARK_EVAL_EVERY", max(1, num_iterations))
     eval_tokens = env_int("NANOCHAT_BENCHMARK_EVAL_TOKENS", 524288)
@@ -127,9 +129,9 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
         "--num-iterations",
         str(num_iterations),
         "--device-batch-size",
-        str(args.device_batch_size),
+        str(device_batch_size),
         "--total-batch-size",
-        str(args.total_batch_size),
+        str(total_batch_size),
         "--embedding-lr",
         str(args.embedding_lr),
         "--unembedding-lr",
@@ -162,6 +164,15 @@ def build_command(args: argparse.Namespace) -> tuple[list[str], Path]:
     if device_type:
         command.extend(["--device-type", device_type])
     return command, root
+
+
+def resolve_batch_config(args: argparse.Namespace) -> tuple[int, int]:
+    if not args.batch_config:
+        return args.device_batch_size, args.total_batch_size
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", args.batch_config)
+    if not match:
+        raise InfeasibleConfig("batch_config must be formatted as <device_batch_size>x<total_batch_size>")
+    return int(match.group(1)), int(match.group(2))
 
 
 def resolve_num_iterations(total_batch_size: int) -> int:

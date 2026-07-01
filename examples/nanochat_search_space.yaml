@@ -2,30 +2,37 @@ parameters:
   - name: depth
     cli_flag: --depth
     type: int
-    low: 4
-    high: 24
-    current_value: 8
+    low: 8
+    high: 20
+    current_value: 16
   - name: aspect_ratio
     cli_flag: --aspect-ratio
     type: int
     low: 32
-    high: 128
-    current_value: 64
+    high: 80
+    current_value: 56
   - name: head_dim
     cli_flag: --head-dim
     type: categorical
-    choices: [64, 128, 256]
-    current_value: 128
-  - name: device_batch_size
-    cli_flag: --device-batch-size
+    choices: [64, 128]
+    current_value: 64
+  - name: batch_config
+    cli_flag: --batch-config
     type: categorical
-    choices: [32, 64, 128, 256]
-    current_value: 128
-  - name: total_batch_size
-    cli_flag: --total-batch-size
-    type: categorical
-    choices: [65536, 131072, 262144, 524288, 1048576, 2097152]
-    current_value: 524288
+    choices:
+      - 8x131072
+      - 8x262144
+      - 8x524288
+      - 8x1048576
+      - 8x2097152
+      - 16x262144
+      - 16x524288
+      - 16x1048576
+      - 16x2097152
+      - 32x524288
+      - 32x1048576
+      - 32x2097152
+    current_value: 32x1048576
   - name: embedding_lr
     cli_flag: --embedding-lr
     type: float
@@ -81,8 +88,8 @@ parameters:
   - name: window_pattern
     cli_flag: --window-pattern
     type: categorical
-    choices: [SSSL, SSLL, SLSL, LLLL, SSSS, LSSL]
-    current_value: SSSL
+    choices: [LLLL, SLSL, SSSS]
+    current_value: LLLL
 has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true
@@ -91,5 +98,5 @@ failure_value: 100.0
 optuna:
   sampler: tpe
   pruner: none
-  reasoning: Paper-inspired mixed nanochat search space; use TPE by default and no pruner because only final val_bpb is reported.
-reasoning: Minimize nanochat validation bits-per-byte; OOM trials are penalized by the wrapper with val_bpb 100.0.
+  reasoning: TPE over paired valid 8-GPU batch configs; no pruner because only final val_bpb is reported.
+reasoning: Minimize nanochat validation bits-per-byte. The narrowed 8-GPU H100 space uses valid batch pairs with device batch sizes 8, 16, and 32; OOM and failed trials are penalized with val_bpb 100.0.

@@ -102,6 +102,7 @@ describe("packaged examples", () => {
 
     expect(flags).toEqual([
       "--aspect-ratio",
+      "--batch-config",
       "--depth",
       "--device-batch-size",
       "--embedding-lr",
@@ -128,20 +129,37 @@ describe("packaged examples", () => {
     expect(searchSpace.optuna).toMatchObject({ sampler: "tpe", pruner: "none" });
     expect(searchSpace.parameters.map((parameter) => parameter.name).sort()).toEqual([
       "aspect_ratio",
+      "batch_config",
       "depth",
-      "device_batch_size",
       "embedding_lr",
       "final_lr_frac",
       "head_dim",
       "matrix_lr",
       "scalar_lr",
-      "total_batch_size",
       "unembedding_lr",
       "warmdown_ratio",
       "warmup_ratio",
       "weight_decay",
       "window_pattern"
     ]);
+    const batchConfig = searchSpace.parameters.find((parameter) => parameter.name === "batch_config");
+    expect(batchConfig).toMatchObject({
+      type: "categorical",
+      choices: [
+        "8x131072",
+        "8x262144",
+        "8x524288",
+        "8x1048576",
+        "8x2097152",
+        "16x262144",
+        "16x524288",
+        "16x1048576",
+        "16x2097152",
+        "32x524288",
+        "32x1048576",
+        "32x2097152"
+      ]
+    });
   });
 
   it("runs the nanochat benchmark wrapper against a fake nanochat command", async () => {
@@ -311,6 +329,38 @@ describe("packaged examples", () => {
     expect(argv).toContain("scripts.base_train\n");
     expect(argv).toContain("scripts.base_train\n--run\n");
     expect(argv).not.toContain("scripts.base_train\n--\n--run\n");
+  });
+
+  it("maps nanochat paired batch configs to device and total batch flags", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(
+      fakePython,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
+        "echo 'Minimum validation bpb: 0.123456'"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakePython, 0o755);
+    const argvPath = path.join(dir, "argv.txt");
+
+    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--batch-config", "16x1048576"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      FAKE_NANOCHAT_ARGV: argvPath,
+      NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8",
+      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
+    });
+
+    const argv = await readFile(argvPath, "utf8");
+    expect(output).toContain("autotune_metric=0.123456");
+    expect(argv).toContain("--device-batch-size\n16");
+    expect(argv).toContain("--total-batch-size\n1048576");
   });
 
   it("penalizes infeasible nanochat batch geometry", async () => {
