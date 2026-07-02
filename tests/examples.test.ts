@@ -24,6 +24,7 @@ describe("packaged examples", () => {
     const readme = await readFile(path.join("examples", "README.md"), "utf8");
 
     expect(readme).toContain("CIFAR10_SPEEDRUN_DATA_DIR");
+    expect(readme).toContain("CIFAR10_SPEEDRUN_RESULTS_DIR");
     expect(readme).toContain("CIFAR10_SPEEDRUN_NUM_RUNS=100");
     expect(readme).toContain("NANOCHAT_DIR");
     expect(readme).toContain("python -m nanochat.dataset");
@@ -60,6 +61,9 @@ describe("packaged examples", () => {
     expect(speedrun).toContain("ACCURACY_THRESHOLD = 0.94");
     expect(speedrun).toContain("1e6 ** (20 * accuracy_gap)");
     expect(speedrun).toContain("CIFAR10_SPEEDRUN_NUM_RUNS");
+    expect(speedrun).toContain("CIFAR10_SPEEDRUN_RESULTS_DIR");
+    expect(speedrun).toContain("config_fingerprint");
+    expect(speedrun).toContain("write_optional_results_json(results, config)");
     expect(speedrun).not.toContain("--num-runs");
     expect(speedrun).not.toContain("--tta-uncertain-quantile");
   });

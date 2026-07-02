@@ -29,6 +29,7 @@ Run a smoke-scoring search:
 
 ```bash
 CIFAR10_SPEEDRUN_NUM_RUNS=5 \
+CIFAR10_SPEEDRUN_RESULTS_DIR=examples/autotune/cifar10_speedrun_trial_metrics \
 PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
   --trials 20 \
   --timeout-seconds 1800 \
@@ -43,7 +44,8 @@ For full Agentic Scientist-style scoring, set `CIFAR10_SPEEDRUN_NUM_RUNS=100`. S
 - `CIFAR10_SPEEDRUN_NUM_RUNS`: timed-run count; defaults to `5`.
 - `CIFAR10_SPEEDRUN_MAX_TIME_PER_RUN`: early termination threshold; defaults to `3.0`.
 - `CIFAR10_SPEEDRUN_DATA_DIR`: dataset cache directory.
-- `CIFAR10_SPEEDRUN_RESULTS_JSON`: optional per-trial metrics JSON path.
+- `CIFAR10_SPEEDRUN_RESULTS_JSON`: optional metrics JSON path for a single direct run.
+- `CIFAR10_SPEEDRUN_RESULTS_DIR`: optional directory for per-trial metrics JSON files during Autotune sweeps. Each file includes combined score, accuracy/time statistics, the effective config, and a config fingerprint.
 
 ## Nanochat Benchmark
 

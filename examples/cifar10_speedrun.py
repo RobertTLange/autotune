@@ -3,10 +3,11 @@
 #############################################
 
 import argparse
+import hashlib
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import wraps
 from math import ceil
 from typing import Callable
@@ -1064,12 +1065,48 @@ def require_cuda() -> None:
         raise RuntimeError("examples/cifar10_speedrun.py requires a CUDA-capable GPU")
 
 
-def write_optional_results_json(results: dict[str, object]) -> None:
+def config_fingerprint(config: SpeedrunConfig) -> str:
+    payload = json.dumps(asdict(config), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def write_results_json(path: str, payload: dict[str, object]) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    os.replace(tmp_path, path)
+
+
+def optional_results_paths(config: SpeedrunConfig) -> list[str]:
+    paths = []
     results_path = os.environ.get("CIFAR10_SPEEDRUN_RESULTS_JSON")
-    if not results_path:
+    if results_path:
+        paths.append(results_path)
+    results_dir = os.environ.get("CIFAR10_SPEEDRUN_RESULTS_DIR")
+    if results_dir:
+        paths.append(
+            os.path.join(
+                results_dir,
+                f"{config_fingerprint(config)}-{os.getpid()}.json",
+            )
+        )
+    return paths
+
+
+def write_optional_results_json(results: dict[str, object], config: SpeedrunConfig) -> None:
+    paths = optional_results_paths(config)
+    if not paths:
         return
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+    payload = {
+        **results,
+        "config": asdict(config),
+        "config_fingerprint": config_fingerprint(config),
+    }
+    for path in paths:
+        write_results_json(path, payload)
 
 
 def compute_score(acc: float, mean_time: float) -> float:
@@ -1179,7 +1216,7 @@ def run_experiment(config: SpeedrunConfig, seed=42, num_runs=DEFAULT_NUM_RUNS, m
         "num_completed_runs": actual_runs,
         "terminated_early": terminated_early,
     }
-    write_optional_results_json(results)
+    write_optional_results_json(results, config)
     print(f"autotune_metric={results['combined_score']}", flush=True)
 
     return results
