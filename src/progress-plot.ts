@@ -14,6 +14,8 @@ export interface PlotProgressOptions {
   maxTrials?: number;
   width?: number;
   height?: number;
+  yMin?: number;
+  yMax?: number;
   includeFailed?: boolean;
 }
 
@@ -25,6 +27,7 @@ interface RoundFile {
 interface ProgressPoint {
   x: number;
   y: number;
+  improved: boolean;
 }
 
 interface VariantProgress {
@@ -51,7 +54,9 @@ export async function plotProgress(runDirectory: string, options: PlotProgressOp
     title: options.title ?? path.basename(path.resolve(runDirectory)),
     width: options.width ?? DEFAULT_WIDTH,
     height: options.height ?? DEFAULT_HEIGHT,
-    maxTrials: options.maxTrials ?? DEFAULT_MAX_TRIALS
+    maxTrials: options.maxTrials ?? DEFAULT_MAX_TRIALS,
+    yMin: options.yMin,
+    yMax: options.yMax
   });
   await mkdir(path.dirname(path.resolve(options.output)), { recursive: true });
   await writeFile(options.output, svg, "utf8");
@@ -162,11 +167,14 @@ async function buildProgress(
         break;
       }
       x += 1;
+      let improved = false;
       if (isScoredTrial(trial, options.includeFailed)) {
+        const previous = best;
         best = bestScore(best, Number(trial.value), options.direction);
+        improved = previous !== best;
       }
       if (best !== undefined) {
-        points.push({ x, y: best });
+        points.push({ x, y: best, improved });
       }
     }
     if (index < rounds.length - 1 && x < options.maxTrials) {
@@ -204,7 +212,7 @@ async function readStudyResult(file: string): Promise<StudyResult> {
 
 function renderProgressSvg(
   variants: VariantProgress[],
-  options: { title: string; width: number; height: number; maxTrials: number }
+  options: { title: string; width: number; height: number; maxTrials: number; yMin?: number; yMax?: number }
 ): string {
   const margin = { top: 72, right: 190, bottom: 72, left: 86 };
   const chart = {
@@ -217,7 +225,7 @@ function renderProgressSvg(
   if (allY.length === 0) {
     throw new Error("no scored trials available to plot");
   }
-  const yDomain = paddedDomain(Math.min(...allY), Math.max(...allY));
+  const yDomain = resolveYDomain(allY, options);
   const direction = variants[0]?.direction ?? "maximize";
   const subtitle = direction === "maximize" ? "higher is better" : "lower is better";
   const xToPx = (value: number) => chart.left + (value / options.maxTrials) * chart.width;
@@ -235,7 +243,9 @@ function renderProgressSvg(
     ".axis{stroke:#111827;stroke-width:1.4}",
     ".reset{stroke:#6b7280;stroke-width:1.2;stroke-dasharray:5 5}",
     ".line{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}",
+    ".star{stroke:#ffffff;stroke-width:1.4;stroke-linejoin:round}",
     "</style>",
+    `<defs><clipPath id="chart-clip"><rect x="${chart.left}" y="${chart.top}" width="${chart.width}" height="${chart.height}"/></clipPath></defs>`,
     `<rect width="${options.width}" height="${options.height}" fill="#ffffff"/>`,
     `<text x="${chart.left}" y="34" font-size="24" font-weight="700">${escapeXml(options.title)}</text>`,
     `<text x="${chart.left}" y="58" font-size="14" class="muted">Best score so far (${subtitle}); failed trials counted on x-axis but ignored for best-score updates.</text>`
@@ -265,7 +275,12 @@ function renderProgressSvg(
   variants.forEach((variant, index) => {
     const color = COLORS[index % COLORS.length];
     if (variant.points.length > 0) {
+      parts.push(`<g clip-path="url(#chart-clip)">`);
       parts.push(`<path d="${linePath(variant.points, xToPx, yToPx)}" class="line" stroke="${color}"/>`);
+      for (const point of variant.points.filter((candidate) => candidate.improved && yDomain.min <= candidate.y && candidate.y <= yDomain.max)) {
+        parts.push(`<polygon points="${starPoints(xToPx(point.x), yToPx(point.y), 7, 3.1)}" class="star" fill="${color}"/>`);
+      }
+      parts.push(`</g>`);
       const last = variant.points[variant.points.length - 1];
       parts.push(`<circle cx="${formatSvgNumber(xToPx(last.x))}" cy="${formatSvgNumber(yToPx(last.y))}" r="4" fill="${color}"/>`);
       parts.push(`<text x="${formatSvgNumber(xToPx(last.x) + 8)}" y="${formatSvgNumber(yToPx(last.y) - 8)}" font-size="12" fill="${color}">${formatTick(last.y)}</text>`);
@@ -281,6 +296,15 @@ function renderProgressSvg(
   return `${parts.join("\n")}\n`;
 }
 
+function resolveYDomain(allY: number[], options: { yMin?: number; yMax?: number }): { min: number; max: number } {
+  const min = options.yMin ?? Math.min(...allY);
+  const max = options.yMax ?? Math.max(...allY);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min >= max) {
+    throw new Error(`expected y-axis limits with yMin < yMax, got ${String(options.yMin)} and ${String(options.yMax)}`);
+  }
+  return options.yMin === undefined && options.yMax === undefined ? paddedDomain(min, max) : { min, max };
+}
+
 function paddedDomain(min: number, max: number): { min: number; max: number } {
   if (min === max) {
     const pad = Math.abs(min) > 1 ? Math.abs(min) * 0.05 : 0.05;
@@ -288,6 +312,16 @@ function paddedDomain(min: number, max: number): { min: number; max: number } {
   }
   const pad = (max - min) * 0.08;
   return { min: min - pad, max: max + pad };
+}
+
+function starPoints(cx: number, cy: number, outerRadius: number, innerRadius: number): string {
+  const points = [];
+  for (let index = 0; index < 10; index += 1) {
+    const radius = index % 2 === 0 ? outerRadius : innerRadius;
+    const angle = -Math.PI / 2 + (index * Math.PI) / 5;
+    points.push(`${formatSvgNumber(cx + radius * Math.cos(angle))},${formatSvgNumber(cy + radius * Math.sin(angle))}`);
+  }
+  return points.join(" ");
 }
 
 function ticks(min: number, max: number, count: number): number[] {

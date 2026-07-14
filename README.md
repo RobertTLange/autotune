@@ -176,12 +176,16 @@ Use `plot-progress` to visualize ablation runs that contain variant subdirectori
 node dist/cli.js plot-progress examples/autotune/cifar10_speedrun_ablations/62004 \
   --output docs/cifar10_speedrun_progress.svg \
   --title "CIFAR-10 speedrun ablations" \
-  --max-trials 100
+  --max-trials 100 \
+  --y-min -2.5 \
+  --y-max -1.65
 
 node dist/cli.js plot-progress examples/autotune/nanobench_ablation/20260703T214035Z \
   --output docs/nanobench_progress.svg \
   --title "Nanochat nanobench ablations" \
-  --max-trials 100
+  --max-trials 100 \
+  --y-min 0.88 \
+  --y-max 1.0
 ```
 
 <table>

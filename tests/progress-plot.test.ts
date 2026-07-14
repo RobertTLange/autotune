@@ -35,15 +35,15 @@ describe("progress plot", () => {
     ]);
     expect(variants[1].resets).toEqual([2]);
     expect(variants[1].points).toEqual([
-      { x: 1, y: 1 },
-      { x: 2, y: 2 },
-      { x: 3, y: 2 },
-      { x: 4, y: 4 }
+      { x: 1, y: 1, improved: true },
+      { x: 2, y: 2, improved: true },
+      { x: 3, y: 2, improved: false },
+      { x: 4, y: 4, improved: true }
     ]);
     expect(variants[2].totalTrials).toBe(2);
     expect(variants[2].points).toEqual([
-      { x: 1, y: 2 },
-      { x: 2, y: 6 }
+      { x: 1, y: 2, improved: true },
+      { x: 2, y: 6, improved: true }
     ]);
   });
 
@@ -65,9 +65,9 @@ describe("progress plot", () => {
     expect(variant.resets).toEqual([2]);
     expect(variant.totalTrials).toBe(4);
     expect(variant.points).toEqual([
-      { x: 2, y: 0.9 },
-      { x: 3, y: 0.9 },
-      { x: 4, y: 0.8 }
+      { x: 2, y: 0.9, improved: true },
+      { x: 3, y: 0.9, improved: false },
+      { x: 4, y: 0.8, improved: true }
     ]);
   });
 
@@ -85,7 +85,7 @@ describe("progress plot", () => {
       trial(0, 3)
     ]);
 
-    await plotProgress(root, { output, title: "Synthetic progress", maxTrials: 4 });
+    await plotProgress(root, { output, title: "Synthetic progress", maxTrials: 4, yMin: 0, yMax: 4 });
 
     const svg = await readFile(output, "utf8");
     expect(svg).toContain("<svg");
@@ -93,6 +93,8 @@ describe("progress plot", () => {
     expect(svg).toContain("Base Optuna");
     expect(svg).toContain("Resets, no transfer");
     expect(svg).toContain("reset @ 1");
+    expect(svg).toContain("<polygon");
+    expect(svg).toContain("clip-path");
   });
 });
 
