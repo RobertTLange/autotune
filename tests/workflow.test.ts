@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "../src/workflow.js";
 import { writeSearchSpace } from "../src/search-space.js";
+import type { RunOptions } from "../src/types.js";
 
 describe("runAutotune", () => {
   const originalPath = process.env.PATH;
@@ -146,6 +147,134 @@ describe("runAutotune", () => {
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toContain("best_trial");
   });
 
+  it("requires headless for accepted Centaur configs even with --yes", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-headless-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "missing-headless");
+
+    await expect(
+      runAutotune(script, {
+        trials: 2,
+        nJobs: 1,
+        workDir,
+        agent: "claude",
+        json: true,
+        yes: true,
+        config: await writeCentaurSearchSpace(dir)
+      })
+    ).rejects.toThrow(/missing-headless|ENOENT/);
+  });
+
+  it("rejects parallel Centaur execution", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-parallel-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await expect(
+      runAutotune(script, {
+        trials: 2,
+        sampler: "centaur",
+        nJobs: 2,
+        workDir,
+        agent: "claude",
+        json: true,
+        yes: true,
+        config: await writeSingleParameterSearchSpace(dir)
+      })
+    ).rejects.toThrow(/Centaur.*n-jobs.*1/i);
+  });
+
+  it("rejects refinement rounds with Centaur", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-refinement-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await expect(
+      runAutotune(script, {
+        trials: 2,
+        sampler: "centaur",
+        nJobs: 1,
+        refineRounds: 1,
+        workDir,
+        agent: "claude",
+        json: true,
+        yes: true,
+        config: await writeSingleParameterSearchSpace(dir)
+      })
+    ).rejects.toThrow(/Centaur.*refine-rounds.*0/i);
+  });
+
+  it.each([
+    ["no", [{ name: "optimizer", cli_flag: "--optimizer", type: "categorical" as const, choices: ["adam", "sgd"] }]],
+    ["one", [{ name: "x", cli_flag: "--x", type: "float" as const, low: 0, high: 1 }]]
+  ])("rejects Centaur spaces with %s numeric parameters", async (_label, parameters) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-dimension-"));
+    const binDir = path.join(dir, "bin");
+    const script = path.join(dir, "train.py");
+    const config = path.join(dir, "centaur-space.yaml");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters,
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize",
+      optuna: { sampler: "centaur", pruner: "none" }
+    });
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+
+    await expect(runAutotune(script, {
+      trials: 2,
+      sampler: "centaur",
+      nJobs: 1,
+      agent: "codex",
+      json: true,
+      yes: true,
+      config
+    })).rejects.toThrow(/Centaur requires at least 2 numeric parameters/i);
+  });
+
+  it("rejects Centaur selected only by analysis output", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-analysis-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"), { proposesCentaur: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await expect(
+      runAutotune(script, {
+        trials: 2,
+        nJobs: 1,
+        workDir,
+        agent: "claude",
+        json: true,
+        yes: true
+      })
+    ).rejects.toThrow(/Centaur requires explicit --sampler centaur or a Centaur config/i);
+  });
+
   it("runs analyze-only and writes search-space output", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-"));
     const binDir = path.join(dir, "bin");
@@ -216,6 +345,33 @@ describe("runAutotune", () => {
     await showResults({ dir: workDir, json: false, top: 1 });
 
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toContain("best_trial");
+  });
+
+  it("rejects parallel Centaur resume", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-resume-centaur-parallel-"));
+    const workDir = path.join(dir, ".autotune");
+    await mkdir(workDir, { recursive: true });
+    await writeFile(path.join(workDir, "train_optuna.py"), "# fake runner\n", "utf8");
+    await writeSearchSpace(path.join(workDir, "search_space.yaml"), {
+      parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "minimize",
+      optuna: {
+        sampler: "centaur",
+        centaur: { llm_probability: 0.3, warmup_trials: 10, seed: 0 }
+      }
+    });
+
+    await expect(
+      resumeStudy({
+        workDir,
+        storage: "sqlite:///study.db",
+        trials: 1,
+        nJobs: 2,
+        direction: "minimize"
+      })
+    ).rejects.toThrow(/Centaur.*n-jobs.*1/i);
   });
 
   it("passes stable study names for stored runs and resume", async () => {
@@ -567,6 +723,59 @@ describe("runAutotune", () => {
 
     const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
     expect(argv).toEqual(expect.arrayContaining(["--direction", "maximize", "--sampler", "tpe", "--pruner", "none"]));
+  });
+
+  it("embeds Centaur settings and proposal-agent options in the generated runner", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-runner-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    const options = {
+      trials: 2,
+      sampler: "centaur",
+      nJobs: 1,
+      workDir,
+      agent: "codex",
+      model: "gpt-5.5",
+      reasoningEffort: "high",
+      centaur: {
+        llm_probability: 0.65
+      },
+      json: true,
+      yes: true,
+      config: await writeCentaurSearchSpace(dir)
+    } satisfies RunOptions;
+
+    await runAutotune(script, options);
+
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"llm_probability\\":0.65');
+    expect(runner).toContain('\\"warmup_trials\\":4');
+    expect(runner).toContain('\\"seed\\":17');
+    expect(runner).toContain('\\"agent\\":\\"codex\\"');
+    expect(runner).toContain('\\"model\\":\\"gpt-5.5\\"');
+    expect(runner).toContain('\\"reasoning_effort\\":\\"high\\"');
+
+    const manifest = JSON.parse(await readFile(path.join(workDir, "rounds.json"), "utf8")) as {
+      rounds: Array<Record<string, unknown>>;
+    };
+    expect(manifest.rounds[0]).toMatchObject({
+      sampler: "centaur",
+      centaur: {
+        llm_probability: 0.65,
+        warmup_trials: 4,
+        seed: 17,
+        agent: "codex",
+        model: "gpt-5.5",
+        reasoning_effort: "high"
+      }
+    });
   });
 
   it("runs a build command once before checking and using the runtime command", async () => {
@@ -1062,7 +1271,7 @@ if (args[0] === '--version') {
   process.exit(0);
 }
 if (args[0] === '-c') {
-  console.log('3.6.1');
+  console.log(args[1]?.includes('cmaes') ? '4.8.0\\n0.12.0' : '3.6.1');
   process.exit(0);
 }
 const outputIndex = args.indexOf('--output');
@@ -1096,7 +1305,7 @@ if (args[0] === '--version') {
   process.exit(0);
 }
 if (args[0] === '-c') {
-  console.log('3.6.1');
+  console.log(args[1]?.includes('cmaes') ? '4.8.0\\n0.12.0' : '3.6.1');
   process.exit(0);
 }
 const outputIndex = args.indexOf('--output');
@@ -1129,7 +1338,7 @@ function resultWithDuration(durationSeconds: number) {
   };
 }
 
-async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean; narrowedCurrentValue?: boolean } = {}): Promise<void> {
+async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean; narrowedCurrentValue?: boolean; proposesCentaur?: boolean } = {}): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
     filePath,
@@ -1167,6 +1376,7 @@ console.log(JSON.stringify({
   has_arg_parsing: true,
   needs_wrapper: false,
   direction: 'maximize',
+  ${options.proposesCentaur ? "optuna: { sampler: 'centaur' }," : ""}
   reasoning: 'test metric'
 }));
 `,
@@ -1253,6 +1463,29 @@ async function writeOptunaSearchSpace(dir: string): Promise<string> {
       sampler: "random",
       pruner: "hyperband",
       reasoning: "broad exploratory search"
+    }
+  });
+  return filePath;
+}
+
+async function writeCentaurSearchSpace(dir: string): Promise<string> {
+  const filePath = path.join(dir, "centaur-space.yaml");
+  await writeSearchSpace(filePath, {
+    parameters: [
+      { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+      { name: "y", cli_flag: "--y", type: "float", low: -1, high: 1 }
+    ],
+    has_arg_parsing: true,
+    needs_wrapper: false,
+    direction: "maximize",
+    optuna: {
+      sampler: "centaur",
+      pruner: "none",
+      centaur: {
+        llm_probability: 0.4,
+        warmup_trials: 4,
+        seed: 17
+      }
     }
   });
   return filePath;

@@ -1,6 +1,6 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Invocation, SearchSpace } from "./types.js";
+import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export interface SeedTrial {
   value: number;
@@ -18,6 +18,7 @@ export function renderOptunaRunner(input: {
   timeoutSeconds?: number;
   timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
+  headless?: HeadlessOptions;
 }): string {
   const timeout = input.timeoutSeconds ?? 900;
   const payload = {
@@ -33,7 +34,15 @@ export function renderOptunaRunner(input: {
     failure_value: input.searchSpace.failure_value,
     max_output_bytes: 65536,
     timeout,
-    time_budget_seconds: input.timeBudgetSeconds
+    time_budget_seconds: input.timeBudgetSeconds,
+    centaur: input.searchSpace.optuna?.sampler === "centaur"
+      ? {
+          ...input.searchSpace.optuna.centaur,
+          agent: input.headless?.agent,
+          model: input.headless?.model,
+          reasoning_effort: input.headless?.reasoningEffort
+        }
+      : undefined
   };
 
   return `#!/usr/bin/env python3
@@ -602,6 +611,7 @@ export async function writeOptunaRunner(input: {
   timeoutSeconds?: number;
   timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
+  headless?: HeadlessOptions;
 }): Promise<void> {
   await mkdir(path.dirname(input.outputPath), { recursive: true });
   await writeFile(input.outputPath, renderOptunaRunner(input), "utf8");

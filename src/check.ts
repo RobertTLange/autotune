@@ -8,6 +8,7 @@ import type { Invocation } from "./types.js";
 export interface PrerequisiteReport {
   python: string;
   optuna: string;
+  cmaes?: string;
   headless: string;
   runtime: string;
 }
@@ -21,13 +22,15 @@ export interface DoctorCheck {
 export async function checkPrerequisites(input: {
   invocation: Invocation;
   agent: string;
+  centaur?: boolean;
   skipHeadless?: boolean;
 }): Promise<PrerequisiteReport> {
   const python = await checkPython();
-  const optuna = await checkOptuna();
+  const centaurPackages = input.centaur ? await checkCentaurPackages() : undefined;
+  const optuna = centaurPackages?.optuna ?? await checkOptuna();
   const headless = input.skipHeadless ? "skipped" : await checkHeadless(input.agent);
   const runtime = await checkRuntime(input.invocation);
-  return { python, optuna, headless, runtime };
+  return { python, optuna, cmaes: centaurPackages?.cmaes, headless, runtime };
 }
 
 export async function checkDoctorPrerequisites(input: {
@@ -75,6 +78,36 @@ export async function checkOptuna(): Promise<string> {
   } catch (error) {
     throw new Error(`Optuna is required: python3 -m pip install optuna (${String(error)})`);
   }
+}
+
+async function checkCentaurPackages(): Promise<{ optuna: string; cmaes: string }> {
+  let stdout: string;
+  try {
+    ({ stdout } = await runCommand("python3", [
+      "-c",
+      "import cmaes, optuna; print(optuna.__version__); print(cmaes.__version__)"
+    ]));
+  } catch (error) {
+    throw new Error(`Centaur requires Optuna and cmaes: python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12' (${String(error)})`);
+  }
+  const [optuna = "", cmaes = ""] = stdout.trim().split(/\r?\n/);
+  if (!isSupportedCentaurOptuna(optuna)) {
+    throw new Error(`Centaur requires Optuna >= 4.8.0 and < 5, found ${optuna || "unknown"}`);
+  }
+  if (!isAtLeastVersion(cmaes, 0, 12)) {
+    throw new Error(`Centaur requires cmaes >= 0.12, found ${cmaes || "unknown"}`);
+  }
+  return { optuna, cmaes };
+}
+
+function isSupportedCentaurOptuna(version: string): boolean {
+  const [major, minor] = version.split(".").map(Number);
+  return major === 4 && Number.isFinite(minor) && minor >= 8;
+}
+
+function isAtLeastVersion(version: string, minimumMajor: number, minimumMinor: number): boolean {
+  const [major, minor] = version.split(".").map(Number);
+  return Number.isFinite(major) && Number.isFinite(minor) && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
 }
 
 export async function checkHeadless(agent: string): Promise<string> {

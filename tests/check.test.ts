@@ -44,6 +44,63 @@ describe("checkPrerequisites", () => {
       })
     ).rejects.toThrow(/runtime not found/);
   });
+
+  it("checks supported Optuna and cmaes versions for Centaur", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-"));
+    await writeExecutable(
+      path.join(dir, "python3"),
+      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
+    );
+    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
+
+    await expect(
+      checkPrerequisites({
+        invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+        agent: "claude",
+        centaur: true
+      })
+    ).resolves.toMatchObject({ optuna: "4.8.0", cmaes: "0.12.0" });
+  });
+
+  it("rejects unsupported Optuna versions for Centaur", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-version-"));
+    await writeExecutable(
+      path.join(dir, "python3"),
+      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.7.0\\n0.12.0\\n'; fi\n"
+    );
+    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
+
+    await expect(
+      checkPrerequisites({
+        invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+        agent: "claude",
+        centaur: true
+      })
+    ).rejects.toThrow(/Optuna >= 4\.8\.0 and < 5/i);
+  });
+
+  it("rejects unsupported cmaes versions for Centaur", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-cmaes-version-"));
+    await writeExecutable(
+      path.join(dir, "python3"),
+      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.11.1\\n'; fi\n"
+    );
+    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
+
+    await expect(
+      checkPrerequisites({
+        invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+        agent: "claude",
+        centaur: true
+      })
+    ).rejects.toThrow(/cmaes >= 0\.12/i);
+  });
 });
 
 async function writeExecutable(filePath: string, body: string): Promise<void> {

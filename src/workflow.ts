@@ -17,11 +17,12 @@ import { readResults, renderResults, type StudyResult, type TrialResult } from "
 import { runPythonRunner } from "./runner.js";
 import { readSearchSpace, writeSearchSpace } from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
-import type { Direction, FixedParameter, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchParameter, SearchSpace } from "./types.js";
+import type { CentaurConfig, Direction, FixedParameter, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchParameter, SearchSpace } from "./types.js";
 
 const DEFAULT_DIRECTION: Direction = "maximize";
 const DEFAULT_SAMPLER: Sampler = "tpe";
 const DEFAULT_PRUNER: Pruner = "none";
+const DEFAULT_CENTAUR_CONFIG: CentaurConfig = { llm_probability: 0.3, warmup_trials: 10, seed: 0 };
 
 export async function runAutotune(script: string, options: RunOptions): Promise<void> {
   if (!Number.isInteger(options.trials) || options.trials < 1) {
@@ -51,15 +52,22 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const configuredSearchSpace = options.config
     ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
     : undefined;
+  const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
+  const centaurAuthorized = effectiveSampler === "centaur";
+  validateCentaurOptions(options, effectiveSampler);
 
   writeStatus("Checking prerequisites...");
   const prerequisites = await checkPrerequisites({
     invocation,
     agent: options.agent,
+    centaur: effectiveSampler === "centaur",
     skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
   });
   writeStatus(`python3 ${prerequisites.python}`, "success");
   writeStatus(`optuna ${prerequisites.optuna}`, "success");
+  if (prerequisites.cmaes) {
+    writeStatus(`cmaes ${prerequisites.cmaes}`, "success");
+  }
   writeStatus(`headless ${prerequisites.headless}`, "success");
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
@@ -90,6 +98,10 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       return prepareSearchSpaceForRun(revised, options, scriptPath);
     }
   });
+  if (confirmed.optuna?.sampler === "centaur" && !centaurAuthorized) {
+    throw new Error("Centaur requires explicit --sampler centaur or a Centaur config");
+  }
+  validateCentaurSearchSpace(confirmed);
   await writeSearchSpace(searchSpacePath, confirmed);
 
   let result: StudyResult | undefined;
@@ -147,6 +159,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       runnerPath: runnerPathForRound(workDir, scriptPath, round, refineRounds),
       studyName: studyNameForRound(studyName, round, refineRounds),
       seedCount: seedTrials.length,
+      searchSpace: confirmed,
+      headless,
       options
     });
     roundManifests.push(manifest);
@@ -237,6 +251,9 @@ export async function resumeStudy(options: {
     ? path.join(workDir, manifest.search_space_path)
     : path.join(workDir, "search_space.yaml");
   const searchSpace = await readSearchSpace(searchSpacePath);
+  if (searchSpace.optuna?.sampler === "centaur" && options.nJobs !== 1) {
+    throw new Error("Centaur requires --n-jobs 1");
+  }
   const runnerPath = manifest?.runner_path
     ? path.join(workDir, manifest.runner_path)
     : await findRunner(workDir);
@@ -302,7 +319,8 @@ async function runSearchRound(input: {
     studyName: input.studyName,
     timeoutSeconds: input.options.timeoutSeconds,
     timeBudgetSeconds: input.timeBudgetSeconds,
-    seedTrials: input.seedTrials
+    seedTrials: input.seedTrials,
+    headless: input.headless
   });
   await copyLatestRunnerAlias(runnerPath, input.workDir, input.scriptPath, input.totalRounds);
 
@@ -639,6 +657,33 @@ function validateRefinementOptions(options: RunOptions): void {
   }
 }
 
+function validateCentaurOptions(options: RunOptions, sampler: Sampler | undefined): void {
+  if (options.centaur !== undefined && sampler !== "centaur") {
+    throw new Error("Centaur options require the centaur sampler");
+  }
+  if (sampler !== "centaur") {
+    return;
+  }
+  if (options.nJobs !== 1) {
+    throw new Error("Centaur requires --n-jobs 1");
+  }
+  if ((options.refineRounds ?? 0) !== 0) {
+    throw new Error("Centaur requires --refine-rounds 0 because CMA-ES uses a fixed search space");
+  }
+}
+
+function validateCentaurSearchSpace(searchSpace: SearchSpace): void {
+  if (searchSpace.optuna?.sampler !== "centaur") {
+    return;
+  }
+  const numericParameterCount = searchSpace.parameters.filter(
+    (parameter) => parameter.type === "float" || parameter.type === "int"
+  ).length;
+  if (numericParameterCount < 2) {
+    throw new Error("Centaur requires at least 2 numeric parameters for CMA-ES");
+  }
+}
+
 function searchSpacePathForRound(workDir: string, round: number, refineRounds: number): string {
   return refineRounds > 0 ? path.join(workDir, `search_space.round_${round}.yaml`) : path.join(workDir, "search_space.yaml");
 }
@@ -682,15 +727,20 @@ function expandCommandTemplateArgs(args: string[], context: CommandTemplateConte
 
 function withEffectiveOptunaSettings(
   searchSpace: SearchSpace,
-  options: Pick<RunOptions, "direction" | "sampler" | "pruner">
+  options: Pick<RunOptions, "direction" | "sampler" | "pruner" | "centaur">
 ): SearchSpace {
+  const sampler = options.sampler ?? searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER;
+  const { centaur: configuredCentaur, ...optuna } = searchSpace.optuna ?? {};
   return {
     ...searchSpace,
     direction: options.direction ?? searchSpace.direction ?? DEFAULT_DIRECTION,
     optuna: {
-      ...searchSpace.optuna,
-      sampler: options.sampler ?? searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER,
-      pruner: options.pruner ?? searchSpace.optuna?.pruner ?? DEFAULT_PRUNER
+      ...optuna,
+      sampler,
+      pruner: options.pruner ?? searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
+      ...(sampler === "centaur"
+        ? { centaur: { ...DEFAULT_CENTAUR_CONFIG, ...configuredCentaur, ...options.centaur } }
+        : {})
     }
   };
 }
@@ -710,6 +760,7 @@ function shouldSkipHeadlessPrerequisite(input: {
 }): boolean {
   return Boolean(
     input.searchSpace &&
+      input.searchSpace.optuna?.sampler !== "centaur" &&
       input.options.yes &&
       input.refineRounds === 0 &&
       !needsModifiedCopy(input.searchSpace)
@@ -897,6 +948,12 @@ interface RoundManifest {
   study_name: string;
   seed_count: number;
   storage?: string;
+  sampler?: Sampler;
+  centaur?: CentaurConfig & {
+    agent: string;
+    model?: string;
+    reasoning_effort?: HeadlessOptions["reasoningEffort"];
+  };
   refine_transfer_fixed_params: boolean;
   refine_transfer_trials: boolean;
 }
@@ -911,8 +968,12 @@ function buildRoundManifest(input: {
   runnerPath: string;
   studyName: string;
   seedCount: number;
+  searchSpace: SearchSpace;
+  headless: HeadlessOptions;
   options: RunOptions;
 }): RoundManifest {
+  const sampler = input.searchSpace.optuna?.sampler;
+  const centaur = input.searchSpace.optuna?.centaur;
   return {
     round: input.round,
     trials: input.trials,
@@ -922,6 +983,17 @@ function buildRoundManifest(input: {
     study_name: input.studyName,
     seed_count: input.seedCount,
     storage: input.options.storage,
+    sampler,
+    ...(sampler === "centaur" && centaur
+      ? {
+          centaur: {
+            ...centaur,
+            agent: input.headless.agent,
+            model: input.headless.model,
+            reasoning_effort: input.headless.reasoningEffort
+          }
+        }
+      : {}),
     refine_transfer_fixed_params: input.options.refineTransferFixedParams !== false,
     refine_transfer_trials: input.options.refineTransferTrials !== false
   };

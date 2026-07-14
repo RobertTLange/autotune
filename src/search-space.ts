@@ -5,9 +5,40 @@ import { z } from "zod";
 import type { SearchSpace } from "./types.js";
 
 const directionSchema = z.enum(["maximize", "minimize"]);
-const samplerSchema = z.enum(["tpe", "random", "cmaes", "grid"]);
+const samplerSchema = z.enum(["tpe", "random", "cmaes", "grid", "centaur"]);
 const prunerSchema = z.enum(["none", "median", "hyperband"]);
 const primitiveSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+const centaurConfigSchema = z
+  .object({
+    llm_probability: z.number().min(0).max(1).default(0.3),
+    warmup_trials: z.number().int().nonnegative().default(10),
+    seed: z.number().int().nonnegative().default(0)
+  })
+  .strict();
+
+const optunaConfigSchema = z
+  .object({
+    sampler: samplerSchema.optional(),
+    pruner: prunerSchema.optional(),
+    centaur: centaurConfigSchema.optional(),
+    reasoning: z.string().optional()
+  })
+  .strict()
+  .superRefine((optuna, ctx) => {
+    if (optuna.centaur !== undefined && optuna.sampler !== "centaur") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["centaur"],
+        message: "centaur settings require the centaur sampler"
+      });
+    }
+  })
+  .transform((optuna) =>
+    optuna.sampler === "centaur"
+      ? { ...optuna, centaur: optuna.centaur ?? centaurConfigSchema.parse({}) }
+      : optuna
+  );
 
 const parameterSchema = z
   .object({
@@ -67,14 +98,7 @@ const searchSpaceSchema = z
     has_metric_output: z.boolean().default(true),
     direction: directionSchema,
     failure_value: z.number().optional(),
-    optuna: z
-      .object({
-        sampler: samplerSchema.optional(),
-        pruner: prunerSchema.optional(),
-        reasoning: z.string().optional()
-      })
-      .strict()
-      .optional(),
+    optuna: optunaConfigSchema.optional(),
     reasoning: z.string().optional()
   })
   .superRefine((searchSpace, ctx) => {

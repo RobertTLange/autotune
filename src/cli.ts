@@ -21,7 +21,10 @@ export function createProgram(): Command {
   .argument("<script>", "script or executable to optimize")
   .requiredOption("--trials <n>", "number of Optuna trials", parsePositiveInt)
   .addOption(new Option("--direction <direction>", "optimization direction").choices(["maximize", "minimize"]))
-  .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid"]))
+  .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid", "centaur"]))
+  .option("--centaur-llm-probability <probability>", "probability that Centaur requests an LLM proposal", parseProbability)
+  .option("--centaur-warmup-trials <n>", "CMA-ES-only trials before Centaur requests LLM proposals", parseNonNegativeInt)
+  .option("--centaur-seed <n>", "Centaur proposal scheduler seed", parseNonNegativeInt)
   .addOption(new Option("--pruner <pruner>", "Optuna pruner").choices(["none", "median", "hyperband"]))
   .option("--storage <uri>", "Optuna storage URI, such as sqlite:///study.db")
   .option("--study-name <name>", "Optuna study name for persistent storage")
@@ -144,11 +147,17 @@ if (isMainModule()) {
 }
 
 export function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
+  const sampler = optionValue(raw, command, "sampler") as Sampler | undefined;
+  const centaur = normalizeCentaurOverrides(raw);
+  if (centaur !== undefined && sampler !== undefined && sampler !== "centaur") {
+    throw new Error("Centaur options require --sampler centaur");
+  }
   return {
     trials: Number(raw.trials),
     direction: optionValue(raw, command, "direction") as Direction | undefined,
-    sampler: optionValue(raw, command, "sampler") as Sampler | undefined,
+    sampler,
     pruner: optionValue(raw, command, "pruner") as Pruner | undefined,
+    centaur,
     nJobs: Number(raw.nJobs),
     workDir: typeof raw.workDir === "string" ? raw.workDir : undefined,
     agent: String(raw.agent),
@@ -171,6 +180,20 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     yes: Boolean(raw.yes),
     config: typeof raw.config === "string" ? raw.config : undefined
   };
+}
+
+function normalizeCentaurOverrides(raw: Record<string, unknown>): RunOptions["centaur"] {
+  const overrides: NonNullable<RunOptions["centaur"]> = {};
+  if (typeof raw.centaurLlmProbability === "number") {
+    overrides.llm_probability = raw.centaurLlmProbability;
+  }
+  if (typeof raw.centaurWarmupTrials === "number") {
+    overrides.warmup_trials = raw.centaurWarmupTrials;
+  }
+  if (typeof raw.centaurSeed === "number") {
+    overrides.seed = raw.centaurSeed;
+  }
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
 export function normalizeAgentGuidance(raw: Record<string, unknown>): string | undefined {
@@ -284,6 +307,14 @@ export function parseFiniteNumber(value: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     throw new Error(`expected finite number, got ${value}`);
+  }
+  return parsed;
+}
+
+export function parseProbability(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`expected number between 0 and 1, got ${value}`);
   }
   return parsed;
 }

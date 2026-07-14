@@ -7,6 +7,7 @@ import {
   isMainModule,
   normalizeReasoningEffort,
   normalizeRunOptions,
+  parseProbability,
   parseNonNegativeInt,
   parsePositiveInt
 } from "../src/cli.js";
@@ -84,6 +85,68 @@ describe("CLI option normalization", () => {
     expect(runCommand?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining(["--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"])
     );
+  });
+
+  it("exposes Centaur sampler and override flags on run", () => {
+    const runCommand = createProgram().commands.find((command) => command.name() === "run");
+    const sampler = runCommand?.options.find((option) => option.long === "--sampler") as Option | undefined;
+
+    expect(sampler?.argChoices).toContain("centaur");
+    expect(runCommand?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining([
+        "--centaur-llm-probability",
+        "--centaur-warmup-trials",
+        "--centaur-seed"
+      ])
+    );
+  });
+
+  it("normalizes explicit Centaur CLI overrides without injecting defaults", () => {
+    const command = new Command()
+      .addOption(new Option("--sampler <sampler>").choices(["tpe", "centaur"]))
+      .option("--centaur-llm-probability <probability>", "LLM probability", parseProbability)
+      .option("--centaur-warmup-trials <n>", "warmup trials", parseNonNegativeInt)
+      .option("--centaur-seed <n>", "scheduler seed", parseNonNegativeInt);
+    command.parse([
+      "--sampler", "centaur",
+      "--centaur-llm-probability", "0.65",
+      "--centaur-seed", "42"
+    ], { from: "user" });
+
+    const options = normalizeRunOptions({
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    }, command);
+
+    expect(options).toMatchObject({
+      sampler: "centaur",
+      centaur: { llm_probability: 0.65, seed: 42 }
+    });
+    expect(options.centaur).not.toHaveProperty("warmup_trials");
+  });
+
+  it("rejects Centaur overrides with an explicitly different sampler", () => {
+    const command = new Command()
+      .addOption(new Option("--sampler <sampler>").choices(["tpe", "centaur"]))
+      .option("--centaur-warmup-trials <n>", "warmup trials", parseNonNegativeInt);
+    command.parse(["--sampler", "tpe", "--centaur-warmup-trials", "2"], { from: "user" });
+
+    expect(() => normalizeRunOptions({
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    }, command)).toThrow(/centaur.*sampler|sampler.*centaur/i);
   });
 
   it("exposes agent guidance options on run and analyze", () => {
@@ -198,6 +261,15 @@ describe("CLI option normalization", () => {
     expect(parseNonNegativeInt("0")).toBe(0);
     expect(() => parsePositiveInt("0")).toThrow(/positive integer/);
     expect(() => parseNonNegativeInt("-1")).toThrow(/non-negative integer/);
+  });
+
+  it("validates probability options including boundaries", () => {
+    expect(parseProbability("0")).toBe(0);
+    expect(parseProbability("0.3")).toBe(0.3);
+    expect(parseProbability("1")).toBe(1);
+    expect(() => parseProbability("-0.01")).toThrow(/between 0 and 1/i);
+    expect(() => parseProbability("1.01")).toThrow(/between 0 and 1/i);
+    expect(() => parseProbability("NaN")).toThrow(/between 0 and 1/i);
   });
 
   it("recognizes symlinked bin entrypoints as main modules", async () => {
