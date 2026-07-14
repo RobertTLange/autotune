@@ -100,7 +100,7 @@ class CentaurSampler(BaseSampler):
             raise ValueError("direction must be 'minimize' or 'maximize'")
 
         self._work_dir = Path(work_dir).resolve()
-        self._artifact_root = prepare_artifact_root(self._work_dir)
+        self._artifact_root = prepare_artifact_root(self._work_dir, self._study_name)
         self._inners: Dict[int, CmaEsSampler] = {}
         self._samples: Dict[int, Dict[str, Any]] = {}
         self._metadata: Dict[int, Dict[str, Any]] = {}

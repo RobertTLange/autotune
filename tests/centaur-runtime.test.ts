@@ -1,10 +1,18 @@
 import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { writeOptunaRunner } from "../src/generate.js";
-import type { HeadlessOptions, SearchSpace } from "../src/types.js";
+import type { SearchSpace } from "../src/types.js";
+import {
+  blockingTrainSource,
+  centaurPython,
+  DEFAULT_TRAIN_SOURCE,
+  runPython,
+  runnerArgs,
+  sha256,
+  waitForFile,
+  writeFakeHeadless,
+  writeRunner
+} from "./centaur-runtime-helpers.js";
 
 const centaurSpace = {
   parameters: [
@@ -22,15 +30,6 @@ const centaurSpace = {
     centaur: { llm_probability: 1, warmup_trials: 0, seed: 11 }
   }
 } as const;
-
-const DEFAULT_TRAIN_SOURCE = `import argparse
-p=argparse.ArgumentParser()
-p.add_argument('--x', type=float)
-p.add_argument('--y', type=float)
-p.add_argument('--optimizer')
-a=p.parse_args()
-print(f'autotune_metric={a.x + a.y}')
-`;
 
 describe("Centaur generated runtime", () => {
   it("scopes multiprovider credentials to an explicit exact provider", async () => {
@@ -166,9 +165,10 @@ print(json.dumps({
       .toBeLessThan(parsed.all_trials[0].user_attrs.autotune_centaur_llm_latency_seconds);
     expect(await readFile(marker, "utf8")).toBe("k");
 
-    const artifactDir = path.join(dir, "centaur");
-    expect((await stat(artifactDir)).mode & 0o777).toBe(0o700);
     const responsePath = path.join(dir, parsed.all_trials[0].user_attrs.autotune_centaur_artifact);
+    const artifactDir = path.dirname(responsePath);
+    expect((await stat(path.join(dir, "centaur"))).mode & 0o777).toBe(0o700);
+    expect((await stat(artifactDir)).mode & 0o777).toBe(0o700);
     expect((await stat(responsePath)).mode & 0o777).toBe(0o600);
     expect(parsed.all_trials[0].user_attrs.autotune_centaur_prompt_sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(parsed.all_trials[0].user_attrs.autotune_centaur_response_sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -205,6 +205,44 @@ print(json.dumps({
     );
     const pathParsed = JSON.parse(await readFile(pathResults, "utf8"));
     expect(pathParsed.all_trials[0].params).toEqual({ x: 0.5, y: 1, optimizer: "sgd" });
+  }, 20_000);
+
+  it("keeps artifact provenance separate across repeated in-memory runs", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-artifact-runs-"));
+    const marker = path.join(dir, "headless-count.txt");
+    const headless = path.join(dir, "fake-headless.mjs");
+    await writeFile(headless, `#!/usr/bin/env node
+import fs from "node:fs";
+const count = fs.existsSync(${JSON.stringify(marker)}) ? fs.readFileSync(${JSON.stringify(marker)}, "utf8").length : 0;
+fs.appendFileSync(${JSON.stringify(marker)}, "x");
+console.log(JSON.stringify({ x: count === 0 ? 0.25 : 0.75, y: 1, optimizer: "adam" }));
+`, "utf8");
+    await chmod(headless, 0o755);
+
+    const runner = await writeRunner(dir, centaurSpace, "reused_study", python);
+    const firstResults = path.join(dir, "first-results.json");
+    await runPython(python, runnerArgs(runner, firstResults, "reused_study", 1), {
+      AUTOTUNE_HEADLESS_BIN: headless
+    });
+    const first = JSON.parse(await readFile(firstResults, "utf8"));
+    const firstArtifact = first.all_trials[0].user_attrs.autotune_centaur_artifact;
+    const firstBytes = await readFile(path.join(dir, firstArtifact), "utf8");
+    const firstHash = first.all_trials[0].user_attrs.autotune_centaur_response_sha256;
+
+    const secondResults = path.join(dir, "second-results.json");
+    await runPython(python, runnerArgs(runner, secondResults, "reused_study", 1), {
+      AUTOTUNE_HEADLESS_BIN: headless
+    });
+    const second = JSON.parse(await readFile(secondResults, "utf8"));
+    const secondArtifact = second.all_trials[0].user_attrs.autotune_centaur_artifact;
+
+    expect(firstArtifact).not.toBe(secondArtifact);
+    expect(await readFile(path.join(dir, firstArtifact), "utf8")).toBe(firstBytes);
+    expect(sha256(firstBytes)).toBe(firstHash);
+    expect(firstBytes).toContain('"x":0.25');
+    await expect(readFile(path.join(dir, secondArtifact), "utf8")).resolves.toContain('"x":0.75');
   }, 20_000);
 
   it("keeps warmup trials on CMA-ES before switching to the LLM", async () => {
@@ -421,8 +459,9 @@ else process.exit(9);
       "-c",
       `import json,optuna; s=optuna.load_study(study_name="centaur_failure_provenance", storage=${JSON.stringify(storage)}); print(json.dumps(s.trials[0].user_attrs))`
     ]));
-    const firstPrompt = await readFile(path.join(dir, "centaur", "trial-000000-attempt-1.prompt.md"), "utf8");
-    const firstResponse = await readFile(path.join(dir, "centaur", "trial-000000-attempt-1.response.txt"), "utf8");
+    const firstResponsePath = path.join(dir, attrs.autotune_centaur_artifact);
+    const firstPrompt = await readFile(path.join(path.dirname(firstResponsePath), "trial-000000-attempt-1.prompt.md"), "utf8");
+    const firstResponse = await readFile(firstResponsePath, "utf8");
     expect(attrs.autotune_centaur_prompt_sha256).toBe(sha256(firstPrompt));
     expect(attrs.autotune_centaur_response_sha256).toBe(sha256(firstResponse));
     expect(attrs.autotune_centaur_artifact).toContain("attempt-1.response.txt");
@@ -443,125 +482,3 @@ else process.exit(9);
     )).rejects.toThrow(/artifact directory cannot be a symlink/i);
   }, 20_000);
 });
-
-async function centaurPython(): Promise<string | undefined> {
-  const candidates = [process.env.AUTOTUNE_CENTAUR_PYTHON, "/tmp/autotune-centaur-venv/bin/python", "python3"]
-    .filter((candidate): candidate is string => Boolean(candidate));
-  for (const candidate of candidates) {
-    try {
-      await runPython(candidate, ["-c", "import optuna,cmaes; assert optuna.__version__.startswith('4.8.'); assert cmaes.__version__.startswith('0.12.')"]);
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-  if (process.env.CI) {
-    throw new Error("CI requires Optuna 4.8.x and cmaes 0.12.x for Centaur runtime tests");
-  }
-  return undefined;
-}
-
-async function writeRunner(
-  dir: string,
-  searchSpace: SearchSpace,
-  studyName: string,
-  python: string,
-  trainSource = DEFAULT_TRAIN_SOURCE,
-  headless: HeadlessOptions = { agent: "codex", model: "test-model", reasoningEffort: "low" }
-): Promise<string> {
-  const train = path.join(dir, "train.py");
-  const runner = path.join(dir, "train_optuna.py");
-  await mkdir(dir, { recursive: true });
-  await writeFile(train, trainSource, "utf8");
-  await writeOptunaRunner({
-    invocation: { language: "python", command: [python], script: train },
-    searchSpace,
-    outputPath: runner,
-    resultsPath: path.join(dir, "results.json"),
-    studyName,
-    headless
-  });
-  return runner;
-}
-
-async function waitForFile(filePath: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      await stat(filePath);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-  throw new Error(`timed out waiting for ${filePath}`);
-}
-
-function blockingTrainSource(marker: string, release: string): string {
-  return `import argparse,time
-from pathlib import Path
-p=argparse.ArgumentParser()
-p.add_argument('--x', type=float)
-p.add_argument('--y', type=float)
-p.add_argument('--optimizer')
-a=p.parse_args()
-marker=Path(${JSON.stringify(marker)})
-if not marker.exists():
-    marker.write_text('started')
-    release=Path(${JSON.stringify(release)})
-    while not release.exists():
-        time.sleep(0.05)
-print(f'autotune_metric={a.x + a.y}')
-`;
-}
-
-async function writeFakeHeadless(
-  dir: string,
-  marker: string,
-  proposal: Record<string, unknown>,
-  delayMilliseconds = 0
-): Promise<string> {
-  const executable = path.join(dir, "fake-headless.mjs");
-  await writeFile(executable, `#!/usr/bin/env node
-import fs from "node:fs";
-if (process.env.AUTOTUNE_TEST_FORBIDDEN) process.exit(7);
-if (process.env.ANTHROPIC_API_KEY) process.exit(7);
-fs.appendFileSync(${JSON.stringify(marker)}, process.env.OPENAI_API_KEY === "selected-key" ? "k" : "x");
-setTimeout(() => console.log(JSON.stringify(${JSON.stringify(proposal)})), ${delayMilliseconds});
-`, "utf8");
-  await chmod(executable, 0o755);
-  return executable;
-}
-
-function runnerArgs(runner: string, results: string, studyName: string, trials: number): string[] {
-  return [runner, "--trials", String(trials), "--direction", "maximize", "--sampler", "centaur", "--pruner", "none", "--n-jobs", "1", "--study-name", studyName, "--output", results];
-}
-
-function runPython(
-  executable: string,
-  args: string[],
-  env: Record<string, string> = {},
-  cwd?: string
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env },
-      cwd
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`${executable} ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
-    });
-  });
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}

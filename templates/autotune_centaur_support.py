@@ -347,18 +347,24 @@ def bounded_process(
     return stdout.value
 
 
-def prepare_artifact_root(work_dir: Path) -> Path:
-    root = work_dir / "centaur"
-    if root.is_symlink():
+def prepare_artifact_root(work_dir: Path, study_name: str) -> Path:
+    base = work_dir / "centaur"
+    if base.is_symlink():
         raise ValueError("Centaur artifact directory cannot be a symlink")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if root.is_symlink():
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if base.is_symlink():
         raise ValueError("Centaur artifact directory cannot be a symlink")
-    resolved = root.resolve()
-    if resolved.parent != work_dir:
+    resolved_base = base.resolve()
+    if resolved_base.parent != work_dir:
         raise ValueError("Centaur artifact directory must remain inside work_dir")
-    os.chmod(resolved, 0o700)
-    return resolved
+    os.chmod(resolved_base, 0o700)
+    prefix = f"study-{sha256(study_name)[:16]}-"
+    run_root = Path(tempfile.mkdtemp(prefix=prefix, dir=resolved_base))
+    resolved_run_root = run_root.resolve()
+    if resolved_run_root.parent != resolved_base:
+        raise ValueError("Centaur study artifacts must remain inside artifact directory")
+    os.chmod(resolved_run_root, 0o700)
+    return resolved_run_root
 
 
 def write_private(path: Path, content: str) -> None:
