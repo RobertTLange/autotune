@@ -161,7 +161,7 @@ python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
 npm install -g '@roberttlange/headless@0.4.0'
 ```
 
-Centaur must be explicitly selected by `--sampler centaur` or by a config whose `optuna.sampler` is `centaur`. Agent analysis cannot enable it implicitly. It also requires at least two numeric (`float` or `int`) parameters, `--n-jobs 1`, and `--refine-rounds 0`.
+Centaur must be explicitly selected by `--sampler centaur` or by a config whose `optuna.sampler` is `centaur`. Agent analysis cannot enable it implicitly. It also requires at least two numeric (`float` or `int`) parameters, `--n-jobs 1`, and `--refine-rounds 0`. Persistent Centaur runs currently require file-backed SQLite storage so the generated runner can enforce a single writer per study.
 
 ```bash
 autotune run train.py \

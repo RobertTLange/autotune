@@ -11,7 +11,7 @@ This directory contains small compatibility examples and larger benchmark-style 
 
 ## Centaur PID Example
 
-Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at least two numeric parameters, one trial worker, and no agentic refinement rounds:
+Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at least two numeric parameters, one trial worker, and no agentic refinement rounds. Persistent runs currently require file-backed SQLite storage.
 
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'

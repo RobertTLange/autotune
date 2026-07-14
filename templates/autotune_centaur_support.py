@@ -13,7 +13,7 @@ import tempfile
 import threading
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import cmaes
 import numpy as np
@@ -305,6 +305,67 @@ def write_private(path: Path, content: str) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def acquire_study_lock(storage: Optional[str], study_name: str) -> Optional[int]:
+    if not storage:
+        return None
+    lock_path = _sqlite_study_lock_path(storage, study_name)
+    if lock_path is None:
+        return None
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        _lock_descriptor(descriptor)
+    except BlockingIOError:
+        os.close(descriptor)
+        raise RuntimeError(
+            "Centaur study is already being optimized by another process"
+        ) from None
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _sqlite_study_lock_path(storage: str, study_name: str) -> Optional[Path]:
+    prefix = "sqlite:///"
+    if not storage.startswith(prefix):
+        raise ValueError("Centaur persistent storage currently requires a SQLite URI")
+    database = storage[len(prefix) :].split("?", 1)[0]
+    if database == ":memory:":
+        return None
+    if not database or database.startswith("file:"):
+        raise ValueError("Centaur requires a file-backed SQLite storage URI")
+    database_path = Path(database).resolve()
+    study_hash = sha256(study_name)[:16]
+    return database_path.with_name(f".{database_path.name}.centaur-{study_hash}.lock")
+
+
+def _lock_descriptor(descriptor: int) -> None:
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError as error:
+            raise BlockingIOError from error
+        return
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def release_study_lock(descriptor: Optional[int]) -> None:
+    if descriptor is not None:
+        os.close(descriptor)
 
 
 def native(value: Any) -> Any:

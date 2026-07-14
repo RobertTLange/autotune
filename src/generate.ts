@@ -311,7 +311,7 @@ def objective(trial):
         trial.set_user_attr("autotune_duration_seconds", time.monotonic() - started_at)
 
 
-def make_sampler(name, study_name=None, direction=None):
+def make_sampler(name, study_name=None, direction=None, storage=None):
     if name == "tpe":
         return optuna.samplers.TPESampler()
     if name == "random":
@@ -325,6 +325,7 @@ def make_sampler(name, study_name=None, direction=None):
             fixed_parameters=CONFIG.get("fixed_parameters", []),
             direction=direction or CONFIG.get("direction", "maximize"),
             study_name=study_name or CONFIG.get("study_name"),
+            storage=storage,
             work_dir=Path(__file__).resolve().parent,
             objective_context=CONFIG.get("objective_context"),
             llm_probability=config["llm_probability"],
@@ -597,7 +598,7 @@ def main():
         study_name=args.study_name,
         storage=args.storage,
         load_if_exists=bool(args.storage),
-        sampler=make_sampler(args.sampler, args.study_name, args.direction),
+        sampler=make_sampler(args.sampler, args.study_name, args.direction, args.storage),
         pruner=make_pruner(args.pruner),
     )
     BASELINE_FINISHED_COUNT = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])

@@ -18,6 +18,7 @@ import numpy as np
 import optuna
 from autotune_centaur_support import (
     MAX_PROMPT_BYTES,
+    acquire_study_lock,
     bounded_process,
     build_distributions,
     extract_proposal,
@@ -28,6 +29,7 @@ from autotune_centaur_support import (
     prepare_artifact_root,
     probability,
     require_supported_versions,
+    release_study_lock,
     safe_error,
     sha256,
     unit_hash,
@@ -49,6 +51,7 @@ class CentaurSampler(BaseSampler):
         fixed_parameters: Sequence[Mapping[str, Any]],
         direction: str,
         study_name: Optional[str],
+        storage: Optional[str],
         work_dir: str,
         llm_probability: float,
         warmup_trials: int,
@@ -90,6 +93,15 @@ class CentaurSampler(BaseSampler):
         self._metadata: Dict[int, Dict[str, Any]] = {}
         self._active_trials: set[int] = set()
         self._lock = threading.Lock()
+        self._study_lock = None
+        self._study_lock = acquire_study_lock(storage, self._study_name)
+
+    def close(self) -> None:
+        release_study_lock(self._study_lock)
+        self._study_lock = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def before_trial(self, study: optuna.Study, trial: FrozenTrial) -> None:
         with self._lock:

@@ -23,6 +23,15 @@ const centaurSpace = {
   }
 } as const;
 
+const DEFAULT_TRAIN_SOURCE = `import argparse
+p=argparse.ArgumentParser()
+p.add_argument('--x', type=float)
+p.add_argument('--y', type=float)
+p.add_argument('--optimizer')
+a=p.parse_args()
+print(f'autotune_metric={a.x + a.y}')
+`;
+
 describe("Centaur generated runtime", () => {
   it("uses strict LLM proposals, records provenance, and excludes proposal latency", async () => {
     const python = await centaurPython();
@@ -155,6 +164,91 @@ describe("Centaur generated runtime", () => {
       .toEqual(new Set(["cma", "llm"]));
   }, 30_000);
 
+  it("rejects concurrent processes for the same persistent study", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-concurrent-"));
+    const marker = path.join(dir, "trial-started.txt");
+    const release = path.join(dir, "release-trial.txt");
+    const searchSpace = {
+      ...centaurSpace,
+      optuna: {
+        ...centaurSpace.optuna,
+        centaur: { ...centaurSpace.optuna.centaur, llm_probability: 0 }
+      }
+    } as const;
+    const trainSource = blockingTrainSource(marker, release);
+    const runner = await writeRunner(dir, searchSpace, "centaur_concurrent", python, trainSource);
+    const storage = `sqlite:///${path.join(dir, "study.db")}`;
+    const aliasStorage = `sqlite:///${dir}/./study.db`;
+    const firstRun = runPython(python, [
+      ...runnerArgs(runner, path.join(dir, "results-a.json"), "centaur_concurrent", 1),
+      "--storage", storage
+    ]);
+
+    try {
+      await waitForFile(marker);
+      await expect(runPython(python, [
+        ...runnerArgs(runner, path.join(dir, "results-b.json"), "centaur_concurrent", 1),
+        "--storage", aliasStorage
+      ])).rejects.toThrow(/already being optimized by another process/i);
+    } finally {
+      await writeFile(release, "release", "utf8");
+    }
+    await firstRun;
+  }, 20_000);
+
+  it("distinguishes literal percent escapes in SQLite database names", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-percent-path-"));
+    const marker = path.join(dir, "trial-started.txt");
+    const release = path.join(dir, "release-trial.txt");
+    const searchSpace = {
+      ...centaurSpace,
+      optuna: {
+        ...centaurSpace.optuna,
+        centaur: { ...centaurSpace.optuna.centaur, llm_probability: 0 }
+      }
+    } as const;
+    const runner = await writeRunner(
+      dir,
+      searchSpace,
+      "centaur_percent_path",
+      python,
+      blockingTrainSource(marker, release)
+    );
+    const encodedStorage = `sqlite:///${path.join(dir, "study%20name.db")}`;
+    const spacedStorage = `sqlite:///${path.join(dir, "study name.db")}`;
+    const firstRun = runPython(python, [
+      ...runnerArgs(runner, path.join(dir, "results-encoded.json"), "centaur_percent_path", 1),
+      "--storage", encodedStorage
+    ]);
+
+    try {
+      await waitForFile(marker);
+      await expect(runPython(python, [
+        ...runnerArgs(runner, path.join(dir, "results-spaced.json"), "centaur_percent_path", 1),
+        "--storage", spacedStorage
+      ])).resolves.toContain('"n_trials": 1');
+    } finally {
+      await writeFile(release, "release", "utf8");
+    }
+    await firstRun;
+  }, 20_000);
+
+  it("rejects persistent storage without a shared file lock", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-storage-"));
+    const runner = await writeRunner(dir, centaurSpace, "centaur_storage", python);
+
+    await expect(runPython(python, [
+      ...runnerArgs(runner, path.join(dir, "results.json"), "centaur_storage", 1),
+      "--storage", "postgresql://localhost/autotune"
+    ])).rejects.toThrow(/requires a SQLite URI/i);
+  }, 20_000);
+
   it("retries invalid model output once and then fails the trial", async () => {
     const python = await centaurPython();
     if (!python) return;
@@ -235,11 +329,17 @@ async function centaurPython(): Promise<string | undefined> {
   return undefined;
 }
 
-async function writeRunner(dir: string, searchSpace: SearchSpace, studyName: string, python: string): Promise<string> {
+async function writeRunner(
+  dir: string,
+  searchSpace: SearchSpace,
+  studyName: string,
+  python: string,
+  trainSource = DEFAULT_TRAIN_SOURCE
+): Promise<string> {
   const train = path.join(dir, "train.py");
   const runner = path.join(dir, "train_optuna.py");
   await mkdir(dir, { recursive: true });
-  await writeFile(train, "import argparse\np=argparse.ArgumentParser()\np.add_argument('--x', type=float)\np.add_argument('--y', type=float)\np.add_argument('--optimizer')\na=p.parse_args()\nprint(f'autotune_metric={a.x + a.y}')\n", "utf8");
+  await writeFile(train, trainSource, "utf8");
   await writeOptunaRunner({
     invocation: { language: "python", command: [python], script: train },
     searchSpace,
@@ -249,6 +349,36 @@ async function writeRunner(dir: string, searchSpace: SearchSpace, studyName: str
     headless: { agent: "codex", model: "test-model", reasoningEffort: "low" }
   });
   return runner;
+}
+
+async function waitForFile(filePath: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await stat(filePath);
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`timed out waiting for ${filePath}`);
+}
+
+function blockingTrainSource(marker: string, release: string): string {
+  return `import argparse,time
+from pathlib import Path
+p=argparse.ArgumentParser()
+p.add_argument('--x', type=float)
+p.add_argument('--y', type=float)
+p.add_argument('--optimizer')
+a=p.parse_args()
+marker=Path(${JSON.stringify(marker)})
+if not marker.exists():
+    marker.write_text('started')
+    release=Path(${JSON.stringify(release)})
+    while not release.exists():
+        time.sleep(0.05)
+print(f'autotune_metric={a.x + a.y}')
+`;
 }
 
 async function writeFakeHeadless(
