@@ -1,5 +1,5 @@
 export type Direction = "maximize" | "minimize";
-export type Sampler = "tpe" | "random" | "cmaes" | "grid";
+export type Sampler = "tpe" | "random" | "cmaes" | "grid" | "centaur";
 export type Pruner = "none" | "median" | "hyperband";
 export type RefineMode = "ask" | "auto";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
@@ -38,7 +38,14 @@ export interface SearchSpace {
 export interface OptunaConfig {
   sampler?: Sampler;
   pruner?: Pruner;
+  centaur?: CentaurConfig;
   reasoning?: string;
+}
+
+export interface CentaurConfig {
+  llm_probability: number;
+  warmup_trials: number;
+  seed: number;
 }
 
 export interface Invocation {
@@ -59,6 +66,7 @@ export interface RunOptions {
   direction?: Direction;
   sampler?: Sampler;
   pruner?: Pruner;
+  centaur?: Partial<CentaurConfig>;
   nJobs: number;
   workDir?: string;
   agent: string;

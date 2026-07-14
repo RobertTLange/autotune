@@ -68,6 +68,82 @@ optuna:
     });
   });
 
+  it("parses Centaur settings and applies the paper defaults", () => {
+    expect(
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: minimize
+optuna:
+  sampler: centaur
+`)
+    ).toMatchObject({
+      optuna: {
+        sampler: "centaur",
+        centaur: { llm_probability: 0.3, warmup_trials: 10, seed: 0 }
+      }
+    });
+
+    expect(
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: minimize
+optuna:
+  sampler: centaur
+  centaur:
+    llm_probability: 0.75
+    warmup_trials: 4
+    seed: 17
+`)
+    ).toMatchObject({
+      optuna: {
+        sampler: "centaur",
+        centaur: { llm_probability: 0.75, warmup_trials: 4, seed: 17 }
+      }
+    });
+  });
+
+  it.each([
+    ["llm_probability: -0.01", /llm_probability|probability/i],
+    ["llm_probability: 1.01", /llm_probability|probability/i],
+    ["warmup_trials: -1", /warmup_trials|non-negative/i],
+    ["warmup_trials: 1.5", /warmup_trials|integer/i],
+    ["seed: -1", /seed|non-negative/i],
+    ["seed: 1.5", /seed|integer/i],
+    ["unknown: true", /unknown|unrecognized/i]
+  ])("rejects invalid Centaur setting %s", (setting, expected) => {
+    expect(() =>
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+optuna:
+  sampler: centaur
+  centaur:
+    ${setting}
+`)
+    ).toThrow(expected);
+  });
+
+  it("rejects Centaur settings for another sampler", () => {
+    expect(() =>
+      parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+optuna:
+  sampler: tpe
+  centaur:
+    llm_probability: 0.3
+`)
+    ).toThrow(/centaur.*sampler|sampler.*centaur/i);
+  });
+
   it("parses fixed parameters", () => {
     expect(
       parseSearchSpaceText(`

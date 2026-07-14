@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -9,6 +9,21 @@ const searchSpace = {
   has_arg_parsing: true,
   needs_wrapper: false,
   direction: "minimize"
+} as const;
+
+const centaurSearchSpace = {
+  ...searchSpace,
+  parameters: [
+    { name: "x", cli_flag: "--x", type: "float", low: -5, high: 5 },
+    { name: "y", cli_flag: "--y", type: "float", low: 0, high: 1 },
+    { name: "optimizer", cli_flag: "--optimizer", type: "categorical", choices: ["adam", "sgd"] }
+  ],
+  optuna: {
+    sampler: "centaur",
+    pruner: "none",
+    centaur: { llm_probability: 0.3, warmup_trials: 10, seed: 7 }
+  },
+  reasoning: "minimize validation loss"
 } as const;
 
 describe("renderOptunaRunner", () => {
@@ -149,6 +164,86 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("def cumulative_trial_seconds(study):");
     expect(code).toContain("if not time_budget_exhausted(study):");
     expect(code).toContain("study.stop()");
+  });
+
+  it("renders the Centaur sampler and excludes proposal latency from trial duration", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: centaurSearchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json",
+      studyName: "centaur_test",
+      headless: { agent: "codex", model: "gpt-5.5", reasoningEffort: "high" }
+    });
+
+    expect(code).toContain("from autotune_centaur_runtime import CentaurSampler");
+    expect(code).toContain('if name == "centaur":');
+    expect(code).toContain("return CentaurSampler(");
+    expect(code).toContain('work_dir=Path(__file__).resolve().parent');
+    expect(code).toContain('objective_context=CONFIG.get("objective_context")');
+    expect(code.indexOf("params = {parameter")).toBeLessThan(code.indexOf("started_at = time.monotonic()"));
+    expect(code).toContain('if args.sampler == "centaur" and args.n_jobs != 1:');
+  });
+
+  it("requires proposal-agent options for a Centaur runner", () => {
+    expect(() => renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: centaurSearchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    })).toThrow(/Centaur requires proposal-agent options/i);
+  });
+
+  it("copies the Centaur runtime companion only for Centaur runners", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-companion-"));
+    const centaurRunner = path.join(dir, "centaur", "train_optuna.py");
+    const regularRunner = path.join(dir, "regular", "train_optuna.py");
+
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: centaurSearchSpace,
+      outputPath: centaurRunner,
+      resultsPath: path.join(dir, "centaur", "results.json"),
+      headless: { agent: "codex" }
+    });
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: regularRunner,
+      resultsPath: path.join(dir, "regular", "results.json")
+    });
+
+    const companion = path.join(dir, "centaur", "autotune_centaur_runtime.py");
+    const support = path.join(dir, "centaur", "autotune_centaur_support.py");
+    await expect(access(companion)).resolves.toBeUndefined();
+    await expect(access(support)).resolves.toBeUndefined();
+    await expect(runPython(["-m", "py_compile", companion, support, centaurRunner])).resolves.toBe("");
+    const runtime = await readFile(companion, "utf8");
+    expect(runtime).toContain('"--allow"');
+    expect(runtime).toContain('"read-only"');
+    expect(runtime).not.toContain('"npx"');
+    await expect(access(path.join(dir, "regular", "autotune_centaur_runtime.py"))).rejects.toThrow();
+    await expect(access(path.join(dir, "regular", "autotune_centaur_support.py"))).rejects.toThrow();
+  });
+
+  it("replaces output symlinks without overwriting their targets", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-atomic-runner-"));
+    const outputDirectory = path.join(dir, "output");
+    const target = path.join(dir, "target.txt");
+    const runner = path.join(outputDirectory, "train_optuna.py");
+    await mkdir(outputDirectory);
+    await writeFile(target, "preserve me", "utf8");
+    await symlink(target, runner);
+
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: path.join(dir, "results.json")
+    });
+
+    expect(await readFile(target, "utf8")).toBe("preserve me");
+    expect(await readFile(runner, "utf8")).toContain("def objective");
   });
 
   it("does not start another trial when a resumed study exhausted its time budget", async () => {

@@ -1,6 +1,7 @@
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { Invocation, SearchSpace } from "./types.js";
+import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export interface SeedTrial {
   value: number;
@@ -8,6 +9,9 @@ export interface SeedTrial {
   source_round?: number;
   source_trial_number?: number;
 }
+
+const CENTAUR_RUNTIME_URL = new URL("../templates/autotune_centaur_runtime.py", import.meta.url);
+const CENTAUR_SUPPORT_URL = new URL("../templates/autotune_centaur_support.py", import.meta.url);
 
 export function renderOptunaRunner(input: {
   invocation: Invocation;
@@ -18,7 +22,11 @@ export function renderOptunaRunner(input: {
   timeoutSeconds?: number;
   timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
+  headless?: HeadlessOptions;
 }): string {
+  if (input.searchSpace.optuna?.sampler === "centaur" && !input.headless?.agent.trim()) {
+    throw new Error("Centaur requires proposal-agent options");
+  }
   const timeout = input.timeoutSeconds ?? 900;
   const payload = {
     command: input.invocation.command,
@@ -33,7 +41,16 @@ export function renderOptunaRunner(input: {
     failure_value: input.searchSpace.failure_value,
     max_output_bytes: 65536,
     timeout,
-    time_budget_seconds: input.timeBudgetSeconds
+    time_budget_seconds: input.timeBudgetSeconds,
+    objective_context: input.searchSpace.reasoning,
+    centaur: input.searchSpace.optuna?.sampler === "centaur"
+      ? {
+          ...input.searchSpace.optuna.centaur,
+          agent: input.headless?.agent,
+          model: input.headless?.model,
+          reasoning_effort: input.headless?.reasoningEffort
+        }
+      : undefined
   };
 
   return `#!/usr/bin/env python3
@@ -52,6 +69,7 @@ from pathlib import Path
 
 import optuna
 from optuna.trial import TrialState
+${input.searchSpace.optuna?.sampler === "centaur" ? "from autotune_centaur_runtime import CentaurSampler" : ""}
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
 CURRENT_TRIAL_TARGET = 0
@@ -260,8 +278,9 @@ def run_trial_command(argv):
 
 def objective(trial):
     global STARTED_TRIAL_COUNT
-    started_at = time.monotonic()
+    timer = time.monotonic()
     params = {parameter["name"]: suggest_value(trial, parameter) for parameter in CONFIG["parameters"]}
+    started_at = time.monotonic() if CONFIG.get("centaur") else timer
     trial.set_user_attr("autotune_effective_param_hash", effective_param_hash(effective_params(params)))
     try:
         with PROGRESS_LOCK:
@@ -292,13 +311,30 @@ def objective(trial):
         trial.set_user_attr("autotune_duration_seconds", time.monotonic() - started_at)
 
 
-def make_sampler(name):
+def make_sampler(name, study_name=None, direction=None, storage=None):
     if name == "tpe":
         return optuna.samplers.TPESampler()
     if name == "random":
         return optuna.samplers.RandomSampler()
     if name == "cmaes":
         return optuna.samplers.CmaEsSampler()
+    if name == "centaur":
+        config = CONFIG["centaur"]
+        return CentaurSampler(
+            parameters=CONFIG["parameters"],
+            fixed_parameters=CONFIG.get("fixed_parameters", []),
+            direction=direction or CONFIG.get("direction", "maximize"),
+            study_name=study_name or CONFIG.get("study_name"),
+            storage=storage,
+            work_dir=Path(__file__).resolve().parent,
+            objective_context=CONFIG.get("objective_context"),
+            llm_probability=config["llm_probability"],
+            warmup_trials=config["warmup_trials"],
+            seed=config["seed"],
+            agent=config["agent"],
+            model=config.get("model"),
+            reasoning_effort=config.get("reasoning_effort"),
+        )
     if name == "grid":
         search_space = {}
         for parameter in CONFIG["parameters"]:
@@ -548,6 +584,8 @@ def main():
     parser.add_argument("--n-jobs", type=int, default=1)
     parser.add_argument("--output", default=CONFIG["results_path"])
     args = parser.parse_args()
+    if args.sampler == "centaur" and args.n_jobs != 1:
+        parser.error("Centaur requires --n-jobs 1")
 
     global CURRENT_TRIAL_TARGET
     global BASELINE_FINISHED_COUNT
@@ -560,7 +598,7 @@ def main():
         study_name=args.study_name,
         storage=args.storage,
         load_if_exists=bool(args.storage),
-        sampler=make_sampler(args.sampler),
+        sampler=make_sampler(args.sampler, args.study_name, args.direction, args.storage),
         pruner=make_pruner(args.pruner),
     )
     BASELINE_FINISHED_COUNT = len([item for item in study.trials if item.state in (TrialState.COMPLETE, TrialState.PRUNED, TrialState.FAIL)])
@@ -602,8 +640,30 @@ export async function writeOptunaRunner(input: {
   timeoutSeconds?: number;
   timeBudgetSeconds?: number;
   seedTrials?: SeedTrial[];
+  headless?: HeadlessOptions;
 }): Promise<void> {
   await mkdir(path.dirname(input.outputPath), { recursive: true });
-  await writeFile(input.outputPath, renderOptunaRunner(input), "utf8");
-  await chmod(input.outputPath, 0o755);
+  await writeAtomicFile(input.outputPath, renderOptunaRunner(input), 0o755);
+  if (input.searchSpace.optuna?.sampler === "centaur") {
+    const outputDirectory = path.dirname(input.outputPath);
+    const runtimePath = path.join(outputDirectory, "autotune_centaur_runtime.py");
+    const supportPath = path.join(outputDirectory, "autotune_centaur_support.py");
+    await writeAtomicFile(runtimePath, await readFile(CENTAUR_RUNTIME_URL), 0o600);
+    await writeAtomicFile(supportPath, await readFile(CENTAUR_SUPPORT_URL), 0o600);
+  }
+}
+
+async function writeAtomicFile(filePath: string, content: string | Uint8Array, mode: number): Promise<void> {
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, content, { flag: "wx", mode });
+    await chmod(temporaryPath, mode);
+    await rename(temporaryPath, filePath);
+  } finally {
+    await unlink(temporaryPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    });
+  }
 }

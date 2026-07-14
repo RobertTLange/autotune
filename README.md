@@ -150,6 +150,49 @@ Skip analysis with a known search space:
 autotune run train.py --trials 20 --config search_space.yaml --yes
 ```
 
+## Centaur Sampler
+
+[Centaur](https://arxiv.org/abs/2603.24647) combines CMA-ES with occasional LLM proposals. After an initial CMA-ES-only warmup, each trial uses a fixed probability to choose an LLM proposal instead of the CMA-ES proposal; completed LLM trials then become part of the CMA-ES study history.
+
+Install its Python dependencies:
+
+```bash
+python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+npm install -g '@roberttlange/headless@0.4.0'
+```
+
+Centaur must be explicitly selected by `--sampler centaur` or by a config whose `optuna.sampler` is `centaur`. Agent analysis cannot enable it implicitly. It also requires at least two numeric (`float` or `int`) parameters, `--n-jobs 1`, and `--refine-rounds 0`. Persistent Centaur runs currently require file-backed SQLite storage so the generated runner can enforce a single writer per study.
+
+```bash
+autotune run train.py \
+  --trials 50 \
+  --sampler centaur \
+  --centaur-llm-probability 0.3 \
+  --centaur-warmup-trials 10 \
+  --centaur-seed 0 \
+  --n-jobs 1 \
+  --refine-rounds 0 \
+  --agent codex
+```
+
+The three Centaur flags above show their defaults. The proposal agent, model, and reasoning effort come from the normal `--agent`, `--model`, and `--reasoning-effort` options. The equivalent search-space configuration is:
+
+```yaml
+optuna:
+  sampler: centaur
+  pruner: none
+  centaur:
+    llm_probability: 0.3
+    warmup_trials: 10
+    seed: 0
+```
+
+The generated runner records whether CMA-ES or the LLM proposed each trial, proposal timing and retry metadata, and hashes plus run-relative paths for retained proposal artifacts. `rounds.json` records the effective Centaur settings and proposal-agent configuration. Proposal artifacts remain inside the run directory with restricted permissions; prompts and raw model output are not copied into normal logs or results. Persistent Optuna storage includes serialized CMA-ES optimizer state, so resume only from storage you trust.
+
+Centaur proposal agents run in Headless read-only mode with an allowlisted environment. Only credentials for the selected single-provider agent, or recognized credentials and routing variables for the explicitly selected `opencode`/`pi` model provider, are forwarded. Multi-provider agents require a provider-qualified model such as `openai/gpt-5.4`; Pi also accepts an unqualified model when `PI_CODING_AGENT_PROVIDER` is set. Headless config-only model selection is intentionally rejected because Autotune cannot safely identify its provider before launching Headless. Custom ACP, provider, or authentication variables can be opted in by listing variable names in `AUTOTUNE_CENTAUR_HEADLESS_ENV`. Coding-agent read/search tools are still available, so treat the source, search-space config, objective context, and study history as trusted input; do not run Centaur against untrusted repositories or configurations, and use an isolated host/container when local file confidentiality matters.
+
+For a runnable C++ example, use `examples/pid_centaur_search_space.yaml` with `examples/pid_controller.cpp` as shown in `examples/README.md`.
+
 ## Agentic Refinement
 
 Run multiple refinement rounds:
@@ -333,6 +376,23 @@ autotune run examples/pid_controller.cpp \
 ```
 
 Expected behavior: the agent proposes `--kp`, `--ki`, and `--kd`, the runner calls the compiled binary with trial values, and later rounds refine the fixed PID tracking search space from previous trial results.
+
+Run the same controller with the Centaur sampler and a fixed, pre-reviewed search space:
+
+```bash
+python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+npm install -g '@roberttlange/headless@0.4.0'
+autotune run examples/pid_controller.cpp \
+  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
+  --command "{work-dir}/pid_controller" \
+  --config examples/pid_centaur_search_space.yaml \
+  --trials 20 \
+  --n-jobs 1 \
+  --refine-rounds 0 \
+  --agent codex \
+  --yes \
+  --json
+```
 
 ## Development
 
