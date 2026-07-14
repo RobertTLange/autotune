@@ -80,14 +80,7 @@ class CentaurSampler(BaseSampler):
         self._headless_env = headless_environment(self._agent, self._model)
         configured_headless = os.environ.get("AUTOTUNE_HEADLESS_BIN")
         self._headless_configured = configured_headless is not None
-        try:
-            self._headless_executable = _resolve_executable(
-                configured_headless or "headless"
-            )
-        except FileNotFoundError:
-            if self._headless_configured:
-                raise RuntimeError("configured headless executable was not found")
-            raise RuntimeError("headless executable was not found")
+        self._headless_executable = configured_headless or "headless"
         self._objective_context = objective_context
         self._distributions = build_distributions(self._parameters)
         self._numeric = {
@@ -101,13 +94,37 @@ class CentaurSampler(BaseSampler):
             raise ValueError("direction must be 'minimize' or 'maximize'")
 
         self._work_dir = Path(work_dir).resolve()
-        self._artifact_root = prepare_artifact_root(self._work_dir, self._study_name)
+        artifact_root: Optional[Path] = None
+        try:
+            self._study_lock = acquire_study_lock(storage, self._study_name)
+            artifact_root = prepare_artifact_root(
+                self._work_dir, self._study_name
+            )
+            self._artifact_root = artifact_root
+            if self._probability > 0:
+                try:
+                    self._headless_executable = _resolve_executable(
+                        self._headless_executable
+                    )
+                except FileNotFoundError:
+                    if self._headless_configured:
+                        raise RuntimeError(
+                            "configured headless executable was not found"
+                        )
+                    raise RuntimeError("headless executable was not found")
+        except Exception:
+            if artifact_root is not None:
+                try:
+                    artifact_root.rmdir()
+                except OSError:
+                    pass
+            self.close()
+            raise
         self._inners: Dict[int, CmaEsSampler] = {}
         self._samples: Dict[int, Dict[str, Any]] = {}
         self._metadata: Dict[int, Dict[str, Any]] = {}
         self._active_trials: set[int] = set()
         self._lock = threading.Lock()
-        self._study_lock = acquire_study_lock(storage, self._study_name)
 
     def close(self) -> None:
         descriptor = getattr(self, "_study_lock", None)

@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { SearchSpace } from "../src/types.js";
@@ -219,6 +219,15 @@ print(json.dumps({
     );
     const pathParsed = JSON.parse(await readFile(pathResults, "utf8"));
     expect(pathParsed.all_trials[0].params).toEqual({ x: 0.5, y: 1, optimizer: "sgd" });
+
+    const namespaces = await readdir(path.join(dir, "centaur"));
+    await expect(runPython(
+      python,
+      runnerArgs(runner, path.join(dir, "missing-results.json"), "centaur_missing_headless", 1),
+      { AUTOTUNE_HEADLESS_BIN: "definitely-missing-headless" },
+      dir
+    )).rejects.toThrow(/configured headless executable was not found/);
+    expect(await readdir(path.join(dir, "centaur"))).toEqual(namespaces);
   }, 20_000);
 
   it("keeps artifact provenance separate across repeated in-memory runs", async () => {
@@ -301,7 +310,9 @@ console.log(JSON.stringify({ x: count === 0 ? 0.25 : 0.75, y: 1, optimizer: "ada
     const runner = await writeRunner(dir, searchSpace, "centaur_int", python);
     const results = path.join(dir, "results.json");
 
-    await runPython(python, runnerArgs(runner, results, "centaur_int", 2));
+    await runPython(python, runnerArgs(runner, results, "centaur_int", 2), {
+      AUTOTUNE_HEADLESS_BIN: "definitely-missing-headless"
+    });
 
     const parsed = JSON.parse(await readFile(results, "utf8"));
     expect(parsed.all_trials).toHaveLength(2);
@@ -430,7 +441,7 @@ console.log(JSON.stringify({ x: count === 0 ? 0.25 : 0.75, y: 1, optimizer: "ada
     await expect(runPython(python, [
       ...runnerArgs(runner, path.join(dir, "results.json"), "centaur_storage", 1),
       "--storage", "postgresql://localhost/autotune"
-    ])).rejects.toThrow(/requires a SQLite URI/i);
+    ], { AUTOTUNE_HEADLESS_BIN: "definitely-missing-headless" })).rejects.toThrow(/requires a SQLite URI/i);
   }, 20_000);
 
   it("retries invalid model output once and then fails the trial", async () => {
@@ -492,7 +503,8 @@ else process.exit(9);
 
     await expect(runPython(
       python,
-      runnerArgs(runner, path.join(dir, "results.json"), "centaur_symlink", 1)
+      runnerArgs(runner, path.join(dir, "results.json"), "centaur_symlink", 1),
+      { AUTOTUNE_HEADLESS_BIN: "definitely-missing-headless" }
     )).rejects.toThrow(/artifact directory cannot be a symlink/i);
   }, 20_000);
 });
