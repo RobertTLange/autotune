@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 describe("packaged examples", () => {
-  it("uses concise example filenames in docs", async () => {
+  it("documents only the retained example families", async () => {
     const readme = await readFile("README.md", "utf8");
+    const examplesReadme = await readFile(path.join("examples", "README.md"), "utf8");
     const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
     expect(readme).toContain("examples/mnist_cnn.py");
-    expect(readme).toContain("examples/cifar10_resnet.py");
-    expect(readme).toContain("examples/cifar10_speedrun.py");
-    expect(readme).toContain("examples/nanochat_benchmark.py");
     expect(readme).toContain("examples/README.md");
+    expect(examplesReadme).toContain("mnist_cnn.py");
+    expect(examplesReadme).toContain("pid_controller.cpp");
+    expect(examplesReadme).toContain("cifar10_speedrun.py");
+    expect(examplesReadme).toContain("nanochat_benchmark.py");
     expect(readme).not.toContain("mnist_cnn_no_cli.py");
     expect(packageJson.files).toContain("examples/*.py");
     expect(packageJson.files).toContain("examples/*.yaml");
@@ -33,24 +35,11 @@ describe("packaged examples", () => {
     expect(readme).toContain("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND");
   });
 
-  it("keeps deep-learning examples intentionally agent-compatible", async () => {
+  it("keeps the MNIST example intentionally agent-compatible", async () => {
     const mnist = await readFile(path.join("examples", "mnist_cnn.py"), "utf8");
-    const cifar = await readFile(path.join("examples", "cifar10_resnet.py"), "utf8");
 
-    for (const source of [mnist, cifar]) {
-      expect(source).not.toContain("argparse");
-      expect(source).not.toContain("autotune_metric");
-    }
-  });
-
-  it("defines a full CIFAR-10 ResNet training example", async () => {
-    const cifar = await readFile(path.join("examples", "cifar10_resnet.py"), "utf8");
-
-    expect(cifar).toContain("datasets.CIFAR10");
-    expect(cifar).toContain("class BasicBlock");
-    expect(cifar).toContain("class CifarResNet");
-    expect(cifar).not.toContain("Subset(");
-    expect(cifar).toContain("validation_accuracy");
+    expect(mnist).not.toContain("argparse");
+    expect(mnist).not.toContain("autotune_metric");
   });
 
   it("defines an Autotune-native CIFAR-10 speedrun example", async () => {

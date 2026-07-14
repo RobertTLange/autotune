@@ -1,15 +1,30 @@
 # Autotune Examples
 
-This directory contains small compatibility examples and larger benchmark-style workloads. Start with a small trial count, inspect the proposed search space, then scale up once the target script and metric look correct.
+This directory contains four example families: PID controller, MNIST, CIFAR-10 speedrun, and nanochat. Start with a small trial count, inspect the proposed search space, then scale up once the target script and metric look correct.
 
 ## Quick Examples
 
 - `mnist_cnn.py`: agent-compatible PyTorch MNIST example. It intentionally lacks CLI flags and `autotune_metric`, so Autotune asks the agent to create a compatible copy.
-- `cifar10_resnet.py`: full CIFAR-10 ResNet training example with the same agent-compatible flow. It downloads CIFAR-10 into `/tmp/autotune-cifar10-data`.
-- `pid_controller.cpp`: C++ PID simulation with built-in flags and metric output.
-- `pid_centaur_search_space.yaml`: explicit three-dimensional Centaur search space for `pid_controller.cpp`.
+- `pid_controller.cpp`: C++ PID simulation with built-in flags and metric output, plus the explicit `pid_centaur_search_space.yaml` configuration.
+- `cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
+- `nanochat_benchmark.py`: Autotune-native wrapper around a local nanochat checkout, with `nanochat_search_space.yaml` for the paper-inspired search space.
 
-## Centaur PID Example
+## MNIST CNN
+
+`mnist_cnn.py` trains a small PyTorch CNN with hardcoded hyperparameters. It intentionally has no CLI parsing or `autotune_metric` output, exercising Autotune's compatible-copy generation.
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python optuna torch torchvision
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist_cnn.py \
+  --trials 8 \
+  --agent codex \
+  --json
+```
+
+The first run downloads MNIST into `/tmp/autotune-mnist-data`.
+
+## PID Controller
 
 Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at least two numeric parameters, one trial worker, and no agentic refinement rounds. Persistent runs currently require file-backed SQLite storage.
 
@@ -68,6 +83,8 @@ For full Agentic Scientist-style scoring, set `CIFAR10_SPEEDRUN_NUM_RUNS=100`. S
 - `CIFAR10_SPEEDRUN_DATA_DIR`: dataset cache directory.
 - `CIFAR10_SPEEDRUN_RESULTS_JSON`: optional metrics JSON path for a single direct run.
 - `CIFAR10_SPEEDRUN_RESULTS_DIR`: optional directory for per-trial metrics JSON files during Autotune sweeps. Each file includes combined score, accuracy/time statistics, the effective config, and a config fingerprint.
+
+Submit the equal-budget speedrun ablation on Slurm with `sbatch examples/run_cifar10_speedrun_ablations.sbatch`.
 
 ## Nanochat Benchmark
 
@@ -136,6 +153,8 @@ Measurement controls are environment-only and should not be tuned:
 - `STORAGE`: Optuna storage URI; defaults to `sqlite:///$WORK_DIR/study.db` so interrupted runs can be resumed from the same work directory.
 - `STUDY_NAME`: Optuna study name; defaults to `nanochat_benchmark_autotune`.
 
+Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/run_nanobench_ablation.sbatch`.
+
 ## Packaging Notes
 
-The npm package includes example Python, C++, shell, YAML, and this README file. Generated datasets, checkpoints, and `examples/autotune/` run artifacts are intentionally not packaged.
+The npm package includes example Python, C++, shell, Slurm, YAML, and this README file. Generated datasets, checkpoints, and `examples/autotune/` run artifacts are intentionally not packaged.
