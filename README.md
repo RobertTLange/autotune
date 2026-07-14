@@ -16,6 +16,17 @@
 
 Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
 
+<table>
+  <tr>
+    <td align="center"><strong>CIFAR-10 speedrun</strong></td>
+    <td align="center"><strong>Nanochat nanobench</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/cifar10_speedrun_progress.svg" alt="CIFAR-10 speedrun ablation progress plot" /></td>
+    <td><img src="docs/nanobench_progress.svg" alt="Nanochat nanobench ablation progress plot" /></td>
+  </tr>
+</table>
+
 ## How It Works
 
 Autotune operates in clear phases:
@@ -211,37 +222,6 @@ By default, refinement transfers useful context into the next round. If a parame
 
 Each round starts a new Optuna study and writes `search_space.round_N.yaml`, `results.round_N.json`, and `<script>_optuna.round_N.py` inside the run directory. `rounds.json` records the round paths, study name, storage URI, seed count, and transfer settings. The latest round is also written to `search_space.yaml`, `<script>_optuna.py`, and `results.json`.
 
-## Progress Plots
-
-Use `plot-progress` to visualize ablation runs that contain variant subdirectories such as `01_base_optuna`, `02_resets_no_trial_transfer`, and `03_resets_trial_transfer`. The plot counts real evaluated trials on the x-axis, skips transferred seed trials, ignores failed/timeout trials when updating the best-so-far score, and marks search-space reset boundaries.
-
-```bash
-node dist/cli.js plot-progress examples/autotune/cifar10_speedrun_ablations/62004 \
-  --output docs/cifar10_speedrun_progress.svg \
-  --title "CIFAR-10 speedrun ablations" \
-  --max-trials 100 \
-  --y-min -2.5 \
-  --y-max -1.65
-
-node dist/cli.js plot-progress examples/autotune/nanobench_ablation/20260703T214035Z \
-  --output docs/nanobench_progress.svg \
-  --title "Nanochat nanobench ablations" \
-  --max-trials 100 \
-  --y-min 0.88 \
-  --y-max 1.0
-```
-
-<table>
-  <tr>
-    <td align="center"><strong>CIFAR-10 speedrun</strong></td>
-    <td align="center"><strong>Nanochat nanobench</strong></td>
-  </tr>
-  <tr>
-    <td><img src="docs/cifar10_speedrun_progress.svg" alt="CIFAR-10 speedrun ablation progress plot" /></td>
-    <td><img src="docs/nanobench_progress.svg" alt="Nanochat nanobench ablation progress plot" /></td>
-  </tr>
-</table>
-
 ## Search Space Format
 
 ```yaml
@@ -278,121 +258,7 @@ reasoning: accuracy-style metric
 
 ## Examples
 
-See `examples/README.md` for benchmark setup details, dataset/cache controls, and smoke-vs-full run guidance.
-
-### MNIST CNN
-
-`examples/mnist_cnn.py` trains a small PyTorch CNN on MNIST with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for the run.
-
-Install runtime packages first if needed:
-
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python optuna torch torchvision
-```
-
-Run:
-
-```bash
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist_cnn.py \
-  --trials 8 \
-  --agent codex \
-  --json
-```
-
-Expected behavior: the agent proposes a search space, Autotune asks for confirmation or feedback, then generates a compatible copy that accepts hyperparameter flags and prints validation accuracy. The first run downloads MNIST into `/tmp/autotune-mnist-data`.
-
-### CIFAR-10 ResNet
-
-`examples/cifar10_resnet.py` trains a CIFAR-style ResNet-18 on the full CIFAR-10 training set with hardcoded hyperparameters. It intentionally has no CLI parsing and no `autotune_metric` print, so Autotune asks the agent to create a compatible copy for each trial.
-
-Install runtime packages first if needed:
-
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python optuna torch torchvision
-```
-
-Run:
-
-```bash
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_resnet.py \
-  --trials 4 \
-  --timeout-seconds 1800 \
-  --agent codex \
-  --json
-```
-
-Expected behavior: the agent proposes a search space for values such as learning rate, momentum, weight decay, batch size, dropout, and epochs, then generates a compatible copy that accepts trial flags and prints validation accuracy. Each trial is a real full-data training run and may take about 15 minutes on a GPU depending on hardware, so the example raises the per-trial timeout to 30 minutes. The first run downloads CIFAR-10 into `/tmp/autotune-cifar10-data`.
-
-For a sequential transfer ablation, run:
-
-```bash
-./examples/run_cifar10_transfer_ablation.sh
-```
-
-The script analyzes CIFAR-10 once, reuses the same initial search space, then runs five 40-trial variants: one single-shot baseline and four refinement runs covering no transfer, full transfer, fixed-parameter transfer only, and trial-seeding transfer only.
-
-### CIFAR-10 Speedrun
-
-`examples/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit hyperparameter flags and prints the combined speedrun score as `autotune_metric`. See `examples/README.md` for data cache and full scoring controls.
-
-```bash
-uv venv .venv
-uv pip install --python .venv/bin/python optuna torch torchvision numpy scipy
-CIFAR10_SPEEDRUN_NUM_RUNS=5 \
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
-  --trials 20 \
-  --timeout-seconds 1800 \
-  --direction maximize \
-  --agent codex \
-  --agent-guidance "Tune only training hyperparameters and preserve the CIFAR-10 speedrun scoring protocol." \
-  --json
-```
-
-### Nanochat Benchmark
-
-`examples/nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and uses the paper-inspired 14-hyperparameter search space in `examples/nanochat_search_space.yaml`. See `examples/README.md` for nanochat setup, data prep, and smoke-run controls.
-
-```bash
-export NANOCHAT_DIR=~/projects/nanochat
-./examples/run_nanochat_benchmark.sh
-```
-
-### C++
-
-`examples/pid_controller.cpp` is a single-file C++ simulation with manual flag parsing and built-in metric output. It tunes PID controller gains against a fixed tracking scenario with a disturbance.
-
-```bash
-autotune run examples/pid_controller.cpp \
-  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
-  --command "{work-dir}/pid_controller" \
-  --trials 12 \
-  --refine-rounds 2 \
-  --refine-trials 8 \
-  --refine-mode auto \
-  --agent codex \
-  --json
-```
-
-Expected behavior: the agent proposes `--kp`, `--ki`, and `--kd`, the runner calls the compiled binary with trial values, and later rounds refine the fixed PID tracking search space from previous trial results.
-
-Run the same controller with the Centaur sampler and a fixed, pre-reviewed search space:
-
-```bash
-python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
-npm install -g '@roberttlange/headless@0.4.0'
-autotune run examples/pid_controller.cpp \
-  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
-  --command "{work-dir}/pid_controller" \
-  --config examples/pid_centaur_search_space.yaml \
-  --trials 20 \
-  --n-jobs 1 \
-  --refine-rounds 0 \
-  --agent codex \
-  --yes \
-  --json
-```
+See [`examples/README.md`](examples/README.md) for runnable examples, benchmark setup, dataset and cache controls, and smoke-versus-full run guidance.
 
 ## Development
 
