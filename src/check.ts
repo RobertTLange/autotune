@@ -28,7 +28,9 @@ export async function checkPrerequisites(input: {
   const python = await checkPython();
   const centaurPackages = input.centaur ? await checkCentaurPackages() : undefined;
   const optuna = centaurPackages?.optuna ?? await checkOptuna();
-  const headless = input.skipHeadless ? "skipped" : await checkHeadless(input.agent);
+  const headless = input.skipHeadless
+    ? "skipped"
+    : await checkHeadless(input.agent, { allowFallback: !input.centaur });
   const runtime = await checkRuntime(input.invocation);
   return { python, optuna, cmaes: centaurPackages?.cmaes, headless, runtime };
 }
@@ -110,15 +112,17 @@ function isAtLeastVersion(version: string, minimumMajor: number, minimumMinor: n
   return Number.isFinite(major) && Number.isFinite(minor) && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
 }
 
-export async function checkHeadless(agent: string): Promise<string> {
+export async function checkHeadless(agent: string, options: { allowFallback?: boolean } = {}): Promise<string> {
   const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
   let stdout = "";
   let stderr = "";
   try {
     ({ stdout, stderr } = await runCommand(bin, ["--check"]));
   } catch (error) {
-    if (bin === "headless" && isMissingExecutable(error)) {
+    if (bin === "headless" && isMissingExecutable(error) && options.allowFallback !== false) {
       ({ stdout, stderr } = await runCommand("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, "--check"]));
+    } else if (bin === "headless" && isMissingExecutable(error) && options.allowFallback === false) {
+      throw new Error("Centaur requires an installed headless executable on PATH or AUTOTUNE_HEADLESS_BIN");
     } else {
       throw error;
     }

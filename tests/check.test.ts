@@ -64,6 +64,22 @@ describe("checkPrerequisites", () => {
     ).resolves.toMatchObject({ optuna: "4.8.0", cmaes: "0.12.0" });
   });
 
+  it("requires an installed headless executable for Centaur", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
+    await writeExecutable(
+      path.join(dir, "python3"),
+      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
+    );
+    process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    delete process.env.AUTOTUNE_HEADLESS_BIN;
+
+    await expect(checkPrerequisites({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      agent: "claude",
+      centaur: true
+    })).rejects.toThrow(/Centaur requires an installed headless executable/i);
+  });
+
   it("rejects unsupported Optuna versions for Centaur", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-version-"));
     await writeExecutable(

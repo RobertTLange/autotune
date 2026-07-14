@@ -158,6 +158,7 @@ Install its Python dependencies:
 
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+npm install -g '@roberttlange/headless@0.4.0'
 ```
 
 Centaur must be explicitly selected by `--sampler centaur` or by a config whose `optuna.sampler` is `centaur`. Agent analysis cannot enable it implicitly. It also requires at least two numeric (`float` or `int`) parameters, `--n-jobs 1`, and `--refine-rounds 0`.
@@ -187,6 +188,8 @@ optuna:
 ```
 
 The generated runner records whether CMA-ES or the LLM proposed each trial, proposal timing and retry metadata, and hashes plus run-relative paths for retained proposal artifacts. `rounds.json` records the effective Centaur settings and proposal-agent configuration. Proposal artifacts remain inside the run directory with restricted permissions; prompts and raw model output are not copied into normal logs or results. Persistent Optuna storage includes serialized CMA-ES optimizer state, so resume only from storage you trust.
+
+Centaur proposal agents run in Headless read-only mode with an allowlisted environment, but coding-agent read/search tools are still available. Treat the source, search-space config, objective context, and study history as trusted input; do not run Centaur against untrusted repositories or configurations, and use an isolated host/container when local file confidentiality matters.
 
 For a runnable C++ example, use `examples/pid_centaur_search_space.yaml` with `examples/pid_controller.cpp` as shown in `examples/README.md`.
 
@@ -378,6 +381,7 @@ Run the same controller with the Centaur sampler and a fixed, pre-reviewed searc
 
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+npm install -g '@roberttlange/headless@0.4.0'
 autotune run examples/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \

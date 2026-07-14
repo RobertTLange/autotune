@@ -15,6 +15,7 @@ Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at leas
 
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+npm install -g '@roberttlange/headless@0.4.0'
 autotune run examples/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \

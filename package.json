@@ -16,7 +16,8 @@
     "examples/*.sh",
     "examples/run_cifar10_speedrun_ablations.sbatch",
     "examples/README.md",
-    "templates",
+    "templates/*.md",
+    "templates/*.py",
     "README.md"
   ],
   "scripts": {
