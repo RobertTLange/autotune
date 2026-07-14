@@ -107,6 +107,7 @@ autotune analyze <script> [--agent codex] [--model MODEL] [--reasoning-effort hi
 autotune doctor [script] [--agent codex]
 autotune run <script> --trials N [--agent codex] [--model MODEL] [--reasoning-effort high]
 autotune results [autotune|run-dir|results.json] [--top 10] [--json]
+autotune plot-progress <ablation-run-dir> --output progress.svg
 autotune resume --storage sqlite:///study.db --trials N
 ```
 
@@ -166,6 +167,33 @@ After each round, Autotune summarizes completed trials and asks the agent to rev
 By default, refinement transfers useful context into the next round. If a parameter is removed from the active search space, Autotune fixes it at the previous best value and passes that fixed CLI flag to every later trial. It also seeds the next Optuna study with previous completed trials whose full effective parameter configuration is still valid for the refined active and fixed space. Disable these behaviors with `--no-refine-transfer-fixed-params` or `--no-refine-transfer-trials`.
 
 Each round starts a new Optuna study and writes `search_space.round_N.yaml`, `results.round_N.json`, and `<script>_optuna.round_N.py` inside the run directory. `rounds.json` records the round paths, study name, storage URI, seed count, and transfer settings. The latest round is also written to `search_space.yaml`, `<script>_optuna.py`, and `results.json`.
+
+## Progress Plots
+
+Use `plot-progress` to visualize ablation runs that contain variant subdirectories such as `01_base_optuna`, `02_resets_no_trial_transfer`, and `03_resets_trial_transfer`. The plot counts real evaluated trials on the x-axis, skips transferred seed trials, ignores failed/timeout trials when updating the best-so-far score, and marks search-space reset boundaries.
+
+```bash
+node dist/cli.js plot-progress examples/autotune/cifar10_speedrun_ablations/62004 \
+  --output docs/cifar10_speedrun_progress.svg \
+  --title "CIFAR-10 speedrun ablations" \
+  --max-trials 100
+
+node dist/cli.js plot-progress examples/autotune/nanobench_ablation/20260703T214035Z \
+  --output docs/nanobench_progress.svg \
+  --title "Nanochat nanobench ablations" \
+  --max-trials 100
+```
+
+<table>
+  <tr>
+    <td align="center"><strong>CIFAR-10 speedrun</strong></td>
+    <td align="center"><strong>Nanochat nanobench</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/cifar10_speedrun_progress.svg" alt="CIFAR-10 speedrun ablation progress plot" /></td>
+    <td><img src="docs/nanobench_progress.svg" alt="Nanochat nanobench ablation progress plot" /></td>
+  </tr>
+</table>
 
 ## Search Space Format
 
