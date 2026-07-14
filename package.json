@@ -13,6 +13,7 @@
     "examples/*.cpp",
     "examples/*.yaml",
     "examples/*.sh",
+    "examples/run_cifar10_speedrun_ablations.sbatch",
     "examples/README.md",
     "templates",
     "README.md"
