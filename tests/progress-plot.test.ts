@@ -95,6 +95,7 @@ describe("progress plot", () => {
     expect(svg).toContain("reset @ 1");
     expect(svg).toContain("<polygon");
     expect(svg).toContain("clip-path");
+    expect(svg).toContain("legend-bg");
   });
 });
 

@@ -233,6 +233,7 @@ function renderProgressSvg(
   const resetXs = [...new Set(variants.flatMap((variant) => variant.resets))].sort((left, right) => left - right);
   const yTicks = ticks(yDomain.min, yDomain.max, 5);
   const xTicks = ticks(0, options.maxTrials, 5).map(Math.round);
+  const legend = legendBox(chart, variants.length, direction);
 
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${options.width}" height="${options.height}" viewBox="0 0 ${options.width} ${options.height}" role="img" aria-label="${escapeXml(options.title)}">`,
@@ -244,6 +245,7 @@ function renderProgressSvg(
     ".reset{stroke:#6b7280;stroke-width:1.2;stroke-dasharray:5 5}",
     ".line{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}",
     ".star{stroke:#ffffff;stroke-width:1.4;stroke-linejoin:round}",
+    ".legend-bg{fill:#ffffff;fill-opacity:0.88;stroke:#d1d5db;stroke-width:1}",
     "</style>",
     `<defs><clipPath id="chart-clip"><rect x="${chart.left}" y="${chart.top}" width="${chart.width}" height="${chart.height}"/></clipPath></defs>`,
     `<rect width="${options.width}" height="${options.height}" fill="#ffffff"/>`,
@@ -271,6 +273,7 @@ function renderProgressSvg(
   parts.push(`<line x1="${chart.left}" y1="${chart.top}" x2="${chart.left}" y2="${chart.top + chart.height}" class="axis"/>`);
   parts.push(`<text x="${chart.left + chart.width / 2}" y="${options.height - 24}" font-size="14" text-anchor="middle">Total evaluated trials</text>`);
   parts.push(`<text transform="translate(24 ${chart.top + chart.height / 2}) rotate(-90)" font-size="14" text-anchor="middle">Best score so far</text>`);
+  parts.push(`<rect x="${formatSvgNumber(legend.x)}" y="${formatSvgNumber(legend.y)}" width="${legend.width}" height="${legend.height}" rx="6" class="legend-bg"/>`);
 
   variants.forEach((variant, index) => {
     const color = COLORS[index % COLORS.length];
@@ -285,8 +288,8 @@ function renderProgressSvg(
       parts.push(`<circle cx="${formatSvgNumber(xToPx(last.x))}" cy="${formatSvgNumber(yToPx(last.y))}" r="4" fill="${color}"/>`);
       parts.push(`<text x="${formatSvgNumber(xToPx(last.x) + 8)}" y="${formatSvgNumber(yToPx(last.y) - 8)}" font-size="12" fill="${color}">${formatTick(last.y)}</text>`);
     }
-    const legendY = chart.top + index * 28;
-    const legendX = chart.left + chart.width + 32;
+    const legendY = legend.y + 20 + index * 28;
+    const legendX = legend.x + 14;
     parts.push(`<line x1="${legendX}" y1="${legendY}" x2="${legendX + 24}" y2="${legendY}" class="line" stroke="${color}"/>`);
     parts.push(`<text x="${legendX + 34}" y="${legendY + 4}" font-size="13">${escapeXml(variant.label)}</text>`);
     parts.push(`<text x="${legendX + 34}" y="${legendY + 20}" font-size="11" class="muted">best ${variant.best === undefined ? "n/a" : formatTick(variant.best)} · ${variant.totalTrials} trials</text>`);
@@ -294,6 +297,22 @@ function renderProgressSvg(
 
   parts.push("</svg>");
   return `${parts.join("\n")}\n`;
+}
+
+function legendBox(
+  chart: { left: number; top: number; width: number; height: number },
+  variantCount: number,
+  direction: Direction
+): { x: number; y: number; width: number; height: number } {
+  const width = 220;
+  const height = 20 + variantCount * 28;
+  const padding = 14;
+  return {
+    x: chart.left + chart.width - width - padding,
+    y: direction === "maximize" ? chart.top + chart.height - height - padding : chart.top + padding,
+    width,
+    height
+  };
 }
 
 function resolveYDomain(allY: number[], options: { yMin?: number; yMax?: number }): { min: number; max: number } {
