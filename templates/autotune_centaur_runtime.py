@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -76,6 +77,16 @@ class CentaurSampler(BaseSampler):
         self._model = model
         self._reasoning_effort = reasoning_effort
         self._headless_env = headless_environment(self._agent, self._model)
+        configured_headless = os.environ.get("AUTOTUNE_HEADLESS_BIN")
+        self._headless_configured = configured_headless is not None
+        try:
+            self._headless_executable = _resolve_executable(
+                configured_headless or "headless"
+            )
+        except FileNotFoundError:
+            if self._headless_configured:
+                raise RuntimeError("configured headless executable was not found")
+            raise RuntimeError("headless executable was not found")
         self._objective_context = objective_context
         self._distributions = build_distributions(self._parameters)
         self._numeric = {
@@ -353,8 +364,7 @@ class CentaurSampler(BaseSampler):
             common.extend(["--model", self._model])
         if self._reasoning_effort:
             common.extend(["--reasoning-effort", self._reasoning_effort])
-        configured = os.environ.get("AUTOTUNE_HEADLESS_BIN")
-        argv = [configured or "headless", *common]
+        argv = [self._headless_executable, *common]
         try:
             return bounded_process(
                 argv,
@@ -362,12 +372,26 @@ class CentaurSampler(BaseSampler):
                 env=self._headless_env,
             )
         except FileNotFoundError:
-            if configured:
+            if self._headless_configured:
                 raise RuntimeError("configured headless executable was not found")
             raise RuntimeError("headless executable was not found")
 
     def _artifact_path(self, trial: int, attempt: int, suffix: str) -> Path:
         return self._artifact_root / f"trial-{trial:06d}-attempt-{attempt}.{suffix}"
+
+
+def _resolve_executable(configured: str) -> str:
+    path = Path(configured)
+    if path.drive and not path.is_absolute():
+        raise ValueError("configured headless executable must not be drive-relative")
+    if path.is_absolute():
+        return configured
+    if os.sep in configured or (os.altsep and os.altsep in configured):
+        return str((Path.cwd() / configured).resolve())
+    resolved = shutil.which(configured, path=os.environ.get("PATH"))
+    if resolved is None:
+        raise FileNotFoundError(configured)
+    return str(Path(resolved).resolve())
 
 
 def _extract_cma_state(

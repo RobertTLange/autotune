@@ -177,6 +177,36 @@ print(json.dumps({
     expect(prompt).toContain("\\u003c/UNTRUSTED_OPTIMIZATION_DATA\\u003e");
   }, 20_000);
 
+  it("resolves a relative configured Headless executable before changing directories", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-relative-headless-"));
+    const marker = path.join(dir, "headless-count.txt");
+    const headless = await writeFakeHeadless(dir, marker, { x: 0.5, y: 1, optimizer: "sgd" });
+    const runner = await writeRunner(dir, centaurSpace, "centaur_relative_headless", python);
+    const results = path.join(dir, "results.json");
+
+    await runPython(python, runnerArgs(runner, results, "centaur_relative_headless", 1), {
+      AUTOTUNE_HEADLESS_BIN: `.${path.sep}${path.basename(headless)}`
+    }, dir);
+
+    const parsed = JSON.parse(await readFile(results, "utf8"));
+    expect(parsed.all_trials[0].params).toEqual({ x: 0.5, y: 1, optimizer: "sgd" });
+
+    const pathResults = path.join(dir, "path-results.json");
+    await runPython(
+      python,
+      runnerArgs(runner, pathResults, "centaur_relative_path", 1),
+      {
+        AUTOTUNE_HEADLESS_BIN: path.basename(headless),
+        PATH: `.${path.delimiter}${process.env.PATH ?? ""}`
+      },
+      dir
+    );
+    const pathParsed = JSON.parse(await readFile(pathResults, "utf8"));
+    expect(pathParsed.all_trials[0].params).toEqual({ x: 0.5, y: 1, optimizer: "sgd" });
+  }, 20_000);
+
   it("keeps warmup trials on CMA-ES before switching to the LLM", async () => {
     const python = await centaurPython();
     if (!python) return;
@@ -509,12 +539,14 @@ function runnerArgs(runner: string, results: string, studyName: string, trials: 
 function runPython(
   executable: string,
   args: string[],
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  cwd?: string
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env }
+      env: { ...process.env, ...env },
+      cwd
     });
     let stdout = "";
     let stderr = "";
