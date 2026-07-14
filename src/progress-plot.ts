@@ -90,7 +90,6 @@ async function discoverVariantDirectories(runDirectory: string): Promise<Variant
       directory: path.join(runDirectory, entry.name),
       ...labelForVariant(entry.name)
     }))
-    .filter((entry) => entry.order < Number.POSITIVE_INFINITY)
     .sort((left, right) => left.order - right.order || left.label.localeCompare(right.label));
 
   const withResults = [];

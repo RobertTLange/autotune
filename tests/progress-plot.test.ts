@@ -4,6 +4,16 @@ import path from "node:path";
 import { plotProgress, readVariantProgress } from "../src/progress-plot.js";
 
 describe("progress plot", () => {
+  it("includes result variants with unrecognized directory names", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-progress-variants-"));
+    await writeResult(path.join(root, "04_fixed_params_only", "results.json"), "maximize", [trial(0, 1)]);
+    await writeResult(path.join(root, "custom_experiment", "results.json"), "maximize", [trial(0, 2)]);
+
+    const variants = await readVariantProgress(root);
+
+    expect(variants.map((variant) => variant.label)).toEqual(["04_fixed_params_only", "custom_experiment"]);
+  });
+
   it("builds maximize progress across resets and skips transferred seed trials", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "autotune-progress-max-"));
     await writeResult(path.join(root, "01_base_optuna", "results.json"), "maximize", [
