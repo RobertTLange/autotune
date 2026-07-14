@@ -666,6 +666,73 @@ describe("runAutotune", () => {
     );
   });
 
+  it("passes only the remaining trial time budget to refinement rounds", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-budget-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), resultWithDuration(60));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      timeBudgetSeconds: 100,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeSingleParameterSearchSpace(dir)
+    });
+
+    const firstRunner = await readFile(path.join(workDir, "train_optuna.round_0.py"), "utf8");
+    const secondRunner = await readFile(path.join(workDir, "train_optuna.round_1.py"), "utf8");
+    expect(firstRunner).toContain('\\"time_budget_seconds\\":100');
+    expect(secondRunner).toContain('\\"time_budget_seconds\\":40');
+  });
+
+  it("stops before refinement when the trial time budget is exhausted", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-budget-stop-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePythonWithResult(path.join(binDir, "python3"), resultWithDuration(100));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      timeBudgetSeconds: 100,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config: await writeSingleParameterSearchSpace(dir)
+    });
+
+    const manifest = JSON.parse(await readFile(path.join(workDir, "rounds.json"), "utf8"));
+    expect(manifest.rounds).toHaveLength(1);
+    await expect(readFile(path.join(workDir, "train_optuna.round_1.py"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("fixes dropped parameters and seeds valid previous trials during refinement", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-transfer-"));
     const binDir = path.join(dir, "bin");
@@ -1043,6 +1110,23 @@ console.log(JSON.stringify(result));
     "utf8"
   );
   await chmod(filePath, 0o755);
+}
+
+function resultWithDuration(durationSeconds: number) {
+  const trial = {
+    number: 0,
+    value: 1,
+    params: { x: 0.5 },
+    state: "COMPLETE",
+    user_attrs: { autotune_duration_seconds: durationSeconds }
+  };
+  return {
+    study_name: "train_autotune",
+    direction: "maximize",
+    n_trials: 1,
+    best_trial: trial,
+    all_trials: [trial]
+  };
 }
 
 async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean; narrowedCurrentValue?: boolean } = {}): Promise<void> {

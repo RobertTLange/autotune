@@ -93,7 +93,12 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   await writeSearchSpace(searchSpacePath, confirmed);
 
   let result: StudyResult | undefined;
+  let remainingTrialTimeBudgetSeconds = options.timeBudgetSeconds;
   for (let round = 0; round <= refineRounds; round += 1) {
+    if (remainingTrialTimeBudgetSeconds !== undefined && remainingTrialTimeBudgetSeconds <= 0) {
+      writeStatus("Trial time budget exhausted; skipping remaining refinement rounds.");
+      break;
+    }
     if (round > 0) {
       if (!result) {
         throw new Error("cannot refine before a completed trial round");
@@ -124,12 +129,14 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       scriptPath,
       trials: round === 0 ? options.trials : options.refineTrials ?? options.trials,
       options,
+      timeBudgetSeconds: remainingTrialTimeBudgetSeconds,
       resultsPath: roundResultsPath,
       studyName: studyNameForRound(studyName, round, refineRounds),
       seedTrials,
       round,
       totalRounds: refineRounds
     });
+    remainingTrialTimeBudgetSeconds = remainingTrialTimeBudget(remainingTrialTimeBudgetSeconds, result);
     const manifest = buildRoundManifest({
       workDir,
       round,
@@ -268,6 +275,7 @@ async function runSearchRound(input: {
   scriptPath: string;
   trials: number;
   options: RunOptions;
+  timeBudgetSeconds?: number;
   resultsPath: string;
   studyName: string;
   seedTrials: SeedTrial[];
@@ -293,7 +301,7 @@ async function runSearchRound(input: {
     resultsPath: input.resultsPath,
     studyName: input.studyName,
     timeoutSeconds: input.options.timeoutSeconds,
-    timeBudgetSeconds: input.options.timeBudgetSeconds,
+    timeBudgetSeconds: input.timeBudgetSeconds,
     seedTrials: input.seedTrials
   });
   await copyLatestRunnerAlias(runnerPath, input.workDir, input.scriptPath, input.totalRounds);
@@ -441,6 +449,19 @@ function countTransferredTrials(trials: TrialResult[]): { transferred: number; r
     }
   }
   return { transferred, real };
+}
+
+function remainingTrialTimeBudget(budgetSeconds: number | undefined, result: StudyResult): number | undefined {
+  if (budgetSeconds === undefined) {
+    return undefined;
+  }
+  const usedSeconds = result.all_trials.reduce((total, trial) => total + trialDurationSeconds(trial), 0);
+  return Math.max(0, budgetSeconds - usedSeconds);
+}
+
+function trialDurationSeconds(trial: TrialResult): number {
+  const duration = trial.user_attrs?.autotune_duration_seconds;
+  return typeof duration === "number" && Number.isFinite(duration) && duration > 0 ? duration : 0;
 }
 
 function sampledParameterValues(trials: TrialResult[], parameterName: string): Array<{ trial: number; state?: string; value: unknown }> {

@@ -147,7 +147,52 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('\\"time_budget_seconds\\":86400');
     expect(code).toContain('trial.set_user_attr("autotune_duration_seconds"');
     expect(code).toContain("def cumulative_trial_seconds(study):");
+    expect(code).toContain("if not time_budget_exhausted(study):");
     expect(code).toContain("study.stop()");
+  });
+
+  it("does not start another trial when a resumed study exhausted its time budget", async () => {
+    if (!(await pythonHasOptuna())) {
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-resume-budget-runner-"));
+    const train = path.join(dir, "train.py");
+    const runner = path.join(dir, "train_optuna.py");
+    const marker = path.join(dir, "trial-count.txt");
+    const storage = `sqlite:///${path.join(dir, "study.db")}`;
+    const runnerArgs = [
+      "--trials", "1",
+      "--direction", "minimize",
+      "--sampler", "random",
+      "--pruner", "none",
+      "--n-jobs", "1",
+      "--storage", storage
+    ];
+    await writeFile(
+      train,
+      `from pathlib import Path\nmarker = Path(${JSON.stringify(marker)})\nmarker.write_text(marker.read_text() + "x" if marker.exists() else "x")\nprint("autotune_metric=0.5")\n`,
+      "utf8"
+    );
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: path.join(dir, "first-results.json"),
+      studyName: "resume_budget_test"
+    });
+    await runPython([runner, ...runnerArgs]);
+
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: path.join(dir, "second-results.json"),
+      studyName: "resume_budget_test",
+      timeBudgetSeconds: 0.000001
+    });
+    await runPython([runner, ...runnerArgs]);
+
+    expect(await readFile(marker, "utf8")).toBe("x");
   });
 
   it("keeps the latest streamed metric when a trial times out", async () => {
