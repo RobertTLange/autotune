@@ -265,7 +265,7 @@ def main() -> int:
     except InfeasibleConfig as exc:
         print(str(exc), file=sys.stderr)
         print(f"autotune_metric={OOM_PENALTY}")
-        return 0
+        return 1
     env = dict(os.environ)
     env.setdefault("NANOCHAT_BASE_DIR", "/tmp/autotune-nanochat")
     if env_positive_int("NANOCHAT_BENCHMARK_NPROC_PER_NODE", 1) > 1:
@@ -274,7 +274,7 @@ def main() -> int:
     if returncode != 0:
         if is_oom(output):
             print(f"autotune_metric={OOM_PENALTY}")
-            return 0
+            return returncode
         return returncode
 
     try:

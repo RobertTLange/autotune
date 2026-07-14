@@ -526,6 +526,17 @@ def cumulative_trial_seconds(study):
     return total
 
 
+def time_budget_exhausted(study):
+    time_budget_seconds = CONFIG.get("time_budget_seconds")
+    if not time_budget_seconds:
+        return False
+    used_seconds = cumulative_trial_seconds(study)
+    if used_seconds < time_budget_seconds:
+        return False
+    print(f"[{timestamp()}] time budget reached: {used_seconds:.1f}s / {time_budget_seconds}s", file=sys.stderr, flush=True)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, required=True)
@@ -559,12 +570,11 @@ def main():
     def on_trial_complete(study, trial):
         report_progress(study, trial)
         write_results(study, args.direction, output_path)
-        time_budget_seconds = CONFIG.get("time_budget_seconds")
-        if time_budget_seconds and cumulative_trial_seconds(study) >= time_budget_seconds:
-            print(f"[{timestamp()}] time budget reached: {cumulative_trial_seconds(study):.1f}s / {time_budget_seconds}s", file=sys.stderr, flush=True)
+        if time_budget_exhausted(study):
             study.stop()
 
-    study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+    if not time_budget_exhausted(study):
+        study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
     result = write_results(study, args.direction, output_path)
     print(json.dumps(result))
     if result["best_trial"] is None:
