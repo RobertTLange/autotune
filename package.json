@@ -14,7 +14,7 @@
     "examples/*.cpp",
     "examples/*.yaml",
     "examples/*.sh",
-    "examples/run_cifar10_speedrun_ablations.sbatch",
+    "examples/*.sbatch",
     "examples/README.md",
     "templates/*.md",
     "templates/*.py",

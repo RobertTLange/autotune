@@ -19,6 +19,7 @@ describe("packaged examples", () => {
     expect(packageJson.files).toContain("examples/*.py");
     expect(packageJson.files).toContain("examples/*.yaml");
     expect(packageJson.files).toContain("examples/*.sh");
+    expect(packageJson.files).toContain("examples/*.sbatch");
     expect(packageJson.files).toContain("examples/README.md");
   });
 
