@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { writeOptunaRunner } from "../src/generate.js";
-import type { SearchSpace } from "../src/types.js";
+import type { HeadlessOptions, SearchSpace } from "../src/types.js";
 
 const centaurSpace = {
   parameters: [
@@ -33,6 +33,106 @@ print(f'autotune_metric={a.x + a.y}')
 `;
 
 describe("Centaur generated runtime", () => {
+  it("scopes multiprovider credentials to an explicit exact provider", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const script = `import json
+import os
+from autotune_centaur_support import headless_environment
+
+def capture(agent, model):
+    try:
+        return headless_environment(agent, model)
+    except ValueError as error:
+        return {"error": str(error)}
+
+def capture_pi(model, provider):
+    previous = os.environ.get("PI_CODING_AGENT_PROVIDER")
+    os.environ["PI_CODING_AGENT_PROVIDER"] = provider
+    try:
+        return capture("pi", model)
+    finally:
+        if previous is None:
+            del os.environ["PI_CODING_AGENT_PROVIDER"]
+        else:
+            os.environ["PI_CODING_AGENT_PROVIDER"] = previous
+
+print(json.dumps({
+    "pi": capture_pi("gpt-5", "openrouter"),
+    "pi_aws": capture_pi("gpt-5", "aws"),
+    "alias": capture("pi", "openai-codex/gpt-5"),
+    "custom": capture("opencode", "openai-proxy/gpt-5"),
+    "aws_custom": capture("opencode", "aws/model"),
+    "google": capture("opencode", "google/gemini"),
+    "vertex": capture("opencode", "google-vertex/gemini"),
+    "azure": capture("opencode", "azure/gpt-5"),
+    "azure_pi": capture("pi", "azure-openai-responses/gpt-5"),
+    "azure_custom": capture("opencode", "azure-openai-responses/gpt-5"),
+    "config_only": capture("opencode", None),
+}))`;
+
+    const output = await runPython(python, ["-c", script], {
+      PYTHONPATH: path.resolve("templates"),
+      PI_CODING_AGENT_PROVIDER: "openrouter",
+      GEMINI_API_KEY: "gemini-secret",
+      GOOGLE_APPLICATION_CREDENTIALS: "/credentials/vertex.json",
+      GOOGLE_CLOUD_PROJECT: "vertex-project",
+      AZURE_OPENAI_API_KEY: "azure-secret",
+      AZURE_OPENAI_ENDPOINT: "https://example.openai.azure.com",
+      AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5=production",
+      AZURE_RESOURCE_NAME: "opencode-resource",
+      AWS_ACCESS_KEY_ID: "must-not-reach-custom-provider",
+      OPENAI_API_KEY: "openai-secret",
+      OPENROUTER_API_KEY: "openrouter-secret"
+    });
+    const environments = JSON.parse(output);
+
+    expect(environments.pi.OPENROUTER_API_KEY).toBe("openrouter-secret");
+    expect(environments.pi.OPENAI_API_KEY).toBeUndefined();
+    expect(environments.pi_aws.AWS_ACCESS_KEY_ID).toBe("must-not-reach-custom-provider");
+    expect(environments.alias.OPENAI_API_KEY).toBe("openai-secret");
+    expect(environments.alias.OPENROUTER_API_KEY).toBeUndefined();
+    expect(environments.custom.OPENAI_API_KEY).toBeUndefined();
+    expect(environments.aws_custom.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(environments.google.GEMINI_API_KEY).toBe("gemini-secret");
+    expect(environments.google.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(environments.vertex.GEMINI_API_KEY).toBeUndefined();
+    expect(environments.vertex.GOOGLE_APPLICATION_CREDENTIALS).toBe("/credentials/vertex.json");
+    expect(environments.vertex.GOOGLE_CLOUD_PROJECT).toBe("vertex-project");
+    expect(environments.azure.AZURE_OPENAI_ENDPOINT).toBe("https://example.openai.azure.com");
+    expect(environments.azure.AZURE_OPENAI_DEPLOYMENT_NAME_MAP).toBe("gpt-5=production");
+    expect(environments.azure.AZURE_RESOURCE_NAME).toBe("opencode-resource");
+    expect(environments.azure_pi.AZURE_OPENAI_API_KEY).toBe("azure-secret");
+    expect(environments.azure_custom.AZURE_OPENAI_API_KEY).toBeUndefined();
+    expect(environments.config_only.error).toContain("provider-qualified model");
+  }, 20_000);
+
+  it("rejects ambiguous multiprovider credentials before optimization", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-provider-"));
+    const searchSpace = {
+      ...centaurSpace,
+      optuna: {
+        ...centaurSpace.optuna,
+        centaur: { ...centaurSpace.optuna.centaur, llm_probability: 0, warmup_trials: 10 }
+      }
+    } as const;
+    const runner = await writeRunner(
+      dir,
+      searchSpace,
+      "centaur_provider",
+      python,
+      DEFAULT_TRAIN_SOURCE,
+      { agent: "opencode" }
+    );
+
+    await expect(runPython(
+      python,
+      runnerArgs(runner, path.join(dir, "results.json"), "centaur_provider", 1)
+    )).rejects.toThrow(/provider-qualified model/);
+  }, 20_000);
+
   it("uses strict LLM proposals, records provenance, and excludes proposal latency", async () => {
     const python = await centaurPython();
     if (!python) return;
@@ -48,7 +148,9 @@ describe("Centaur generated runtime", () => {
 
     await runPython(python, runnerArgs(runner, results, "centaur_e2e", 1), {
       AUTOTUNE_HEADLESS_BIN: headless,
-      AUTOTUNE_TEST_FORBIDDEN: "must-not-reach-headless"
+      AUTOTUNE_TEST_FORBIDDEN: "must-not-reach-headless",
+      OPENAI_API_KEY: "selected-key",
+      ANTHROPIC_API_KEY: "must-not-reach-codex"
     });
 
     const parsed = JSON.parse(await readFile(results, "utf8"));
@@ -62,7 +164,7 @@ describe("Centaur generated runtime", () => {
     expect(parsed.all_trials[0].user_attrs.autotune_centaur_llm_latency_seconds).toBeGreaterThanOrEqual(0.2);
     expect(parsed.all_trials[0].user_attrs.autotune_duration_seconds)
       .toBeLessThan(parsed.all_trials[0].user_attrs.autotune_centaur_llm_latency_seconds);
-    expect(await readFile(marker, "utf8")).toBe("x");
+    expect(await readFile(marker, "utf8")).toBe("k");
 
     const artifactDir = path.join(dir, "centaur");
     expect((await stat(artifactDir)).mode & 0o777).toBe(0o700);
@@ -334,7 +436,8 @@ async function writeRunner(
   searchSpace: SearchSpace,
   studyName: string,
   python: string,
-  trainSource = DEFAULT_TRAIN_SOURCE
+  trainSource = DEFAULT_TRAIN_SOURCE,
+  headless: HeadlessOptions = { agent: "codex", model: "test-model", reasoningEffort: "low" }
 ): Promise<string> {
   const train = path.join(dir, "train.py");
   const runner = path.join(dir, "train_optuna.py");
@@ -346,7 +449,7 @@ async function writeRunner(
     outputPath: runner,
     resultsPath: path.join(dir, "results.json"),
     studyName,
-    headless: { agent: "codex", model: "test-model", reasoningEffort: "low" }
+    headless
   });
   return runner;
 }
@@ -391,7 +494,8 @@ async function writeFakeHeadless(
   await writeFile(executable, `#!/usr/bin/env node
 import fs from "node:fs";
 if (process.env.AUTOTUNE_TEST_FORBIDDEN) process.exit(7);
-fs.appendFileSync(${JSON.stringify(marker)}, "x");
+if (process.env.ANTHROPIC_API_KEY) process.exit(7);
+fs.appendFileSync(${JSON.stringify(marker)}, process.env.OPENAI_API_KEY === "selected-key" ? "k" : "x");
 setTimeout(() => console.log(JSON.stringify(${JSON.stringify(proposal)})), ${delayMilliseconds});
 `, "utf8");
   await chmod(executable, 0o755);

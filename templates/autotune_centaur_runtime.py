@@ -22,6 +22,7 @@ from autotune_centaur_support import (
     bounded_process,
     build_distributions,
     extract_proposal,
+    headless_environment,
     integer_hash,
     native,
     nonempty,
@@ -74,6 +75,7 @@ class CentaurSampler(BaseSampler):
             raise ValueError("agent must be a positional headless agent name")
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._headless_env = headless_environment(self._agent, self._model)
         self._objective_context = objective_context
         self._distributions = build_distributions(self._parameters)
         self._numeric = {
@@ -354,7 +356,11 @@ class CentaurSampler(BaseSampler):
         configured = os.environ.get("AUTOTUNE_HEADLESS_BIN")
         argv = [configured or "headless", *common]
         try:
-            return bounded_process(argv, cwd=self._artifact_root)
+            return bounded_process(
+                argv,
+                cwd=self._artifact_root,
+                env=self._headless_env,
+            )
         except FileNotFoundError:
             if configured:
                 raise RuntimeError("configured headless executable was not found")

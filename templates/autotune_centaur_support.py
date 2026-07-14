@@ -33,34 +33,104 @@ MAX_JSON_CANDIDATES = 64
 MAX_JSON_DEPTH = 20
 SUPPORTED_OPTUNA = (4, 8)
 SUPPORTED_CMAES = (0, 12)
-HEADLESS_ENV_ALLOWLIST = {
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "NO_COLOR",
-    "FORCE_COLOR",
-    "CI",
-    "XDG_CONFIG_HOME",
-    "XDG_CACHE_HOME",
-    "CODEX_HOME",
-    "CLAUDE_CONFIG_DIR",
-    "HEADLESS_CONFIG",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "OPENROUTER_API_KEY",
-    "CURSOR_API_KEY",
+HEADLESS_BASE_ENV_ALLOWLIST = set(
+    "PATH HOME USER LOGNAME SHELL TMPDIR TMP TEMP LANG LC_ALL TERM NO_COLOR "
+    "FORCE_COLOR CI XDG_CONFIG_HOME XDG_CACHE_HOME HEADLESS_CONFIG".split()
+)
+HEADLESS_AGENT_ENV_ALLOWLIST = {
+    "claude": {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"},
+    "codex": {"CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"},
+    "cursor": {"CURSOR_API_KEY"},
+    "gemini": {"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"},
+    "pi": set(
+        "PI_CODING_AGENT_API_KEY PI_CODING_AGENT_MODEL PI_CODING_AGENT_MODELS "
+        "PI_CODING_AGENT_PROVIDER".split()
+    ),
 }
+HEADLESS_PROVIDER_ENV_ALLOWLIST = {
+    "anthropic": {"ANTHROPIC_API_KEY"},
+    "aws": set(
+        "AWS_ACCESS_KEY_ID AWS_BEARER_TOKEN_BEDROCK AWS_CONTAINER_AUTHORIZATION_TOKEN "
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_FULL_URI "
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_DEFAULT_REGION AWS_PROFILE AWS_REGION "
+        "AWS_ROLE_ARN AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_WEB_IDENTITY_TOKEN_FILE".split()
+    ),
+    "azure": set(
+        "AZURE_OPENAI_API_KEY AZURE_OPENAI_API_VERSION AZURE_OPENAI_BASE_URL "
+        "AZURE_OPENAI_DEPLOYMENT_NAME_MAP AZURE_OPENAI_ENDPOINT "
+        "AZURE_OPENAI_RESOURCE_NAME AZURE_RESOURCE_NAME".split()
+    ),
+    "google": {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+    "vertex": set(
+        "GCLOUD_PROJECT GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_API_KEY "
+        "GOOGLE_CLOUD_LOCATION GOOGLE_CLOUD_PROJECT".split()
+    ),
+    "openai": {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+    "openrouter": {"OPENROUTER_API_KEY"},
+}
+HEADLESS_PROVIDER_FAMILY = {
+    "amazon-bedrock": "aws",
+    "anthropic": "anthropic",
+    "google": "google",
+    "google-vertex": "vertex",
+    "openai": "openai",
+    "openai-codex": "openai",
+    "openrouter": "openrouter",
+}
+HEADLESS_AGENT_PROVIDER_FAMILY = {
+    "opencode": {"azure": "azure"},
+    "pi": {"aws": "aws", "azure-openai-responses": "azure"},
+}
+EXPLICIT_HEADLESS_ENV = "AUTOTUNE_CENTAUR_HEADLESS_ENV"
+ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def headless_environment(agent: str, model: Optional[str]) -> Dict[str, str]:
+    names = set(HEADLESS_BASE_ENV_ALLOWLIST)
+    names.update(HEADLESS_AGENT_ENV_ALLOWLIST.get(agent.lower(), set()))
+    provider = _headless_provider(agent, model)
+    names.update(HEADLESS_PROVIDER_ENV_ALLOWLIST.get(provider, set()))
+    names.update(_explicit_headless_env_names())
+    return {name: os.environ[name] for name in names if name in os.environ}
+
+
+def _headless_provider(agent: str, model: Optional[str]) -> str:
+    normalized_agent = agent.lower()
+    if normalized_agent not in ("opencode", "pi"):
+        return ""
+    configured_model = model
+    if normalized_agent == "pi" and not configured_model:
+        configured_model = os.environ.get("PI_CODING_AGENT_MODEL")
+    if not configured_model:
+        raise ValueError(
+            f"Centaur agent {normalized_agent} requires an explicit provider-qualified model"
+        )
+    model_parts = configured_model.split("/", 1)
+    if len(model_parts) == 2 and all(model_parts):
+        provider = model_parts[0].lower()
+    elif normalized_agent == "pi":
+        provider = os.environ.get("PI_CODING_AGENT_PROVIDER", "").lower()
+        if not provider:
+            raise ValueError(
+                "Centaur agent pi requires a provider-qualified model or "
+                "PI_CODING_AGENT_PROVIDER"
+            )
+    else:
+        raise ValueError(
+            "Centaur agent opencode requires an explicit provider-qualified model"
+        )
+    agent_provider = HEADLESS_AGENT_PROVIDER_FAMILY.get(normalized_agent, {})
+    return agent_provider.get(provider, HEADLESS_PROVIDER_FAMILY.get(provider, ""))
+
+
+def _explicit_headless_env_names() -> List[str]:
+    configured = os.environ.get(EXPLICIT_HEADLESS_ENV, "")
+    names = [name.strip() for name in configured.split(",") if name.strip()]
+    if len(names) > 32 or any(not ENVIRONMENT_NAME.fullmatch(name) for name in names):
+        raise ValueError(
+            f"{EXPLICIT_HEADLESS_ENV} must list at most 32 environment variable names"
+        )
+    return names
 
 
 def build_distributions(
@@ -228,7 +298,9 @@ class _TailCapture:
         return "".join(self._chunks)
 
 
-def bounded_process(argv: Sequence[str], *, cwd: Path) -> str:
+def bounded_process(
+    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+) -> str:
     process = subprocess.Popen(
         list(argv),
         stdout=subprocess.PIPE,
@@ -237,11 +309,7 @@ def bounded_process(argv: Sequence[str], *, cwd: Path) -> str:
         errors="replace",
         start_new_session=True,
         cwd=cwd,
-        env={
-            name: os.environ[name]
-            for name in HEADLESS_ENV_ALLOWLIST
-            if name in os.environ
-        },
+        env=dict(env),
     )
     stdout = _TailCapture()
     stderr = _TailCapture()
