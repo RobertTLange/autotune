@@ -364,7 +364,7 @@ console.log(JSON.stringify({ x: count === 0 ? 0.25 : 0.75, y: 1, optimizer: "ada
     const trainSource = blockingTrainSource(marker, release);
     const runner = await writeRunner(dir, searchSpace, "centaur_concurrent", python, trainSource);
     const storage = `sqlite:///${path.join(dir, "study.db")}`;
-    const aliasStorage = `sqlite:///${dir}/./study.db`;
+    const aliasStorage = `sqlite+pysqlite:///${dir}/./study.db`;
     const firstRun = runPython(python, [
       ...runnerArgs(runner, path.join(dir, "results-a.json"), "centaur_concurrent", 1),
       "--storage", storage

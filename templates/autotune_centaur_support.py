@@ -407,10 +407,10 @@ def acquire_study_lock(storage: Optional[str], study_name: str) -> Optional[int]
 
 
 def _sqlite_study_lock_path(storage: str, study_name: str) -> Optional[Path]:
-    prefix = "sqlite:///"
-    if not storage.startswith(prefix):
+    match = re.match(r"^sqlite(?:\+[A-Za-z0-9_.-]+)?:///(.*)$", storage)
+    if match is None:
         raise ValueError("Centaur persistent storage currently requires a SQLite URI")
-    database = storage[len(prefix) :].split("?", 1)[0]
+    database = match.group(1).split("?", 1)[0]
     if database == ":memory:":
         return None
     if not database or database.startswith("file:"):
