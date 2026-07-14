@@ -214,7 +214,7 @@ function renderProgressSvg(
   variants: VariantProgress[],
   options: { title: string; width: number; height: number; maxTrials: number; yMin?: number; yMax?: number }
 ): string {
-  const margin = { top: 72, right: 190, bottom: 72, left: 86 };
+  const margin = { top: 72, right: 40, bottom: 72, left: 86 };
   const chart = {
     left: margin.left,
     top: margin.top,
@@ -286,7 +286,8 @@ function renderProgressSvg(
       parts.push(`</g>`);
       const last = variant.points[variant.points.length - 1];
       parts.push(`<circle cx="${formatSvgNumber(xToPx(last.x))}" cy="${formatSvgNumber(yToPx(last.y))}" r="4" fill="${color}"/>`);
-      parts.push(`<text x="${formatSvgNumber(xToPx(last.x) + 8)}" y="${formatSvgNumber(yToPx(last.y) - 8)}" font-size="12" fill="${color}">${formatTick(last.y)}</text>`);
+      const endpoint = endpointLabel(xToPx(last.x), yToPx(last.y), chart);
+      parts.push(`<text x="${formatSvgNumber(endpoint.x)}" y="${formatSvgNumber(endpoint.y)}" font-size="12" text-anchor="${endpoint.anchor}" fill="${color}">${formatTick(last.y)}</text>`);
     }
     const legendY = legend.y + 20 + index * 28;
     const legendX = legend.x + 14;
@@ -307,12 +308,26 @@ function legendBox(
   const width = 220;
   const height = 20 + variantCount * 28;
   const padding = 14;
+  const topClearance = 42;
   return {
     x: chart.left + chart.width - width - padding,
-    y: direction === "maximize" ? chart.top + chart.height - height - padding : chart.top + padding,
+    y: direction === "maximize" ? chart.top + chart.height - height - padding : chart.top + topClearance,
     width,
     height
   };
+}
+
+function endpointLabel(
+  x: number,
+  y: number,
+  chart: { left: number; top: number; width: number; height: number }
+): { x: number; y: number; anchor: "start" | "end" } {
+  const chartRight = chart.left + chart.width;
+  const labelY = Math.min(chart.top + chart.height - 8, Math.max(chart.top + 14, y - 8));
+  if (x > chartRight - 80) {
+    return { x: x - 8, y: labelY, anchor: "end" };
+  }
+  return { x: x + 8, y: labelY, anchor: "start" };
 }
 
 function resolveYDomain(allY: number[], options: { yMin?: number; yMax?: number }): { min: number; max: number } {
