@@ -163,46 +163,17 @@ autotune run train.py --trials 20 --config search_space.yaml --yes
 
 ## Centaur Sampler
 
-[Centaur](https://arxiv.org/abs/2603.24647) combines CMA-ES with occasional LLM proposals. After an initial CMA-ES-only warmup, each trial uses a fixed probability to choose an LLM proposal instead of the CMA-ES proposal; completed LLM trials then become part of the CMA-ES study history.
+[Centaur](https://arxiv.org/abs/2603.24647) combines CMA-ES with occasional LLM-proposed trials.
 
-Install its Python dependencies:
+Install its dependencies and select it explicitly:
 
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
 npm install -g '@roberttlange/headless@0.4.0'
+autotune run train.py --trials 50 --sampler centaur --agent codex
 ```
 
-Centaur must be explicitly selected by `--sampler centaur` or by a config whose `optuna.sampler` is `centaur`. Agent analysis cannot enable it implicitly. It also requires at least two numeric (`float` or `int`) parameters, `--n-jobs 1`, and `--refine-rounds 0`. Persistent Centaur runs currently require file-backed SQLite storage so the generated runner can enforce a single writer per study.
-
-```bash
-autotune run train.py \
-  --trials 50 \
-  --sampler centaur \
-  --centaur-llm-probability 0.3 \
-  --centaur-warmup-trials 10 \
-  --centaur-seed 0 \
-  --n-jobs 1 \
-  --refine-rounds 0 \
-  --agent codex
-```
-
-The three Centaur flags above show their defaults. The proposal agent, model, and reasoning effort come from the normal `--agent`, `--model`, and `--reasoning-effort` options. The equivalent search-space configuration is:
-
-```yaml
-optuna:
-  sampler: centaur
-  pruner: none
-  centaur:
-    llm_probability: 0.3
-    warmup_trials: 10
-    seed: 0
-```
-
-The generated runner records whether CMA-ES or the LLM proposed each trial, proposal timing and retry metadata, and hashes plus run-relative paths for retained proposal artifacts. `rounds.json` records the effective Centaur settings and proposal-agent configuration. Proposal artifacts remain inside the run directory with restricted permissions; prompts and raw model output are not copied into normal logs or results. Persistent Optuna storage includes serialized CMA-ES optimizer state, so resume only from storage you trust.
-
-Centaur proposal agents run in Headless read-only mode with an allowlisted environment. Only credentials for the selected single-provider agent, or recognized credentials and routing variables for the explicitly selected `opencode`/`pi` model provider, are forwarded. Multi-provider agents require a provider-qualified model such as `openai/gpt-5.4`; Pi also accepts an unqualified model when `PI_CODING_AGENT_PROVIDER` is set. Headless config-only model selection is intentionally rejected because Autotune cannot safely identify its provider before launching Headless. Custom ACP, provider, or authentication variables can be opted in by listing variable names in `AUTOTUNE_CENTAUR_HEADLESS_ENV`. Coding-agent read/search tools are still available, so treat the source, search-space config, objective context, and study history as trusted input; do not run Centaur against untrusted repositories or configurations, and use an isolated host/container when local file confidentiality matters.
-
-For a runnable C++ example, use `examples/pid_centaur_search_space.yaml` with `examples/pid_controller.cpp` as shown in `examples/README.md`.
+Centaur requires at least two numeric parameters, `--n-jobs 1`, and `--refine-rounds 0`. Persistent runs require trusted, file-backed SQLite storage. Proposal agents run through Headless in read-only mode with an allowlisted environment; only use trusted repositories and configurations. See the [PID controller example](examples/README.md#pid-controller) for a complete setup.
 
 ## Agentic Refinement
 
@@ -218,9 +189,7 @@ autotune run train.py \
 
 After each round, Autotune summarizes completed trials and asks the agent to revise the search space. The agent may narrow promising ranges, broaden ranges when best values sit near bounds, or add/remove variables when justified by the script and trial evidence. `--refine-mode ask` asks for approval before each revised space; `--refine-mode auto` accepts revised spaces automatically.
 
-By default, refinement transfers useful context into the next round. If a parameter is removed from the active search space, Autotune fixes it at the previous best value and passes that fixed CLI flag to every later trial. It also seeds the next Optuna study with previous completed trials whose full effective parameter configuration is still valid for the refined active and fixed space. Disable these behaviors with `--no-refine-transfer-fixed-params` or `--no-refine-transfer-trials`.
-
-Each round starts a new Optuna study and writes `search_space.round_N.yaml`, `results.round_N.json`, and `<script>_optuna.round_N.py` inside the run directory. `rounds.json` records the round paths, study name, storage URI, seed count, and transfer settings. The latest round is also written to `search_space.yaml`, `<script>_optuna.py`, and `results.json`.
+Useful parameters and completed trials transfer between rounds by default. Each round gets its own search space, results, runner, and Optuna study in the run directory.
 
 ## Search Space Format
 
@@ -232,19 +201,6 @@ parameters:
     low: 0.00001
     high: 0.1
     log: true
-  - name: batch_size
-    cli_flag: --batch-size
-    type: int
-    low: 16
-    high: 128
-  - name: optimizer
-    cli_flag: --optimizer
-    type: categorical
-    choices: [adam, sgd]
-fixed_parameters:
-  - name: weight_decay
-    cli_flag: --weight-decay
-    value: 0.0005
 has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true
@@ -252,9 +208,9 @@ direction: maximize
 optuna:
   sampler: tpe
   pruner: none
-  reasoning: TPE is a good default for mixed continuous/categorical spaces.
-reasoning: accuracy-style metric
 ```
+
+Parameters may be `float`, `int`, or `categorical`. Use `fixed_parameters` for CLI values that should remain constant.
 
 ## Examples
 
