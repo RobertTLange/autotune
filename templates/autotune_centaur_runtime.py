@@ -63,6 +63,7 @@ class CentaurSampler(BaseSampler):
         reasoning_effort: Optional[str] = None,
         objective_context: Any = None,
     ) -> None:
+        self._study_lock: Optional[int] = None
         require_supported_versions()
         self._parameters = [dict(parameter) for parameter in parameters]
         self._fixed_parameters = [dict(parameter) for parameter in fixed_parameters]
@@ -106,12 +107,12 @@ class CentaurSampler(BaseSampler):
         self._metadata: Dict[int, Dict[str, Any]] = {}
         self._active_trials: set[int] = set()
         self._lock = threading.Lock()
-        self._study_lock = None
         self._study_lock = acquire_study_lock(storage, self._study_name)
 
     def close(self) -> None:
-        release_study_lock(self._study_lock)
+        descriptor = getattr(self, "_study_lock", None)
         self._study_lock = None
+        release_study_lock(descriptor)
 
     def __del__(self) -> None:
         self.close()

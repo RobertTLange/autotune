@@ -126,10 +126,17 @@ print(json.dumps({
       { agent: "opencode" }
     );
 
-    await expect(runPython(
-      python,
-      runnerArgs(runner, path.join(dir, "results.json"), "centaur_provider", 1)
-    )).rejects.toThrow(/provider-qualified model/);
+    let failure: unknown;
+    try {
+      await runPython(
+        python,
+        runnerArgs(runner, path.join(dir, "results.json"), "centaur_provider", 1)
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("provider-qualified model");
+    expect(String(failure)).not.toContain("Exception ignored in");
   }, 20_000);
 
   it("uses strict LLM proposals, records provenance, and excludes proposal latency", async () => {
