@@ -167,7 +167,7 @@ describe("runAutotune", () => {
         yes: true,
         config: await writeCentaurSearchSpace(dir)
       })
-    ).rejects.toThrow(/missing-headless|ENOENT/);
+    ).rejects.toThrow(/Centaur requires an installed headless executable/i);
   });
 
   it("rejects parallel Centaur execution", async () => {
@@ -1344,7 +1344,8 @@ async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boo
     filePath,
     `#!/usr/bin/env node
 if (process.argv.includes('--check')) {
-  console.log('claude ok');
+  console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');
+  console.log('| codex | ✓ | oauth | 0.1.0 | model | - |');
   process.exit(0);
 }
 if (process.env.AUTOTUNE_HEADLESS_ARG_LOG) {

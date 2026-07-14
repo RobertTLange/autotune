@@ -30,7 +30,9 @@ export async function checkPrerequisites(input: {
   const optuna = centaurPackages?.optuna ?? await checkOptuna();
   const headless = input.skipHeadless
     ? "skipped"
-    : await checkHeadless(input.agent, { allowFallback: !input.centaur });
+    : input.centaur
+      ? await checkCentaurHeadless(input.agent)
+      : await checkHeadless(input.agent);
   const runtime = await checkRuntime(input.invocation);
   return { python, optuna, cmaes: centaurPackages?.cmaes, headless, runtime };
 }
@@ -112,26 +114,55 @@ function isAtLeastVersion(version: string, minimumMajor: number, minimumMinor: n
   return Number.isFinite(major) && Number.isFinite(minor) && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
 }
 
-export async function checkHeadless(agent: string, options: { allowFallback?: boolean } = {}): Promise<string> {
+export async function checkHeadless(agent: string): Promise<string> {
   const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
   let stdout = "";
   let stderr = "";
   try {
     ({ stdout, stderr } = await runCommand(bin, ["--check"]));
   } catch (error) {
-    if (bin === "headless" && isMissingExecutable(error) && options.allowFallback !== false) {
+    if (bin === "headless" && isMissingExecutable(error)) {
       ({ stdout, stderr } = await runCommand("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, "--check"]));
-    } else if (bin === "headless" && isMissingExecutable(error) && options.allowFallback === false) {
-      throw new Error("Centaur requires an installed headless executable on PATH or AUTOTUNE_HEADLESS_BIN");
     } else {
       throw error;
     }
   }
   const output = `${stdout}\n${stderr}`;
-  if (!output.toLowerCase().includes(agent.toLowerCase())) {
+  if (!headlessListsAgent(output, agent)) {
     return `${bin} (agent ${agent} not listed by --check)`;
   }
   return `${bin} (${agent})`;
+}
+
+async function checkCentaurHeadless(agent: string): Promise<string> {
+  const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
+  let output: string;
+  try {
+    const { stdout, stderr } = await runCommand(bin, ["--check"]);
+    output = `${stdout}\n${stderr}`;
+  } catch (error) {
+    if (isMissingExecutable(error)) {
+      throw new Error("Centaur requires an installed headless executable on PATH or AUTOTUNE_HEADLESS_BIN");
+    }
+    throw error;
+  }
+  if (!headlessAgentAvailable(output, agent)) {
+    throw new Error(`Centaur proposal agent ${agent} is not available according to headless --check`);
+  }
+  return `${bin} (${agent})`;
+}
+
+function headlessAgentAvailable(output: string, agent: string): boolean {
+  const normalizedAgent = agent.trim().toLowerCase();
+  return output.split(/\r?\n/).some((line) => {
+    const columns = line.split("|").slice(1, -1).map((column) => column.trim());
+    return columns[0]?.toLowerCase() === normalizedAgent && columns[1] === "✓";
+  });
+}
+
+function headlessListsAgent(output: string, agent: string): boolean {
+  const available = output.toLowerCase().split(/[^a-z0-9_-]+/);
+  return available.includes(agent.trim().toLowerCase());
 }
 
 function isMissingExecutable(error: unknown): boolean {

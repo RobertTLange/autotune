@@ -19,7 +19,7 @@ describe("checkPrerequisites", () => {
   it("checks python, optuna, headless, and runtime from PATH without shell lookup", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-"));
     await writeExecutable(path.join(dir, "python3"), "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else echo '3.6.1'; fi\n");
-    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
+    await writeExecutable(path.join(dir, "headless"), "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'\n");
     process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
     process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
 
@@ -51,7 +51,10 @@ describe("checkPrerequisites", () => {
       path.join(dir, "python3"),
       "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
     );
-    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
+    await writeExecutable(
+      path.join(dir, "headless"),
+      "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'; echo '| codex | ✗ | - | - | model | - |'\n"
+    );
     process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
     process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
 
@@ -78,6 +81,26 @@ describe("checkPrerequisites", () => {
       agent: "claude",
       centaur: true
     })).rejects.toThrow(/Centaur requires an installed headless executable/i);
+  });
+
+  it("rejects unavailable Centaur proposal agents", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-agent-"));
+    await writeExecutable(
+      path.join(dir, "python3"),
+      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
+    );
+    await writeExecutable(
+      path.join(dir, "headless"),
+      "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'; echo '| codex | ✗ | - | - | model | - |'\n"
+    );
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
+
+    await expect(checkPrerequisites({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      agent: "codex",
+      centaur: true
+    })).rejects.toThrow(/Centaur proposal agent.*codex.*not available/i);
   });
 
   it("rejects unsupported Optuna versions for Centaur", async () => {
