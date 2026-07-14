@@ -7,6 +7,27 @@ This directory contains small compatibility examples and larger benchmark-style 
 - `mnist_cnn.py`: agent-compatible PyTorch MNIST example. It intentionally lacks CLI flags and `autotune_metric`, so Autotune asks the agent to create a compatible copy.
 - `cifar10_resnet.py`: full CIFAR-10 ResNet training example with the same agent-compatible flow. It downloads CIFAR-10 into `/tmp/autotune-cifar10-data`.
 - `pid_controller.cpp`: C++ PID simulation with built-in flags and metric output.
+- `pid_centaur_search_space.yaml`: explicit three-dimensional Centaur search space for `pid_controller.cpp`.
+
+## Centaur PID Example
+
+Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at least two numeric parameters, one trial worker, and no agentic refinement rounds:
+
+```bash
+python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
+autotune run examples/pid_controller.cpp \
+  --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
+  --command "{work-dir}/pid_controller" \
+  --config examples/pid_centaur_search_space.yaml \
+  --trials 20 \
+  --n-jobs 1 \
+  --refine-rounds 0 \
+  --agent codex \
+  --yes \
+  --json
+```
+
+The config explicitly opts into Centaur with the default LLM probability (`0.3`), CMA-ES-only warmup (`10` trials), and scheduler seed (`0`). Override them with `--centaur-llm-probability`, `--centaur-warmup-trials`, and `--centaur-seed`; if the config does not already select Centaur, also pass `--sampler centaur`. Resume only from trusted persistent Optuna storage because Optuna stores serialized CMA-ES optimizer state there.
 
 ## CIFAR-10 Speedrun
 

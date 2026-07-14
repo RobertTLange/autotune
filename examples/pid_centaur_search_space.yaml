@@ -1,0 +1,31 @@
+parameters:
+  - name: kp
+    cli_flag: --kp
+    type: float
+    low: 0.1
+    high: 12.0
+    current_value: 5.0
+  - name: ki
+    cli_flag: --ki
+    type: float
+    low: 0.0
+    high: 2.0
+    current_value: 0.4
+  - name: kd
+    cli_flag: --kd
+    type: float
+    low: 0.0
+    high: 4.0
+    current_value: 1.0
+has_arg_parsing: true
+needs_wrapper: false
+has_metric_output: true
+direction: maximize
+optuna:
+  sampler: centaur
+  pruner: none
+  centaur:
+    llm_probability: 0.3
+    warmup_trials: 10
+    seed: 0
+reasoning: Centaur alternates CMA-ES proposals with occasional LLM proposals for the three numeric PID gains.
