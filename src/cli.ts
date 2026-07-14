@@ -2,6 +2,7 @@
 import { Command, Option } from "commander";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { plotProgress } from "./progress-plot.js";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
@@ -93,6 +94,27 @@ export function createProgram(): Command {
   .option("--top <n>", "number of top trials", parsePositiveInt, 10)
   .action(async (dir: string, options: { json: boolean; top: number }) => {
     await showResults({ dir, json: options.json, top: options.top });
+  });
+
+  program
+  .command("plot-progress")
+  .argument("<run-dir>", "ablation run directory containing variant result subdirectories")
+  .requiredOption("--output <file>", "write SVG plot to file")
+  .option("--title <title>", "plot title")
+  .option("--max-trials <n>", "maximum evaluated trials on the x-axis", parsePositiveInt, 100)
+  .option("--width <px>", "SVG width", parsePositiveInt, 1100)
+  .option("--height <px>", "SVG height", parsePositiveInt, 650)
+  .option("--include-failed", "include failed/timeout trial values when updating best-so-far", false)
+  .action(async (runDir: string, options: {
+    output: string;
+    title?: string;
+    maxTrials: number;
+    width: number;
+    height: number;
+    includeFailed: boolean;
+  }) => {
+    await plotProgress(runDir, options);
+    console.log(`Wrote ${options.output}`);
   });
 
   program
