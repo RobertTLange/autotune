@@ -72,7 +72,7 @@ class CentaurSampler(BaseSampler):
         self._probability = probability(llm_probability)
         self._warmup_trials = nonnegative_int("warmup_trials", warmup_trials)
         self._seed = nonnegative_int("seed", seed)
-        self._agent = nonempty("agent", agent)
+        self._agent = nonempty("agent", agent).strip().lower()
         if self._agent.startswith("-"):
             raise ValueError("agent must be a positional headless agent name")
         self._model = model

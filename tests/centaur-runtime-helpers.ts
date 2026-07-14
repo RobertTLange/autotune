@@ -95,6 +95,7 @@ export async function writeFakeHeadless(
 import fs from "node:fs";
 if (process.env.AUTOTUNE_TEST_FORBIDDEN) process.exit(7);
 if (process.env.ANTHROPIC_API_KEY) process.exit(7);
+if (process.argv[2] !== "codex") process.exit(7);
 fs.appendFileSync(${JSON.stringify(marker)}, process.env.OPENAI_API_KEY === "selected-key" ? "k" : "x");
 setTimeout(() => console.log(JSON.stringify(${JSON.stringify(proposal)})), ${delayMilliseconds});
 `, "utf8");

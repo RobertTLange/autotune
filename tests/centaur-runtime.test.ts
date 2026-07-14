@@ -190,7 +190,14 @@ print(json.dumps({
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-relative-headless-"));
     const marker = path.join(dir, "headless-count.txt");
     const headless = await writeFakeHeadless(dir, marker, { x: 0.5, y: 1, optimizer: "sgd" });
-    const runner = await writeRunner(dir, centaurSpace, "centaur_relative_headless", python);
+    const runner = await writeRunner(
+      dir,
+      centaurSpace,
+      "centaur_relative_headless",
+      python,
+      DEFAULT_TRAIN_SOURCE,
+      { agent: " CODEX ", model: "test-model" }
+    );
     const results = path.join(dir, "results.json");
 
     await runPython(python, runnerArgs(runner, results, "centaur_relative_headless", 1), {
