@@ -372,12 +372,32 @@ describe("packaged examples", () => {
     await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
     await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+    const result = await runPythonProcess(["examples/nanochat_benchmark.py"], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_BENCHMARK_MAX_SEQ_LEN: "8192"
     });
 
-    expect(output).toContain("autotune_metric=100.0");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain("autotune_metric=100.0");
+  });
+
+  it("marks nanochat OOM penalties as failed trials", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
+    const nanochatDir = path.join(dir, "nanochat");
+    const fakePython = path.join(dir, "python");
+    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
+    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
+    await writeFile(fakePython, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
+    await chmod(fakePython, 0o755);
+
+    const result = await runPythonProcess(["examples/nanochat_benchmark.py"], {
+      NANOCHAT_DIR: nanochatDir,
+      NANOCHAT_PYTHON: fakePython,
+      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "1"
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain("autotune_metric=100.0");
   });
 
   it("accounts for torchrun world size when checking nanochat batch geometry", async () => {
@@ -386,7 +406,7 @@ describe("packaged examples", () => {
     await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
     await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
 
-    const output = await runPythonScript(
+    const result = await runPythonProcess(
       [
         "examples/nanochat_benchmark.py",
         "--device-batch-size",
@@ -400,11 +420,23 @@ describe("packaged examples", () => {
       }
     );
 
-    expect(output).toContain("autotune_metric=100.0");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain("autotune_metric=100.0");
   });
 });
 
-function runPythonScript(args: string[], env: Record<string, string>): Promise<string> {
+async function runPythonScript(args: string[], env: Record<string, string>): Promise<string> {
+  const result = await runPythonProcess(args, env);
+  if (result.code === 0) {
+    return result.stdout;
+  }
+  throw new Error(`python3 ${args.join(" ")} failed with ${result.code}: ${result.stderr || result.stdout}`);
+}
+
+function runPythonProcess(
+  args: string[],
+  env: Record<string, string>
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn("python3", args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -419,11 +451,7 @@ function runPythonScript(args: string[], env: Record<string, string>): Promise<s
     });
     child.on("error", reject);
     child.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-      reject(new Error(`python3 ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
+      resolve({ code, stdout, stderr });
     });
   });
 }
