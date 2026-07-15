@@ -29,6 +29,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     throw new Error("--trials must be a positive integer");
   }
   validateRefinementOptions(options);
+  validateSamplerSeedOption(options);
 
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
@@ -53,6 +54,9 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
     : undefined;
   const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
+  if (effectiveSampler === "centaur" && options.samplerSeed !== undefined) {
+    throw new Error("Centaur uses --centaur-seed instead of --sampler-seed");
+  }
   const centaurAuthorized = effectiveSampler === "centaur";
   validateCentaurOptions(options, effectiveSampler);
 
@@ -102,6 +106,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     throw new Error("Centaur requires explicit --sampler centaur or a Centaur config");
   }
   validateCentaurSearchSpace(confirmed);
+  validateSamplerSeededSearchSpace(confirmed, options.nJobs);
   await writeSearchSpace(searchSpacePath, confirmed);
 
   let result: StudyResult | undefined;
@@ -254,6 +259,7 @@ export async function resumeStudy(options: {
   if (searchSpace.optuna?.sampler === "centaur" && options.nJobs !== 1) {
     throw new Error("Centaur requires --n-jobs 1");
   }
+  validateSamplerSeededSearchSpace(searchSpace, options.nJobs);
   const runnerPath = manifest?.runner_path
     ? path.join(workDir, manifest.runner_path)
     : await findRunner(workDir);
@@ -274,10 +280,11 @@ export async function resumeStudy(options: {
 
 async function prepareSearchSpaceForRun(
   searchSpace: SearchSpace,
-  options: Pick<RunOptions, "direction" | "sampler" | "pruner">,
+  options: Pick<RunOptions, "direction" | "sampler" | "samplerSeed" | "pruner" | "nJobs">,
   scriptPath: string
 ): Promise<SearchSpace> {
   const normalized = withEffectiveOptunaSettings(searchSpace, options);
+  validateSamplerSeededSearchSpace(normalized, options.nJobs);
   if (await scriptContainsMetricOutput(scriptPath)) {
     return normalized;
   }
@@ -398,6 +405,7 @@ async function refineSearchSpaceForRound(input: {
       });
     }
   });
+  validateSamplerSeededSearchSpace(confirmed, input.options.nJobs);
   await writeSearchSpace(input.searchSpacePath, confirmed);
   return confirmed;
 }
@@ -410,12 +418,13 @@ async function prepareRefinedSearchSpaceForRun(input: {
   scriptPath: string;
 }): Promise<SearchSpace> {
   const prepared = await prepareSearchSpaceForRun(input.candidate, input.options, input.scriptPath);
+  const seeded = preserveConfiguredSamplerSeed(prepared, input.previous);
   if (input.options.refineTransferFixedParams === false) {
-    return prepared;
+    return seeded;
   }
   return transferDroppedParameters({
     previous: input.previous,
-    refined: prepared,
+    refined: seeded,
     result: input.result
   });
 }
@@ -657,6 +666,24 @@ function validateRefinementOptions(options: RunOptions): void {
   }
 }
 
+function validateSamplerSeedOption(options: RunOptions): void {
+  if (options.samplerSeed === undefined) {
+    return;
+  }
+  if (!Number.isInteger(options.samplerSeed) || options.samplerSeed < 0 || options.samplerSeed > 0xffffffff) {
+    throw new Error("--sampler-seed must be an integer between 0 and 4294967295");
+  }
+  if (options.nJobs !== 1) {
+    throw new Error("--sampler-seed requires --n-jobs 1 for reproducible ordering");
+  }
+}
+
+function validateSamplerSeededSearchSpace(searchSpace: SearchSpace, nJobs: number): void {
+  if (searchSpace.optuna?.seed !== undefined && nJobs !== 1) {
+    throw new Error("A sampler seed requires --n-jobs 1 for reproducible ordering");
+  }
+}
+
 function validateCentaurOptions(options: RunOptions, sampler: Sampler | undefined): void {
   if (options.centaur !== undefined && sampler !== "centaur") {
     throw new Error("Centaur options require the centaur sampler");
@@ -727,22 +754,36 @@ function expandCommandTemplateArgs(args: string[], context: CommandTemplateConte
 
 function withEffectiveOptunaSettings(
   searchSpace: SearchSpace,
-  options: Pick<RunOptions, "direction" | "sampler" | "pruner" | "centaur">
+  options: Pick<RunOptions, "direction" | "sampler" | "samplerSeed" | "pruner" | "centaur">
 ): SearchSpace {
   const sampler = options.sampler ?? searchSpace.optuna?.sampler ?? DEFAULT_SAMPLER;
-  const { centaur: configuredCentaur, ...optuna } = searchSpace.optuna ?? {};
+  const { centaur: configuredCentaur, seed: configuredSeed, ...optuna } = searchSpace.optuna ?? {};
+  const samplerSeed = sampler === "centaur" ? undefined : options.samplerSeed ?? configuredSeed;
   return {
     ...searchSpace,
     direction: options.direction ?? searchSpace.direction ?? DEFAULT_DIRECTION,
     optuna: {
       ...optuna,
       sampler,
+      ...(samplerSeed === undefined ? {} : { seed: samplerSeed }),
       pruner: options.pruner ?? searchSpace.optuna?.pruner ?? DEFAULT_PRUNER,
       ...(sampler === "centaur"
         ? { centaur: { ...DEFAULT_CENTAUR_CONFIG, ...configuredCentaur, ...options.centaur } }
         : {})
     }
   };
+}
+
+function preserveConfiguredSamplerSeed(candidate: SearchSpace, previous: SearchSpace): SearchSpace {
+  if (candidate.optuna?.sampler === "centaur") {
+    const { seed: _seed, ...optuna } = candidate.optuna;
+    return { ...candidate, optuna };
+  }
+  const seed = previous.optuna?.seed ?? candidate.optuna?.seed;
+  if (seed === undefined) {
+    return candidate;
+  }
+  return { ...candidate, optuna: { ...candidate.optuna, seed } };
 }
 
 async function scriptContainsMetricOutput(scriptPath: string): Promise<boolean> {
@@ -949,6 +990,7 @@ interface RoundManifest {
   seed_count: number;
   storage?: string;
   sampler?: Sampler;
+  sampler_seed?: number;
   centaur?: CentaurConfig & {
     agent: string;
     model?: string;
@@ -984,6 +1026,7 @@ function buildRoundManifest(input: {
     seed_count: input.seedCount,
     storage: input.options.storage,
     sampler,
+    sampler_seed: input.searchSpace.optuna?.seed,
     ...(sampler === "centaur" && centaur
       ? {
           centaur: {

@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "../src/workflow.js";
-import { writeSearchSpace } from "../src/search-space.js";
+import { readSearchSpace, writeSearchSpace } from "../src/search-space.js";
 import type { RunOptions } from "../src/types.js";
 
 describe("runAutotune", () => {
@@ -145,6 +145,24 @@ describe("runAutotune", () => {
     });
 
     expect(await readFile(path.join(workDir, "results.json"), "utf8")).toContain("best_trial");
+  });
+
+  it("rejects parallel execution when the config supplies a sampler seed", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-config-seed-parallel-"));
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+
+    await expect(
+      runAutotune(script, {
+        trials: 2,
+        nJobs: 2,
+        workDir: path.join(dir, ".autotune"),
+        agent: "claude",
+        json: true,
+        yes: true,
+        config: await writeOptunaSearchSpace(dir)
+      })
+    ).rejects.toThrow(/sampler seed.*n-jobs.*1/i);
   });
 
   it("requires headless for accepted Centaur configs even with --yes", async () => {
@@ -712,6 +730,7 @@ describe("runAutotune", () => {
       trials: 2,
       direction: "maximize",
       sampler: "tpe",
+      samplerSeed: 42,
       pruner: "none",
       nJobs: 1,
       workDir,
@@ -723,6 +742,52 @@ describe("runAutotune", () => {
 
     const argv = JSON.parse(await readFile(path.join(workDir, "results.json.argv.json"), "utf8")) as string[];
     expect(argv).toEqual(expect.arrayContaining(["--direction", "maximize", "--sampler", "tpe", "--pruner", "none"]));
+    const runner = await readFile(path.join(workDir, "train_optuna.py"), "utf8");
+    expect(runner).toContain('\\"sampler_seed\\":42');
+    const savedSearchSpace = await readFile(path.join(workDir, "search_space.yaml"), "utf8");
+    expect(savedSearchSpace).toContain("seed: 42");
+    const manifest = JSON.parse(await readFile(path.join(workDir, "rounds.json"), "utf8")) as {
+      rounds: Array<Record<string, unknown>>;
+    };
+    expect(manifest.rounds[0]).toMatchObject({ sampler_seed: 42 });
+  });
+
+  it("removes a configured sampler seed when Centaur overrides the sampler", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-overrides-seed-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const config = path.join(dir, "seeded-cmaes-space.yaml");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters: [
+        { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+        { name: "y", cli_flag: "--y", type: "float", low: 0, high: 1 }
+      ],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "minimize",
+      optuna: { sampler: "cmaes", pruner: "none", seed: 7 }
+    });
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"));
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await runAutotune(script, {
+      trials: 2,
+      sampler: "centaur",
+      nJobs: 1,
+      workDir,
+      agent: "claude",
+      json: true,
+      yes: true,
+      config
+    });
+
+    const savedSearchSpace = await readSearchSpace(path.join(workDir, "search_space.yaml"));
+    expect(savedSearchSpace.optuna).toMatchObject({ sampler: "centaur", centaur: { seed: 0 } });
+    expect(savedSearchSpace.optuna?.seed).toBeUndefined();
   });
 
   it("embeds Centaur settings and proposal-agent options in the generated runner", async () => {
@@ -1463,6 +1528,7 @@ async function writeOptunaSearchSpace(dir: string): Promise<string> {
     optuna: {
       sampler: "random",
       pruner: "hyperband",
+      seed: 7,
       reasoning: "broad exploratory search"
     }
   });

@@ -21,6 +21,7 @@ const optunaConfigSchema = z
   .object({
     sampler: samplerSchema.optional(),
     pruner: prunerSchema.optional(),
+    seed: z.number().int().min(0).max(0xffffffff).optional(),
     centaur: centaurConfigSchema.optional(),
     reasoning: z.string().optional()
   })
@@ -31,6 +32,13 @@ const optunaConfigSchema = z
         code: "custom",
         path: ["centaur"],
         message: "centaur settings require the centaur sampler"
+      });
+    }
+    if (optuna.seed !== undefined && optuna.sampler === "centaur") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["seed"],
+        message: "root sampler seed is not used by Centaur; configure centaur.seed instead"
       });
     }
   })

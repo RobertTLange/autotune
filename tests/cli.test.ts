@@ -9,7 +9,8 @@ import {
   normalizeRunOptions,
   parseProbability,
   parseNonNegativeInt,
-  parsePositiveInt
+  parsePositiveInt,
+  parseSamplerSeed
 } from "../src/cli.js";
 
 describe("CLI option normalization", () => {
@@ -96,9 +97,31 @@ describe("CLI option normalization", () => {
       expect.arrayContaining([
         "--centaur-llm-probability",
         "--centaur-warmup-trials",
-        "--centaur-seed"
+        "--centaur-seed",
+        "--sampler-seed"
       ])
     );
+  });
+
+  it("normalizes an explicit sampler seed", () => {
+    const command = new Command().option("--sampler-seed <n>", "sampler seed", parseNonNegativeInt);
+    command.parse(["--sampler-seed", "7"], { from: "user" });
+
+    expect(normalizeRunOptions({
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    }, command)).toMatchObject({ samplerSeed: 7 });
+  });
+
+  it("bounds sampler seeds to the uint32 range", () => {
+    expect(parseSamplerSeed("4294967295")).toBe(4294967295);
+    expect(() => parseSamplerSeed("4294967296")).toThrow(/sampler seed/i);
   });
 
   it("normalizes explicit Centaur CLI overrides without injecting defaults", () => {

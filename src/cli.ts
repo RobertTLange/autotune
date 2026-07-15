@@ -22,6 +22,7 @@ export function createProgram(): Command {
   .requiredOption("--trials <n>", "number of Optuna trials", parsePositiveInt)
   .addOption(new Option("--direction <direction>", "optimization direction").choices(["maximize", "minimize"]))
   .addOption(new Option("--sampler <sampler>", "Optuna sampler").choices(["tpe", "random", "cmaes", "grid", "centaur"]))
+  .option("--sampler-seed <n>", "reproducible seed for TPE, random, CMA-ES, or grid", parseSamplerSeed)
   .option("--centaur-llm-probability <probability>", "probability that Centaur requests an LLM proposal", parseProbability)
   .option("--centaur-warmup-trials <n>", "CMA-ES-only trials before Centaur requests LLM proposals", parseNonNegativeInt)
   .option("--centaur-seed <n>", "Centaur proposal scheduler seed", parseNonNegativeInt)
@@ -148,14 +149,19 @@ if (isMainModule()) {
 
 export function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
   const sampler = optionValue(raw, command, "sampler") as Sampler | undefined;
+  const samplerSeed = typeof raw.samplerSeed === "number" ? raw.samplerSeed : undefined;
   const centaur = normalizeCentaurOverrides(raw);
   if (centaur !== undefined && sampler !== undefined && sampler !== "centaur") {
     throw new Error("Centaur options require --sampler centaur");
+  }
+  if (samplerSeed !== undefined && sampler === "centaur") {
+    throw new Error("Centaur uses --centaur-seed instead of --sampler-seed");
   }
   return {
     trials: Number(raw.trials),
     direction: optionValue(raw, command, "direction") as Direction | undefined,
     sampler,
+    samplerSeed,
     pruner: optionValue(raw, command, "pruner") as Pruner | undefined,
     centaur,
     nJobs: Number(raw.nJobs),
@@ -299,6 +305,14 @@ export function parseNonNegativeInt(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new Error(`expected non-negative integer, got ${value}`);
+  }
+  return parsed;
+}
+
+export function parseSamplerSeed(value: string): number {
+  const parsed = parseNonNegativeInt(value);
+  if (parsed > 0xffffffff) {
+    throw new Error(`expected sampler seed at most ${0xffffffff}, got ${value}`);
   }
   return parsed;
 }

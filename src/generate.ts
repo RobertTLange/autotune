@@ -38,6 +38,7 @@ export function renderOptunaRunner(input: {
     seed_trials: input.seedTrials ?? [],
     results_path: input.resultsPath,
     direction: input.searchSpace.direction,
+    sampler_seed: input.searchSpace.optuna?.seed,
     failure_value: input.searchSpace.failure_value,
     max_output_bytes: 65536,
     timeout,
@@ -313,11 +314,11 @@ def objective(trial):
 
 def make_sampler(name, study_name=None, direction=None, storage=None):
     if name == "tpe":
-        return optuna.samplers.TPESampler()
+        return optuna.samplers.TPESampler(seed=CONFIG.get("sampler_seed"))
     if name == "random":
-        return optuna.samplers.RandomSampler()
+        return optuna.samplers.RandomSampler(seed=CONFIG.get("sampler_seed"))
     if name == "cmaes":
-        return optuna.samplers.CmaEsSampler()
+        return optuna.samplers.CmaEsSampler(seed=CONFIG.get("sampler_seed"))
     if name == "centaur":
         config = CONFIG["centaur"]
         return CentaurSampler(
@@ -341,7 +342,7 @@ def make_sampler(name, study_name=None, direction=None, storage=None):
             if parameter["type"] != "categorical":
                 raise ValueError("grid sampler requires categorical parameters only")
             search_space[parameter["name"]] = parameter["choices"]
-        return optuna.samplers.GridSampler(search_space)
+        return optuna.samplers.GridSampler(search_space, seed=CONFIG.get("sampler_seed"))
     raise ValueError(f"Unsupported sampler: {name}")
 
 

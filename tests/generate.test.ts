@@ -65,6 +65,21 @@ describe("renderOptunaRunner", () => {
     expect(code).not.toContain("shell=True");
   });
 
+  it("seeds stochastic Optuna samplers", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: { ...searchSpace, optuna: { sampler: "cmaes", seed: 7 } },
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('\\"sampler_seed\\":7');
+    expect(code).toContain('TPESampler(seed=CONFIG.get("sampler_seed"))');
+    expect(code).toContain('RandomSampler(seed=CONFIG.get("sampler_seed"))');
+    expect(code).toContain('CmaEsSampler(seed=CONFIG.get("sampler_seed"))');
+    expect(code).toContain('GridSampler(search_space, seed=CONFIG.get("sampler_seed"))');
+  });
+
   it("does not append source scripts for standalone runtime commands", () => {
     const code = renderOptunaRunner({
       invocation: {

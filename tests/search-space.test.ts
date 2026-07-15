@@ -60,12 +60,35 @@ direction: minimize
 optuna:
   sampler: random
   pruner: hyperband
+  seed: 7
   reasoning: broad exploratory search
 `)
     ).toMatchObject({
       direction: "minimize",
-      optuna: { sampler: "random", pruner: "hyperband", reasoning: "broad exploratory search" }
+      optuna: { sampler: "random", pruner: "hyperband", seed: 7, reasoning: "broad exploratory search" }
     });
+  });
+
+  it("rejects invalid sampler seeds", () => {
+    expect(() => parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: minimize
+optuna:
+  sampler: cmaes
+  seed: -1
+`)).toThrow(/seed|non-negative/i);
+
+    expect(() => parseSearchSpaceText(`
+parameters: []
+has_arg_parsing: true
+needs_wrapper: false
+direction: minimize
+optuna:
+  sampler: cmaes
+  seed: 4294967296
+`)).toThrow(/seed|less than or equal/i);
   });
 
   it("parses Centaur settings and applies the paper defaults", () => {

@@ -38,6 +38,7 @@ export interface SearchSpace {
 export interface OptunaConfig {
   sampler?: Sampler;
   pruner?: Pruner;
+  seed?: number;
   centaur?: CentaurConfig;
   reasoning?: string;
 }
@@ -65,6 +66,7 @@ export interface RunOptions {
   trials: number;
   direction?: Direction;
   sampler?: Sampler;
+  samplerSeed?: number;
   pruner?: Pruner;
   centaur?: Partial<CentaurConfig>;
   nJobs: number;
