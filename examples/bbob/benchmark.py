@@ -1,32 +1,39 @@
 #!/usr/bin/env python3
-"""Fast, dependency-free, two-dimensional BBOB-style objectives."""
+"""Fast, dependency-free, five-dimensional BBOB-style objectives."""
 
 import argparse
 import math
 from collections.abc import Callable
 
-Point = tuple[float, float]
+Point = tuple[float, ...]
 Objective = Callable[[Point], float]
+DIMENSION = 5
 SEARCH_BOUND = 5.0
+DEFAULT_POINT = (-1.2, 1.0, 1.0, 1.0, 1.0)
 
 
 def sphere(point: Point) -> float:
-    x1, x2 = point
-    return x1**2 + x2**2
+    return sum(value**2 for value in point)
 
 
 def ellipsoid(point: Point) -> float:
-    x1, x2 = point
-    return x1**2 + 1_000_000.0 * x2**2
+    return sum(
+        1_000_000.0 ** (index / (len(point) - 1)) * value**2
+        for index, value in enumerate(point)
+    )
 
 
 def rosenbrock(point: Point) -> float:
-    x1, x2 = point
-    return (1.0 - x1) ** 2 + 100.0 * (x2 - x1**2) ** 2
+    return sum(
+        (1.0 - current) ** 2 + 100.0 * (following - current**2) ** 2
+        for current, following in zip(point, point[1:])
+    )
 
 
 def rastrigin(point: Point) -> float:
-    return 20.0 + sum(value**2 - 10.0 * math.cos(2.0 * math.pi * value) for value in point)
+    return 10.0 * len(point) + sum(
+        value**2 - 10.0 * math.cos(2.0 * math.pi * value) for value in point
+    )
 
 
 OBJECTIVES: dict[str, Objective] = {
@@ -50,14 +57,15 @@ def bounded_coordinate(raw_value: str) -> float:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--function", choices=sorted(OBJECTIVES), default="rosenbrock")
-    parser.add_argument("--x1", type=bounded_coordinate, default=-1.2)
-    parser.add_argument("--x2", type=bounded_coordinate, default=1.0)
+    for index, default in enumerate(DEFAULT_POINT, start=1):
+        parser.add_argument(f"--x{index}", type=bounded_coordinate, default=default)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    metric = OBJECTIVES[args.function]((args.x1, args.x2))
+    point = tuple(getattr(args, f"x{index}") for index in range(1, DIMENSION + 1))
+    metric = OBJECTIVES[args.function](point)
     print(f"autotune_metric={metric:.17g}")
 
 

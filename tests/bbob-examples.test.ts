@@ -10,16 +10,17 @@ const OBJECTIVES = ["sphere", "ellipsoid", "rosenbrock", "rastrigin"] as const;
 
 describe("BBOB examples", () => {
   it.each([
-    ["sphere", ["3", "4"], 25],
-    ["ellipsoid", ["1", "2"], 4_000_001],
-    ["rosenbrock", ["1", "1"], 0],
-    ["rastrigin", ["0", "0"], 0]
+    ["sphere", ["1", "2", "3", "4", "5"], 55],
+    ["ellipsoid", ["1", "0", "0", "0", "1"], 1_000_001],
+    ["ellipsoid", ["0", "1", "0", "0", "0"], Math.sqrt(1_000)],
+    ["rosenbrock", ["1", "1", "1", "1", "1"], 0],
+    ["rosenbrock", ["0", "0", "0", "0", "0"], 4],
+    ["rastrigin", ["0", "0", "0", "0", "0"], 0]
   ])("evaluates the %s objective", async (objective, coordinates, expected) => {
     const result = await runCommand("python3", [
       BENCHMARK,
       "--function", objective,
-      "--x1", coordinates[0],
-      "--x2", coordinates[1]
+      ...coordinates.flatMap((coordinate, index) => [`--x${index + 1}`, coordinate])
     ], {});
 
     expect(result.code).toBe(0);
@@ -31,7 +32,7 @@ describe("BBOB examples", () => {
     const text = await readFile(path.join(BBOB_DIR, `${objective}_search_space.yaml`), "utf8");
     const searchSpace = parseSearchSpaceText(text);
 
-    expect(searchSpace.parameters.map((parameter) => parameter.name)).toEqual(["x1", "x2"]);
+    expect(searchSpace.parameters.map((parameter) => parameter.name)).toEqual(["x1", "x2", "x3", "x4", "x5"]);
     expect(searchSpace.fixed_parameters).toEqual([
       { name: "function", cli_flag: "--function", value: objective }
     ]);
@@ -39,44 +40,66 @@ describe("BBOB examples", () => {
   });
 
   it.each(["nan", "inf", "5.0001"])("rejects invalid coordinate %s", async (coordinate) => {
-    const result = await runCommand("python3", [BENCHMARK, "--x1", coordinate], {});
+    const result = await runCommand("python3", [BENCHMARK, "--x5", coordinate], {});
 
     expect(result.code).not.toBe(0);
     expect(result.stdout).not.toContain("autotune_metric=");
   });
 
-  it("runs four variants across all objectives in parallel", async () => {
+  it("runs four variants across all objectives for each seed", async () => {
     const fixture = await createLauncherFixture();
     const result = await runCommand("bash", [EXPERIMENTS], fixture.env);
 
     expect(result.code).toBe(0);
-    for (const objective of OBJECTIVES) {
-      const baseline = await readExperimentArgv(fixture.outputDir, objective, "01_base_cmaes");
-      const noTransfer = await readExperimentArgv(fixture.outputDir, objective, "02_reset_no_transfer");
-      const withTransfer = await readExperimentArgv(fixture.outputDir, objective, "03_reset_with_transfer");
-      const centaur = await readExperimentArgv(fixture.outputDir, objective, "04_centaur");
-      const config = path.resolve(BBOB_DIR, `${objective}_search_space.yaml`);
+    for (const seed of [0, 1]) {
+      for (const objective of OBJECTIVES) {
+        const baseline = await readExperimentArgv(fixture.outputDir, objective, "01_base_cmaes", seed);
+        const noTransfer = await readExperimentArgv(fixture.outputDir, objective, "02_reset_no_transfer", seed);
+        const withTransfer = await readExperimentArgv(fixture.outputDir, objective, "03_reset_with_transfer", seed);
+        const centaur = await readExperimentArgv(fixture.outputDir, objective, "04_centaur", seed);
+        const config = path.resolve(BBOB_DIR, `${objective}_search_space.yaml`);
 
-      expectFlagValues(baseline, {
-        "--config": config, "--sampler": "cmaes", "--trials": "4", "--refine-rounds": "0", "--n-jobs": "1"
-      });
-      expectFlagValues(noTransfer, {
-        "--sampler": "cmaes", "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
-      });
-      expect(noTransfer).toEqual(expect.arrayContaining([
-        "--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"
-      ]));
-      expectFlagValues(withTransfer, {
-        "--sampler": "cmaes", "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
-      });
-      expect(withTransfer).toContain("--no-refine-transfer-fixed-params");
-      expect(withTransfer).not.toContain("--no-refine-transfer-trials");
-      expectFlagValues(centaur, {
-        "--sampler": "centaur", "--trials": "4", "--n-jobs": "1", "--refine-rounds": "0",
-        "--centaur-llm-probability": "0.3", "--centaur-warmup-trials": "1", "--centaur-seed": "0"
-      });
+        expectFlagValues(baseline, {
+          "--config": config, "--sampler": "cmaes", "--sampler-seed": String(seed),
+          "--trials": "4", "--refine-rounds": "0", "--n-jobs": "1"
+        });
+        expectFlagValues(noTransfer, {
+          "--sampler": "cmaes", "--sampler-seed": String(seed),
+          "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
+        });
+        expect(noTransfer).toEqual(expect.arrayContaining([
+          "--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"
+        ]));
+        expectFlagValues(withTransfer, {
+          "--sampler": "cmaes", "--sampler-seed": String(seed),
+          "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
+        });
+        expect(withTransfer).toContain("--no-refine-transfer-fixed-params");
+        expect(withTransfer).not.toContain("--no-refine-transfer-trials");
+        expectFlagValues(centaur, {
+          "--sampler": "centaur",
+          "--trials": "4", "--n-jobs": "1", "--refine-rounds": "0",
+          "--centaur-llm-probability": "0.3", "--centaur-warmup-trials": "1", "--centaur-seed": String(seed)
+        });
+        expect(centaur).not.toContain("--sampler-seed");
+        expectFlagValues(centaur, {
+          "--study-name": `bbob_${objective}_04_centaur_seed_${seed}`
+        });
+      }
     }
     expect(result.stdout).toContain("budget: 2 + 1 x 2 = 4");
+    expect(result.stdout).toContain("seed 1/2");
+    expect(result.stdout).toContain("seed 2/2");
+  });
+
+  it("defaults to ten seeds and 100 evaluations per experiment", async () => {
+    const launcher = await readFile(EXPERIMENTS, "utf8");
+
+    expect(launcher).toContain('SEED_COUNT="${SEED_COUNT:-10}"');
+    expect(launcher).toContain('TOTAL_TRIALS="${TOTAL_TRIALS:-100}"');
+    expect(launcher).toContain('REFINE_INITIAL_TRIALS="${REFINE_INITIAL_TRIALS:-50}"');
+    expect(launcher).toContain('REFINE_ROUNDS="${REFINE_ROUNDS:-2}"');
+    expect(launcher).toContain('REFINE_TRIALS="${REFINE_TRIALS:-25}"');
   });
 
   it("fails when any experiment fails", async () => {
@@ -98,8 +121,16 @@ describe("BBOB examples", () => {
     await expect(readFile(marker, "utf8")).rejects.toThrow();
   });
 
+  it("rejects non-canonical seed counts", async () => {
+    const fixture = await createLauncherFixture();
+    const result = await runCommand("bash", [EXPERIMENTS], { ...fixture.env, SEED_COUNT: "02" });
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("SEED_COUNT must be a canonical non-negative integer");
+  });
+
   it("terminates active experiment descendants on SIGTERM", async () => {
-    const fixture = await createLauncherFixture({ longRunningName: "sphere/01_base_cmaes" });
+    const fixture = await createLauncherFixture({ longRunningName: "sphere/01_base_cmaes/seed_0" });
     const child = spawn("bash", [EXPERIMENTS], {
       env: { ...process.env, ...fixture.env },
       stdio: ["ignore", "pipe", "pipe"]
@@ -171,6 +202,7 @@ async function createLauncherFixture(options: { failVariant?: string; longRunnin
       AUTOTUNE_CLI: fakeCli,
       BUILD: "0",
       TERMINATION_GRACE_SECONDS: "1",
+      SEED_COUNT: "2",
       ...(options.failVariant ? { FAIL_VARIANT: options.failVariant } : {}),
       ...(options.longRunningName ? {
         LONG_RUNNING_NAME: options.longRunningName,
@@ -189,19 +221,19 @@ function fakeNodeScript(): string {
     "while (($#)); do",
     "  if [[ \"$1\" == \"--work-dir\" ]]; then work_dir=\"$2\"; shift 2; else shift; fi",
     "done",
-    "objective=$(basename \"$(dirname \"$work_dir\")\")",
-    "variant=$(basename \"$work_dir\")",
-    "if [[ \"$variant\" == \"01_base_cmaes\" ]]; then",
-    "  touch \"$BBOB_SYNC_DIR/$objective\"",
-    "  for _ in {1..200}; do",
-    "    count=$(find \"$BBOB_SYNC_DIR\" -type f | wc -l)",
-    "    if [[ \"$count\" -eq 4 ]]; then break; fi",
-    "    sleep 0.01",
-    "  done",
-    "  [[ \"$count\" -eq 4 ]] || exit 97",
-    "fi",
+    "seed=$(basename \"$work_dir\")",
+    "variant=$(basename \"$(dirname \"$work_dir\")\")",
+    "objective=$(basename \"$(dirname \"$(dirname \"$work_dir\")\")\")",
+    "sync_prefix=$BBOB_SYNC_DIR/$variant-$seed",
+    "touch \"$sync_prefix-$objective\"",
+    "for _ in {1..200}; do",
+    "  count=$(find \"$BBOB_SYNC_DIR\" -type f -name \"$variant-$seed-*\" | wc -l)",
+    "  if [[ \"$count\" -eq 4 ]]; then break; fi",
+    "  sleep 0.01",
+    "done",
+    "[[ \"$count\" -eq 4 ]] || exit 97",
     "printf '%s\\n' \"${original[@]}\" > \"$work_dir/argv.txt\"",
-    "if [[ \"${LONG_RUNNING_NAME:-}\" == \"$objective/$variant\" ]]; then",
+    "if [[ \"${LONG_RUNNING_NAME:-}\" == \"$objective/$variant/$seed\" ]]; then",
     "  setsid bash -c 'trap \"\" TERM; exec sleep 60' &",
     "  child=$!",
     "  leader_group=$(ps -o pgid= -p $$ | tr -d ' ')",
@@ -220,8 +252,8 @@ function fakeNodeScript(): string {
   ].join("\n");
 }
 
-async function readExperimentArgv(outputDir: string, objective: string, variant: string): Promise<string[]> {
-  const text = await readFile(path.join(outputDir, objective, variant, "argv.txt"), "utf8");
+async function readExperimentArgv(outputDir: string, objective: string, variant: string, seed: number): Promise<string[]> {
+  const text = await readFile(path.join(outputDir, objective, variant, `seed_${seed}`, "argv.txt"), "utf8");
   return text.trim().split("\n");
 }
 

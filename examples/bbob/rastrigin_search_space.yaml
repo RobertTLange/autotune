@@ -11,6 +11,24 @@ parameters:
     low: -5.0
     high: 5.0
     current_value: 3.0
+  - name: x3
+    cli_flag: --x3
+    type: float
+    low: -5.0
+    high: 5.0
+    current_value: 3.0
+  - name: x4
+    cli_flag: --x4
+    type: float
+    low: -5.0
+    high: 5.0
+    current_value: 3.0
+  - name: x5
+    cli_flag: --x5
+    type: float
+    low: -5.0
+    high: 5.0
+    current_value: 3.0
 fixed_parameters:
   - name: function
     cli_flag: --function

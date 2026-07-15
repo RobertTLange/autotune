@@ -12,10 +12,11 @@ Each task has its own subdirectory. Start with BBOB for a fast local smoke test,
 
 ## BBOB
 
-The BBOB-style objectives are deterministic, two-dimensional, and require only Python when evaluated directly. Run Rosenbrock:
+The BBOB-style objectives are deterministic, five-dimensional, and require only Python when evaluated directly. Run Rosenbrock:
 
 ```bash
-python3 examples/bbob/benchmark.py --function rosenbrock --x1 -1.2 --x2 1.0
+python3 examples/bbob/benchmark.py --function rosenbrock \
+  --x1 -1.2 --x2 1.0 --x3 1.0 --x4 1.0 --x5 1.0
 ```
 
 Run a fast optimization with the provided search space:
@@ -35,7 +36,7 @@ Run the equal-budget comparison across all four objectives:
 ./examples/bbob/run_experiments.sh
 ```
 
-The launcher additionally requires built Autotune, Optuna with `cmaes`, and a configured Headless agent. For each objective, it runs base CMA-ES, resets without transfer, resets with completed-trial transfer, and Centaur. Each experiment phase runs the four objectives in parallel. Defaults are 100 new evaluations per arm (`50 + 2 × 25` for reset arms); outputs and logs go under `examples/bbob/autotune/experiments/`.
+The launcher additionally requires built Autotune, Optuna with `cmaes`, and a configured Headless agent. For each objective, it runs base CMA-ES, resets without transfer, resets with completed-trial transfer, and Centaur. Defaults are 10 seeded repetitions and 100 new evaluations per method (`50 + 2 × 25` for reset methods), for 160 experiments and 16,000 objective evaluations. The four objectives run in parallel while seeds and methods run sequentially, limiting concurrency to four jobs. Outputs and logs go under `examples/bbob/autotune/experiments/`, grouped by objective, method, and seed.
 
 ## MNIST CNN
 
