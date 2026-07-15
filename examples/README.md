@@ -1,13 +1,33 @@
 # Autotune Examples
 
-Each task has its own subdirectory. Start with a small trial count, inspect the proposed search space, then scale up once the target script and metric look correct.
+Each task has its own subdirectory. Start with BBOB for a fast local smoke test, then scale to the training examples once the target script and metric look correct.
 
 ## Quick Examples
 
+- `bbob/benchmark.py`: dependency-free Sphere, Ellipsoid, Rosenbrock, and Rastrigin objectives.
 - `mnist/mnist_cnn.py`: agent-compatible PyTorch MNIST example.
 - `pid_controller/pid_controller.cpp`: C++ PID simulation with a Centaur search space.
 - `cifar10_speedrun/cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
 - `nanochat/nanochat_benchmark.py`: wrapper around a local nanochat checkout.
+
+## BBOB
+
+The BBOB-style examples are deterministic, two-dimensional, and require only Python. Run Rosenbrock directly:
+
+```bash
+python3 examples/bbob/benchmark.py --function rosenbrock --x1 -1.2 --x2 1.0
+```
+
+Run a fast optimization with the provided search space:
+
+```bash
+autotune run examples/bbob/benchmark.py \
+  --config examples/bbob/rosenbrock_search_space.yaml \
+  --trials 30 \
+  --yes
+```
+
+Swap in `sphere_search_space.yaml`, `ellipsoid_search_space.yaml`, or `rastrigin_search_space.yaml` to change the objective. These are compact, unshifted, and unrotated BBOB-style functions rather than the full COCO benchmark suite.
 
 ## MNIST CNN
 
