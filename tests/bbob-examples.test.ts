@@ -1,0 +1,278 @@
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const BBOB_DIR = path.join("examples", "bbob");
+const BENCHMARK = path.join(BBOB_DIR, "benchmark.py");
+const EXPERIMENTS = path.join(BBOB_DIR, "run_experiments.sh");
+const OBJECTIVES = ["sphere", "ellipsoid", "rosenbrock", "rastrigin"] as const;
+
+describe("BBOB examples", () => {
+  it.each([
+    ["sphere", ["3", "4"], 25],
+    ["ellipsoid", ["1", "2"], 4_000_001],
+    ["rosenbrock", ["1", "1"], 0],
+    ["rastrigin", ["0", "0"], 0]
+  ])("evaluates the %s objective", async (objective, coordinates, expected) => {
+    const result = await runCommand("python3", [
+      BENCHMARK,
+      "--function", objective,
+      "--x1", coordinates[0],
+      "--x2", coordinates[1]
+    ], {});
+
+    expect(result.code).toBe(0);
+    expect(readMetric(result.stdout)).toBeCloseTo(expected, 10);
+  });
+
+  it.each(OBJECTIVES)("ships a search space for %s", async (objective) => {
+    const { parseSearchSpaceText } = await import("../src/search-space.js");
+    const text = await readFile(path.join(BBOB_DIR, `${objective}_search_space.yaml`), "utf8");
+    const searchSpace = parseSearchSpaceText(text);
+
+    expect(searchSpace.parameters.map((parameter) => parameter.name)).toEqual(["x1", "x2"]);
+    expect(searchSpace.fixed_parameters).toEqual([
+      { name: "function", cli_flag: "--function", value: objective }
+    ]);
+    expect(searchSpace.direction).toBe("minimize");
+  });
+
+  it.each(["nan", "inf", "5.0001"])("rejects invalid coordinate %s", async (coordinate) => {
+    const result = await runCommand("python3", [BENCHMARK, "--x1", coordinate], {});
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("autotune_metric=");
+  });
+
+  it("runs four variants across all objectives in parallel", async () => {
+    const fixture = await createLauncherFixture();
+    const result = await runCommand("bash", [EXPERIMENTS], fixture.env);
+
+    expect(result.code).toBe(0);
+    for (const objective of OBJECTIVES) {
+      const baseline = await readExperimentArgv(fixture.outputDir, objective, "01_base_cmaes");
+      const noTransfer = await readExperimentArgv(fixture.outputDir, objective, "02_reset_no_transfer");
+      const withTransfer = await readExperimentArgv(fixture.outputDir, objective, "03_reset_with_transfer");
+      const centaur = await readExperimentArgv(fixture.outputDir, objective, "04_centaur");
+      const config = path.resolve(BBOB_DIR, `${objective}_search_space.yaml`);
+
+      expectFlagValues(baseline, {
+        "--config": config, "--sampler": "cmaes", "--trials": "4", "--refine-rounds": "0", "--n-jobs": "1"
+      });
+      expectFlagValues(noTransfer, {
+        "--sampler": "cmaes", "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
+      });
+      expect(noTransfer).toEqual(expect.arrayContaining([
+        "--no-refine-transfer-fixed-params", "--no-refine-transfer-trials"
+      ]));
+      expectFlagValues(withTransfer, {
+        "--sampler": "cmaes", "--trials": "2", "--refine-rounds": "1", "--refine-trials": "2"
+      });
+      expect(withTransfer).toContain("--no-refine-transfer-fixed-params");
+      expect(withTransfer).not.toContain("--no-refine-transfer-trials");
+      expectFlagValues(centaur, {
+        "--sampler": "centaur", "--trials": "4", "--n-jobs": "1", "--refine-rounds": "0",
+        "--centaur-llm-probability": "0.3", "--centaur-warmup-trials": "1", "--centaur-seed": "0"
+      });
+    }
+    expect(result.stdout).toContain("budget: 2 + 1 x 2 = 4");
+  });
+
+  it("fails when any experiment fails", async () => {
+    const fixture = await createLauncherFixture({ failVariant: "04_centaur" });
+    const result = await runCommand("bash", [EXPERIMENTS], fixture.env);
+
+    expect(result.code).not.toBe(0);
+  });
+
+  it("rejects hostile trial counts before shell arithmetic", async () => {
+    const fixture = await createLauncherFixture();
+    const marker = path.join(path.dirname(fixture.outputDir), "injected");
+    const result = await runCommand("bash", [EXPERIMENTS], {
+      ...fixture.env,
+      TOTAL_TRIALS: `1;touch ${marker}`
+    });
+
+    expect(result.code).toBe(2);
+    await expect(readFile(marker, "utf8")).rejects.toThrow();
+  });
+
+  it("terminates active experiment descendants on SIGTERM", async () => {
+    const fixture = await createLauncherFixture({ longRunningName: "sphere/01_base_cmaes" });
+    const child = spawn("bash", [EXPERIMENTS], {
+      env: { ...process.env, ...fixture.env },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const completion = collectChild(child);
+    await waitForFile(fixture.childPidFile);
+    const [pid, leaderGroup, descendantGroup] = (await readFile(fixture.childPidFile, "utf8")).trim().split(" ");
+    const descendantPid = Number(pid);
+
+    expect(descendantGroup).not.toBe(leaderGroup);
+
+    child.kill("SIGTERM");
+    const result = await completion;
+
+    expect(result.code).toBe(143);
+    await expectProcessStopped(descendantPid);
+  }, 10_000);
+});
+
+function runCommand(
+  command: string,
+  args: string[],
+  env: Record<string, string>
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => { resolve({ code, stdout, stderr }); });
+  });
+}
+
+async function createLauncherFixture(options: { failVariant?: string; longRunningName?: string } = {}): Promise<{
+  childPidFile: string;
+  env: Record<string, string>;
+  outputDir: string;
+}> {
+  const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-launcher-"));
+  const binDir = path.join(dir, "bin");
+  const outputDir = path.join(dir, "results");
+  const syncDir = path.join(dir, "sync");
+  const childPidFile = path.join(dir, "child.pid");
+  await mkdir(binDir, { recursive: true });
+  await mkdir(syncDir, { recursive: true });
+  const fakeNode = path.join(binDir, "node");
+  const fakeCli = path.join(dir, "cli.js");
+  await writeFile(fakeNode, fakeNodeScript(), "utf8");
+  await writeFile(fakeCli, "// fake\n", "utf8");
+  await chmod(fakeNode, 0o755);
+
+  return {
+    childPidFile,
+    outputDir,
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      OUT_ROOT: outputDir,
+      RUN_GROUP: "test-run",
+      TOTAL_TRIALS: "4",
+      REFINE_INITIAL_TRIALS: "2",
+      REFINE_ROUNDS: "1",
+      REFINE_TRIALS: "2",
+      CENTAUR_WARMUP_TRIALS: "1",
+      BBOB_SYNC_DIR: syncDir,
+      AUTOTUNE_CLI: fakeCli,
+      BUILD: "0",
+      TERMINATION_GRACE_SECONDS: "1",
+      ...(options.failVariant ? { FAIL_VARIANT: options.failVariant } : {}),
+      ...(options.longRunningName ? {
+        LONG_RUNNING_NAME: options.longRunningName,
+        CHILD_PID_FILE: childPidFile
+      } : {})
+    }
+  };
+}
+
+function fakeNodeScript(): string {
+  return [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "original=(\"$@\")",
+    "work_dir=",
+    "while (($#)); do",
+    "  if [[ \"$1\" == \"--work-dir\" ]]; then work_dir=\"$2\"; shift 2; else shift; fi",
+    "done",
+    "objective=$(basename \"$(dirname \"$work_dir\")\")",
+    "variant=$(basename \"$work_dir\")",
+    "if [[ \"$variant\" == \"01_base_cmaes\" ]]; then",
+    "  touch \"$BBOB_SYNC_DIR/$objective\"",
+    "  for _ in {1..200}; do",
+    "    count=$(find \"$BBOB_SYNC_DIR\" -type f | wc -l)",
+    "    if [[ \"$count\" -eq 4 ]]; then break; fi",
+    "    sleep 0.01",
+    "  done",
+    "  [[ \"$count\" -eq 4 ]] || exit 97",
+    "fi",
+    "printf '%s\\n' \"${original[@]}\" > \"$work_dir/argv.txt\"",
+    "if [[ \"${LONG_RUNNING_NAME:-}\" == \"$objective/$variant\" ]]; then",
+    "  setsid bash -c 'trap \"\" TERM; exec sleep 60' &",
+    "  child=$!",
+    "  leader_group=$(ps -o pgid= -p $$ | tr -d ' ')",
+    "  child_group=",
+    "  for _ in {1..200}; do",
+    "    child_group=$(ps -o pgid= -p \"$child\" | tr -d ' ')",
+    "    if [[ -n \"$child_group\" && \"$child_group\" != \"$leader_group\" ]]; then break; fi",
+    "    sleep 0.01",
+    "  done",
+    "  [[ -n \"$child_group\" && \"$child_group\" != \"$leader_group\" ]] || exit 98",
+    "  printf '%s %s %s\\n' \"$child\" \"$leader_group\" \"$child_group\" > \"$CHILD_PID_FILE\"",
+    "  trap 'exit 0' TERM",
+    "  wait \"$child\"",
+    "fi",
+    "[[ \"${FAIL_VARIANT:-}\" != \"$variant\" ]] || exit 19"
+  ].join("\n");
+}
+
+async function readExperimentArgv(outputDir: string, objective: string, variant: string): Promise<string[]> {
+  const text = await readFile(path.join(outputDir, objective, variant, "argv.txt"), "utf8");
+  return text.trim().split("\n");
+}
+
+function expectFlagValues(argv: string[], expected: Record<string, string>): void {
+  for (const [flag, value] of Object.entries(expected)) {
+    const index = argv.indexOf(flag);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(argv[index + 1]).toBe(value);
+  }
+}
+
+function readMetric(output: string): number {
+  const match = output.match(/^autotune_metric=(.+)$/m);
+  if (!match) {
+    throw new Error(`Missing autotune metric in output: ${output}`);
+  }
+  return Number(match[1]);
+}
+
+function collectChild(child: ReturnType<typeof spawn>): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => { resolve({ code, stdout, stderr }); });
+  });
+}
+
+async function waitForFile(filePath: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await readFile(filePath, "utf8");
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+async function expectProcessStopped(pid: number): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const result = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+    if (result.status !== 0 || result.stdout.trim().startsWith("Z")) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Process ${pid} remained active after launcher shutdown`);
+}

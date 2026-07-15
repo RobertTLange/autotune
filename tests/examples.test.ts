@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 const EXAMPLES = {
-  bbob: path.join("examples", "bbob", "benchmark.py"),
   cifar10Speedrun: path.join("examples", "cifar10_speedrun", "cifar10_speedrun.py"),
   mnist: path.join("examples", "mnist", "mnist_cnn.py"),
   nanochat: path.join("examples", "nanochat", "nanochat_benchmark.py")
@@ -23,6 +22,7 @@ describe("packaged examples", () => {
     expect(examplesReadme).toContain("cifar10_speedrun/cifar10_speedrun.py");
     expect(examplesReadme).toContain("nanochat/nanochat_benchmark.py");
     expect(examplesReadme).toContain("bbob/benchmark.py");
+    expect(examplesReadme).toContain("bbob/run_experiments.sh");
     expect(readme).not.toContain("mnist_cnn_no_cli.py");
     expect(packageJson.files).toContain("examples/*/*.py");
     expect(packageJson.files).toContain("examples/*/*.cpp");
@@ -163,48 +163,6 @@ describe("packaged examples", () => {
         "32x2097152"
       ]
     });
-  });
-
-  it.each([
-    ["sphere", ["3", "4"], 25],
-    ["ellipsoid", ["1", "2"], 4_000_001],
-    ["rosenbrock", ["1", "1"], 0],
-    ["rastrigin", ["0", "0"], 0]
-  ])("evaluates the %s BBOB objective", async (objective, coordinates, expected) => {
-    const result = await runPythonProcess([
-      EXAMPLES.bbob,
-      "--function",
-      objective,
-      "--x1",
-      coordinates[0],
-      "--x2",
-      coordinates[1]
-    ], {});
-
-    expect(result.code).toBe(0);
-    expect(readMetric(result.stdout)).toBeCloseTo(expected, 10);
-  });
-
-  it.each(["sphere", "ellipsoid", "rosenbrock", "rastrigin"])(
-    "ships a search space for the %s BBOB objective",
-    async (objective) => {
-      const { parseSearchSpaceText } = await import("../src/search-space.js");
-      const text = await readFile(path.join("examples", "bbob", `${objective}_search_space.yaml`), "utf8");
-      const searchSpace = parseSearchSpaceText(text);
-
-      expect(searchSpace.parameters.map((parameter) => parameter.name)).toEqual(["x1", "x2"]);
-      expect(searchSpace.fixed_parameters).toEqual([
-        { name: "function", cli_flag: "--function", value: objective }
-      ]);
-      expect(searchSpace.direction).toBe("minimize");
-    }
-  );
-
-  it.each(["nan", "inf", "5.0001"])("rejects invalid BBOB coordinate %s", async (coordinate) => {
-    const result = await runPythonProcess([EXAMPLES.bbob, "--x1", coordinate], {});
-
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).not.toContain("autotune_metric=");
   });
 
   it("runs the nanochat benchmark wrapper against a fake nanochat command", async () => {
@@ -495,12 +453,4 @@ function runPythonProcess(
       resolve({ code, stdout, stderr });
     });
   });
-}
-
-function readMetric(output: string): number {
-  const match = output.match(/^autotune_metric=(.+)$/m);
-  if (!match) {
-    throw new Error(`Missing autotune metric in output: ${output}`);
-  }
-  return Number(match[1]);
 }
