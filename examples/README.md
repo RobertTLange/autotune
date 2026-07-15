@@ -12,7 +12,7 @@ Each task has its own subdirectory. Start with BBOB for a fast local smoke test,
 
 ## BBOB
 
-The BBOB-style examples are deterministic, two-dimensional, and require only Python. Run Rosenbrock directly:
+The BBOB-style objectives are deterministic, two-dimensional, and require only Python when evaluated directly. Run Rosenbrock:
 
 ```bash
 python3 examples/bbob/benchmark.py --function rosenbrock --x1 -1.2 --x2 1.0
@@ -29,6 +29,14 @@ autotune run examples/bbob/benchmark.py \
 
 Swap in `sphere_search_space.yaml`, `ellipsoid_search_space.yaml`, or `rastrigin_search_space.yaml` to change the objective. These are compact, unshifted, and unrotated BBOB-style functions rather than the full COCO benchmark suite.
 
+Run the equal-budget comparison across all four objectives:
+
+```bash
+./examples/bbob/run_experiments.sh
+```
+
+The launcher additionally requires built Autotune, Optuna with `cmaes`, and a configured Headless agent. For each objective, it runs base CMA-ES, resets without transfer, resets with completed-trial transfer, and Centaur. Each experiment phase runs the four objectives in parallel. Defaults are 100 new evaluations per arm (`50 + 2 × 25` for reset arms); outputs and logs go under `examples/bbob/autotune/experiments/`.
+
 ## MNIST CNN
 
 `mnist/mnist_cnn.py` trains a small PyTorch CNN with hardcoded hyperparameters. It intentionally has no CLI parsing or `autotune_metric` output, exercising Autotune's compatible-copy generation.
@@ -36,7 +44,7 @@ Swap in `sphere_search_space.yaml`, `ellipsoid_search_space.yaml`, or `rastrigin
 ```bash
 uv venv .venv
 uv pip install --python .venv/bin/python optuna torch torchvision
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist/mnist_cnn.py \
+autotune run examples/mnist/mnist_cnn.py \
   --trials 8 \
   --agent codex \
   --json
@@ -87,7 +95,7 @@ Run a smoke-scoring search:
 ```bash
 CIFAR10_SPEEDRUN_NUM_RUNS=5 \
 CIFAR10_SPEEDRUN_RESULTS_DIR=examples/cifar10_speedrun/autotune/trial_metrics \
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun/cifar10_speedrun.py \
+autotune run examples/cifar10_speedrun/cifar10_speedrun.py \
   --trials 20 \
   --timeout-seconds 1800 \
   --direction maximize \
