@@ -1062,7 +1062,7 @@ def read_positive_float_env(name: str, default: float) -> float:
 
 def require_cuda() -> None:
     if not torch.cuda.is_available():
-        raise RuntimeError("examples/cifar10_speedrun.py requires a CUDA-capable GPU")
+        raise RuntimeError("The CIFAR-10 speedrun example requires a CUDA-capable GPU")
 
 
 def config_fingerprint(config: SpeedrunConfig) -> str:

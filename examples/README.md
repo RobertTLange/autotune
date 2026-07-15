@@ -1,22 +1,22 @@
 # Autotune Examples
 
-This directory contains four example families: PID controller, MNIST, CIFAR-10 speedrun, and nanochat. Start with a small trial count, inspect the proposed search space, then scale up once the target script and metric look correct.
+Each task has its own subdirectory. Start with a small trial count, inspect the proposed search space, then scale up once the target script and metric look correct.
 
 ## Quick Examples
 
-- `mnist_cnn.py`: agent-compatible PyTorch MNIST example. It intentionally lacks CLI flags and `autotune_metric`, so Autotune asks the agent to create a compatible copy.
-- `pid_controller.cpp`: C++ PID simulation with built-in flags and metric output, plus the explicit `pid_centaur_search_space.yaml` configuration.
-- `cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
-- `nanochat_benchmark.py`: Autotune-native wrapper around a local nanochat checkout, with `nanochat_search_space.yaml` for the paper-inspired search space.
+- `mnist/mnist_cnn.py`: agent-compatible PyTorch MNIST example.
+- `pid_controller/pid_controller.cpp`: C++ PID simulation with a Centaur search space.
+- `cifar10_speedrun/cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
+- `nanochat/nanochat_benchmark.py`: wrapper around a local nanochat checkout.
 
 ## MNIST CNN
 
-`mnist_cnn.py` trains a small PyTorch CNN with hardcoded hyperparameters. It intentionally has no CLI parsing or `autotune_metric` output, exercising Autotune's compatible-copy generation.
+`mnist/mnist_cnn.py` trains a small PyTorch CNN with hardcoded hyperparameters. It intentionally has no CLI parsing or `autotune_metric` output, exercising Autotune's compatible-copy generation.
 
 ```bash
 uv venv .venv
 uv pip install --python .venv/bin/python optuna torch torchvision
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist_cnn.py \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/mnist/mnist_cnn.py \
   --trials 8 \
   --agent codex \
   --json
@@ -31,10 +31,10 @@ Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at leas
 ```bash
 python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
 npm install -g '@roberttlange/headless@0.4.0'
-autotune run examples/pid_controller.cpp \
+autotune run examples/pid_controller/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \
-  --config examples/pid_centaur_search_space.yaml \
+  --config examples/pid_controller/pid_centaur_search_space.yaml \
   --trials 20 \
   --n-jobs 1 \
   --refine-rounds 0 \
@@ -47,7 +47,7 @@ The config explicitly opts into Centaur with the default LLM probability (`0.3`)
 
 ## CIFAR-10 Speedrun
 
-`cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit training-hyperparameter flags and prints a combined score as `autotune_metric`.
+`cifar10_speedrun/cifar10_speedrun.py` is an Autotune-native version of the Agentic Scientist CIFAR-10 speedrun baseline. It accepts explicit training-hyperparameter flags and prints a combined score as `autotune_metric`.
 
 Install runtime packages:
 
@@ -66,8 +66,8 @@ Run a smoke-scoring search:
 
 ```bash
 CIFAR10_SPEEDRUN_NUM_RUNS=5 \
-CIFAR10_SPEEDRUN_RESULTS_DIR=examples/autotune/cifar10_speedrun_trial_metrics \
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun.py \
+CIFAR10_SPEEDRUN_RESULTS_DIR=examples/cifar10_speedrun/autotune/trial_metrics \
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js run examples/cifar10_speedrun/cifar10_speedrun.py \
   --trials 20 \
   --timeout-seconds 1800 \
   --direction maximize \
@@ -84,11 +84,11 @@ For full Agentic Scientist-style scoring, set `CIFAR10_SPEEDRUN_NUM_RUNS=100`. S
 - `CIFAR10_SPEEDRUN_RESULTS_JSON`: optional metrics JSON path for a single direct run.
 - `CIFAR10_SPEEDRUN_RESULTS_DIR`: optional directory for per-trial metrics JSON files during Autotune sweeps. Each file includes combined score, accuracy/time statistics, the effective config, and a config fingerprint.
 
-Submit the equal-budget speedrun ablation on Slurm with `sbatch examples/run_cifar10_speedrun_ablations.sbatch`.
+Submit the equal-budget speedrun ablation on Slurm with `sbatch examples/cifar10_speedrun/run_cifar10_speedrun_ablations.sbatch`.
 
 ## Nanochat Benchmark
 
-`nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and exposes the paper-inspired 14-hyperparameter search space in `nanochat_search_space.yaml`. It minimizes validation bits-per-byte and prints `autotune_metric=<val_bpb>`. CUDA out-of-memory and incompatible batch-geometry trials are reported as `100.0`, matching the finite penalty used in the paper setup.
+`nanochat/nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and exposes the paper-inspired 14-hyperparameter search space in `nanochat/nanochat_search_space.yaml`. It minimizes validation bits-per-byte and prints `autotune_metric=<val_bpb>`. CUDA out-of-memory and incompatible batch-geometry trials are reported as `100.0`, matching the finite penalty used in the paper setup.
 
 Prepare nanochat separately:
 
@@ -120,7 +120,7 @@ Run the paper-style TPE workload with a 24-hour cumulative trial-time budget. Th
 export NANOCHAT_DIR=~/projects/nanochat
 export NANOCHAT_BENCHMARK_NPROC_PER_NODE=8
 export NANOCHAT_BENCHMARK_TOKENS_PER_SECOND=10000000
-./examples/run_nanochat_benchmark.sh
+./examples/nanochat/run_nanochat_benchmark.sh
 ```
 
 Run a short smoke benchmark:
@@ -131,7 +131,7 @@ NANOCHAT_BENCHMARK_NUM_ITERATIONS=20 \
 NANOCHAT_BENCHMARK_EVAL_TOKENS=524288 \
 TRIALS=3 \
 TIME_BUDGET_SECONDS=1800 \
-./examples/run_nanochat_benchmark.sh
+./examples/nanochat/run_nanochat_benchmark.sh
 ```
 
 Measurement controls are environment-only and should not be tuned:
@@ -153,8 +153,8 @@ Measurement controls are environment-only and should not be tuned:
 - `STORAGE`: Optuna storage URI; defaults to `sqlite:///$WORK_DIR/study.db` so interrupted runs can be resumed from the same work directory.
 - `STUDY_NAME`: Optuna study name; defaults to `nanochat_benchmark_autotune`.
 
-Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/run_nanobench_ablation.sbatch`.
+Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/nanochat/run_nanobench_ablation.sbatch`.
 
 ## Packaging Notes
 
-The npm package includes example Python, C++, shell, Slurm, YAML, and this README file. Generated datasets, checkpoints, and `examples/autotune/` run artifacts are intentionally not packaged.
+The npm package includes example Python, C++, shell, Slurm, YAML, and this README file. Generated datasets, checkpoints, and task-local `autotune/` run artifacts are intentionally not packaged.

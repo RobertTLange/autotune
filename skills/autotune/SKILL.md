@@ -65,7 +65,7 @@ Use `--yes` only when accepting the first proposed space is intended.
 Use `--build-command` once before trials, and `--command` for the runtime. Both support `{script}` and `{work-dir}` placeholders.
 
 ```bash
-autotune run examples/pid_controller.cpp \
+autotune run examples/pid_controller/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \
   --trials 12 \

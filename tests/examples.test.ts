@@ -3,23 +3,30 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+const EXAMPLES = {
+  cifar10Speedrun: path.join("examples", "cifar10_speedrun", "cifar10_speedrun.py"),
+  mnist: path.join("examples", "mnist", "mnist_cnn.py"),
+  nanochat: path.join("examples", "nanochat", "nanochat_benchmark.py")
+} as const;
+
 describe("packaged examples", () => {
-  it("documents only the retained example families", async () => {
+  it("documents the task-based example layout", async () => {
     const readme = await readFile("README.md", "utf8");
     const examplesReadme = await readFile(path.join("examples", "README.md"), "utf8");
     const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
-    expect(readme).toContain("examples/mnist_cnn.py");
+    expect(readme).toContain("examples/mnist/mnist_cnn.py");
     expect(readme).toContain("examples/README.md");
-    expect(examplesReadme).toContain("mnist_cnn.py");
-    expect(examplesReadme).toContain("pid_controller.cpp");
-    expect(examplesReadme).toContain("cifar10_speedrun.py");
-    expect(examplesReadme).toContain("nanochat_benchmark.py");
+    expect(examplesReadme).toContain("mnist/mnist_cnn.py");
+    expect(examplesReadme).toContain("pid_controller/pid_controller.cpp");
+    expect(examplesReadme).toContain("cifar10_speedrun/cifar10_speedrun.py");
+    expect(examplesReadme).toContain("nanochat/nanochat_benchmark.py");
     expect(readme).not.toContain("mnist_cnn_no_cli.py");
-    expect(packageJson.files).toContain("examples/*.py");
-    expect(packageJson.files).toContain("examples/*.yaml");
-    expect(packageJson.files).toContain("examples/*.sh");
-    expect(packageJson.files).toContain("examples/*.sbatch");
+    expect(packageJson.files).toContain("examples/*/*.py");
+    expect(packageJson.files).toContain("examples/*/*.cpp");
+    expect(packageJson.files).toContain("examples/*/*.yaml");
+    expect(packageJson.files).toContain("examples/*/*.sh");
+    expect(packageJson.files).toContain("examples/*/*.sbatch");
     expect(packageJson.files).toContain("examples/README.md");
   });
 
@@ -37,14 +44,14 @@ describe("packaged examples", () => {
   });
 
   it("keeps the MNIST example intentionally agent-compatible", async () => {
-    const mnist = await readFile(path.join("examples", "mnist_cnn.py"), "utf8");
+    const mnist = await readFile(EXAMPLES.mnist, "utf8");
 
     expect(mnist).not.toContain("argparse");
     expect(mnist).not.toContain("autotune_metric");
   });
 
   it("defines an Autotune-native CIFAR-10 speedrun example", async () => {
-    const speedrun = await readFile(path.join("examples", "cifar10_speedrun.py"), "utf8");
+    const speedrun = await readFile(EXAMPLES.cifar10Speedrun, "utf8");
 
     expect(speedrun).toContain("argparse.ArgumentParser");
     expect(speedrun).toContain("autotune_metric=");
@@ -59,7 +66,7 @@ describe("packaged examples", () => {
   });
 
   it("keeps CIFAR-10 speedrun CLI flags limited to training hyperparameters", async () => {
-    const speedrun = await readFile(path.join("examples", "cifar10_speedrun.py"), "utf8");
+    const speedrun = await readFile(EXAMPLES.cifar10Speedrun, "utf8");
     const flags = [...speedrun.matchAll(/parser\.add_argument\("([^"]+)"/g)].map((match) => match[1]).sort();
 
     expect(flags).toEqual([
@@ -80,7 +87,7 @@ describe("packaged examples", () => {
   });
 
   it("defines an Autotune-native nanochat benchmark wrapper", async () => {
-    const nanochat = await readFile(path.join("examples", "nanochat_benchmark.py"), "utf8");
+    const nanochat = await readFile(EXAMPLES.nanochat, "utf8");
 
     expect(nanochat).toContain("argparse.ArgumentParser");
     expect(nanochat).toContain("NANOCHAT_DIR");
@@ -91,7 +98,7 @@ describe("packaged examples", () => {
   });
 
   it("keeps nanochat benchmark CLI flags limited to paper hyperparameters", async () => {
-    const nanochat = await readFile(path.join("examples", "nanochat_benchmark.py"), "utf8");
+    const nanochat = await readFile(EXAMPLES.nanochat, "utf8");
     const flags = [...nanochat.matchAll(/parser\.add_argument\("([^"]+)"/g)].map((match) => match[1]).sort();
 
     expect(flags).toEqual([
@@ -115,7 +122,7 @@ describe("packaged examples", () => {
 
   it("ships a parseable nanochat benchmark search space", async () => {
     const { parseSearchSpaceText } = await import("../src/search-space.js");
-    const text = await readFile(path.join("examples", "nanochat_search_space.yaml"), "utf8");
+    const text = await readFile(path.join("examples", "nanochat", "nanochat_search_space.yaml"), "utf8");
     const searchSpace = parseSearchSpaceText(text);
 
     expect(searchSpace.direction).toBe("minimize");
@@ -175,7 +182,7 @@ describe("packaged examples", () => {
     await chmod(fakePython, 0o755);
     const argvPath = path.join(dir, "argv.txt");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--warmup-ratio", "0.1"], {
+    const output = await runPythonScript([EXAMPLES.nanochat, "--warmup-ratio", "0.1"], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       FAKE_NANOCHAT_ARGV: argvPath,
@@ -204,7 +211,7 @@ describe("packaged examples", () => {
     await chmod(fakePython, 0o755);
     const argvPath = path.join(dir, "argv.txt");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--warmup-ratio", "0.5"], {
+    const output = await runPythonScript([EXAMPLES.nanochat, "--warmup-ratio", "0.5"], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       FAKE_NANOCHAT_ARGV: argvPath,
@@ -237,7 +244,7 @@ describe("packaged examples", () => {
     await chmod(fakePython, 0o755);
     const argvPath = path.join(dir, "argv.txt");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+    const output = await runPythonScript([EXAMPLES.nanochat], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       FAKE_NANOCHAT_ARGV: argvPath,
@@ -268,7 +275,7 @@ describe("packaged examples", () => {
     await chmod(fakePython, 0o755);
     const argvPath = path.join(dir, "argv.txt");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py"], {
+    const output = await runPythonScript([EXAMPLES.nanochat], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       FAKE_NANOCHAT_ARGV: argvPath,
@@ -301,7 +308,7 @@ describe("packaged examples", () => {
 
     const output = await runPythonScript(
       [
-        "examples/nanochat_benchmark.py",
+        EXAMPLES.nanochat,
         "--device-batch-size",
         "32",
         "--total-batch-size",
@@ -342,7 +349,7 @@ describe("packaged examples", () => {
     await chmod(fakePython, 0o755);
     const argvPath = path.join(dir, "argv.txt");
 
-    const output = await runPythonScript(["examples/nanochat_benchmark.py", "--batch-config", "16x1048576"], {
+    const output = await runPythonScript([EXAMPLES.nanochat, "--batch-config", "16x1048576"], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       FAKE_NANOCHAT_ARGV: argvPath,
@@ -362,7 +369,7 @@ describe("packaged examples", () => {
     await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
     await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
 
-    const result = await runPythonProcess(["examples/nanochat_benchmark.py"], {
+    const result = await runPythonProcess([EXAMPLES.nanochat], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_BENCHMARK_MAX_SEQ_LEN: "8192"
     });
@@ -380,7 +387,7 @@ describe("packaged examples", () => {
     await writeFile(fakePython, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
     await chmod(fakePython, 0o755);
 
-    const result = await runPythonProcess(["examples/nanochat_benchmark.py"], {
+    const result = await runPythonProcess([EXAMPLES.nanochat], {
       NANOCHAT_DIR: nanochatDir,
       NANOCHAT_PYTHON: fakePython,
       NANOCHAT_BENCHMARK_NUM_ITERATIONS: "1"
@@ -398,7 +405,7 @@ describe("packaged examples", () => {
 
     const result = await runPythonProcess(
       [
-        "examples/nanochat_benchmark.py",
+        EXAMPLES.nanochat,
         "--device-batch-size",
         "32",
         "--total-batch-size",

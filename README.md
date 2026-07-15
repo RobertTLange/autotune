@@ -125,7 +125,7 @@ autotune resume --storage sqlite:///study.db --trials N
 Use `doctor` to verify prerequisites before a run:
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js doctor examples/mnist_cnn.py --agent codex
+PATH=$PWD/.venv/bin:$PATH node dist/cli.js doctor examples/mnist/mnist_cnn.py --agent codex
 ```
 
 Use built-in help for full flag details:

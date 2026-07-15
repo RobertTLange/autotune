@@ -1,7 +1,7 @@
 node_modules/
 dist/
 .autotune/
-examples/autotune/
+examples/**/autotune/
 coverage/
 *.log
 .env

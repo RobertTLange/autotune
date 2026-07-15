@@ -14,7 +14,7 @@ if [[ -z "${ROOT_DIR:-}" ]]; then
   if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/package.json" ]]; then
     ROOT_DIR="$SLURM_SUBMIT_DIR"
   else
-    ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   fi
 fi
 
@@ -24,7 +24,8 @@ if [[ ! -f "$ROOT_DIR/package.json" || ! -d "$ROOT_DIR/examples" ]]; then
   exit 1
 fi
 
-SCRIPT="$ROOT_DIR/examples/cifar10_speedrun.py"
+EXAMPLE_DIR="$ROOT_DIR/examples/cifar10_speedrun"
+SCRIPT="$EXAMPLE_DIR/cifar10_speedrun.py"
 
 AGENT="${AGENT:-codex}"
 MODEL="${MODEL:-}"
@@ -43,7 +44,7 @@ REFINE_TRIALS="${REFINE_TRIALS:-25}"
 REFINED_TOTAL_NEW_TRIALS=$((REFINE_INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
 
 RUN_GROUP="${RUN_GROUP:-${SLURM_JOB_ID:-$(date -u +%Y%m%dT%H%M%SZ)}}"
-OUT_ROOT="${OUT_ROOT:-$ROOT_DIR/examples/autotune/cifar10_speedrun_ablations/$RUN_GROUP}"
+OUT_ROOT="${OUT_ROOT:-$EXAMPLE_DIR/autotune/cifar10_speedrun_ablations/$RUN_GROUP}"
 INITIAL_CONFIG="${INITIAL_CONFIG:-$OUT_ROOT/search_space.initial.yaml}"
 export CIFAR10_SPEEDRUN_RESULTS_DIR="${CIFAR10_SPEEDRUN_RESULTS_DIR:-$OUT_ROOT/trial_metrics}"
 

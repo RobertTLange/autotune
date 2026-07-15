@@ -16,11 +16,12 @@ if [[ -z "${ROOT_DIR:-}" ]]; then
   if [[ -n "${SLURM_SUBMIT_DIR:-}" && -f "$SLURM_SUBMIT_DIR/package.json" ]]; then
     ROOT_DIR="$SLURM_SUBMIT_DIR"
   else
-    ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
   fi
 fi
-SCRIPT="$ROOT_DIR/examples/nanochat_benchmark.py"
-CONFIG="$ROOT_DIR/examples/nanochat_search_space.yaml"
+EXAMPLE_DIR="$ROOT_DIR/examples/nanochat"
+SCRIPT="$EXAMPLE_DIR/nanochat_benchmark.py"
+CONFIG="$EXAMPLE_DIR/nanochat_search_space.yaml"
 
 if [[ -z "${NANOCHAT_DIR:-}" ]]; then
   echo "NANOCHAT_DIR must point at a local karpathy/nanochat checkout" >&2
@@ -53,7 +54,7 @@ export NANOCHAT_BENCHMARK_TOKENS_PER_SECOND="${NANOCHAT_BENCHMARK_TOKENS_PER_SEC
 TRIAL_TIMEOUT_SECONDS="${NANOCHAT_TRIAL_TIMEOUT_SECONDS:-$((NANOCHAT_BENCHMARK_TARGET_SECONDS + 600))}"
 
 RUN_GROUP="${RUN_GROUP:-$(date -u +%Y%m%dT%H%M%SZ)}"
-OUT_ROOT="${OUT_ROOT:-$ROOT_DIR/examples/autotune/nanobench_ablation/$RUN_GROUP}"
+OUT_ROOT="${OUT_ROOT:-$EXAMPLE_DIR/autotune/nanobench_ablation/$RUN_GROUP}"
 CACHE_ROOT="${AUTOTUNE_RUNTIME_CACHE_DIR:-$OUT_ROOT/runtime_cache}"
 
 if [[ "${ALLOW_UNEQUAL_TRIALS:-0}" != "1" && "$BASELINE_TRIALS" -ne "$REFINED_TOTAL_TRIALS" ]]; then
