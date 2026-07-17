@@ -8,6 +8,8 @@ from pathlib import Path
 
 DISCOVERY_SEED = 42
 FAILURE_VALUE = 100.0
+DEFAULT_DEVICE_BATCH_SIZE = 128
+DEFAULT_TOTAL_BATCH_SIZE = 524288
 PARAM_FLAGS = {
     "depth": "--depth",
     "aspect_ratio": "--aspect-ratio",
@@ -22,6 +24,26 @@ PARAM_FLAGS = {
     "warmdown_ratio": "--warmdown-ratio",
     "final_lr_frac": "--final-lr-frac",
     "window_pattern": "--window-pattern",
+}
+REFINEMENT_PARAM_FLAGS = {
+    **PARAM_FLAGS,
+    "device_batch_size": "--device-batch-size",
+    "total_batch_size": "--total-batch-size",
+}
+DEFAULT_PARAMS = {
+    "depth": 8,
+    "aspect_ratio": 64,
+    "head_dim": 128,
+    "batch_config": f"{DEFAULT_DEVICE_BATCH_SIZE}x{DEFAULT_TOTAL_BATCH_SIZE}",
+    "embedding_lr": 0.6,
+    "unembedding_lr": 0.004,
+    "matrix_lr": 0.04,
+    "scalar_lr": 0.5,
+    "weight_decay": 0.2,
+    "warmup_ratio": 0.0,
+    "warmdown_ratio": 0.5,
+    "final_lr_frac": 0.0,
+    "window_pattern": "SSSL",
 }
 T_CRITICAL_95 = (
     12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
@@ -46,8 +68,21 @@ def sha256_file(path: Path) -> str:
     return sha256_bytes(path.read_bytes())
 
 
+def effective_params(params: dict) -> dict:
+    unknown = params.keys() - REFINEMENT_PARAM_FLAGS.keys()
+    if unknown:
+        raise SystemExit(f"unknown finalist parameters: {sorted(unknown)}")
+    active_params = {name: value for name, value in params.items() if name in PARAM_FLAGS}
+    effective = {**DEFAULT_PARAMS, **active_params}
+    if "batch_config" not in params:
+        device_batch_size = params.get("device_batch_size", DEFAULT_DEVICE_BATCH_SIZE)
+        total_batch_size = params.get("total_batch_size", DEFAULT_TOTAL_BATCH_SIZE)
+        effective["batch_config"] = f"{device_batch_size}x{total_batch_size}"
+    return effective
+
+
 def normalized_config(params: dict) -> dict:
-    config = dict(params)
+    config = effective_params(params)
     batch = config.pop("batch_config")
     match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", str(batch))
     if not match:

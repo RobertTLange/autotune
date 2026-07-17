@@ -16,6 +16,11 @@ import threading
 from pathlib import Path
 
 from nanochat_cache import verify_manifest
+from nanochat_validation_support import (
+    DEFAULT_DEVICE_BATCH_SIZE,
+    DEFAULT_PARAMS,
+    DEFAULT_TOTAL_BATCH_SIZE,
+)
 
 
 OOM_PENALTY = 100.0
@@ -39,21 +44,21 @@ def env_nonnegative_int(name: str, default: int) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one canonical autoresearch-compatible HPO trial.")
-    parser.add_argument("--depth", type=int, default=8)
-    parser.add_argument("--aspect-ratio", type=int, default=64)
-    parser.add_argument("--head-dim", type=int, default=128)
+    parser.add_argument("--depth", type=int, default=DEFAULT_PARAMS["depth"])
+    parser.add_argument("--aspect-ratio", type=int, default=DEFAULT_PARAMS["aspect_ratio"])
+    parser.add_argument("--head-dim", type=int, default=DEFAULT_PARAMS["head_dim"])
     parser.add_argument("--batch-config", type=str)
-    parser.add_argument("--device-batch-size", type=int, default=128)
-    parser.add_argument("--total-batch-size", type=int, default=524288)
-    parser.add_argument("--embedding-lr", type=float, default=0.6)
-    parser.add_argument("--unembedding-lr", type=float, default=0.004)
-    parser.add_argument("--matrix-lr", type=float, default=0.04)
-    parser.add_argument("--scalar-lr", type=float, default=0.5)
-    parser.add_argument("--weight-decay", type=float, default=0.2)
-    parser.add_argument("--warmup-ratio", type=float, default=0.0)
-    parser.add_argument("--warmdown-ratio", type=float, default=0.5)
-    parser.add_argument("--final-lr-frac", type=float, default=0.0)
-    parser.add_argument("--window-pattern", type=str, default="SSSL")
+    parser.add_argument("--device-batch-size", type=int, default=DEFAULT_DEVICE_BATCH_SIZE)
+    parser.add_argument("--total-batch-size", type=int, default=DEFAULT_TOTAL_BATCH_SIZE)
+    parser.add_argument("--embedding-lr", type=float, default=DEFAULT_PARAMS["embedding_lr"])
+    parser.add_argument("--unembedding-lr", type=float, default=DEFAULT_PARAMS["unembedding_lr"])
+    parser.add_argument("--matrix-lr", type=float, default=DEFAULT_PARAMS["matrix_lr"])
+    parser.add_argument("--scalar-lr", type=float, default=DEFAULT_PARAMS["scalar_lr"])
+    parser.add_argument("--weight-decay", type=float, default=DEFAULT_PARAMS["weight_decay"])
+    parser.add_argument("--warmup-ratio", type=float, default=DEFAULT_PARAMS["warmup_ratio"])
+    parser.add_argument("--warmdown-ratio", type=float, default=DEFAULT_PARAMS["warmdown_ratio"])
+    parser.add_argument("--final-lr-frac", type=float, default=DEFAULT_PARAMS["final_lr_frac"])
+    parser.add_argument("--window-pattern", type=str, default=DEFAULT_PARAMS["window_pattern"])
     return parser.parse_args()
 
 

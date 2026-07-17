@@ -18,7 +18,9 @@ from nanochat_validation_support import (
     DISCOVERY_SEED,
     FAILURE_VALUE,
     PARAM_FLAGS,
+    REFINEMENT_PARAM_FLAGS,
     T_CRITICAL_95,
+    effective_params,
     normalized_config,
     protocol_matches_benchmark,
     sha256_bytes,
@@ -84,7 +86,7 @@ def valid_trial(trial: object) -> bool:
         return False
     if not isinstance(attrs, dict) or attrs.get("autotune_failure_reason") or attrs.get("autotune_transfer") is True:
         return False
-    if not isinstance(params, dict) or set(params) != set(PARAM_FLAGS):
+    if not isinstance(params, dict) or not set(params).issubset(REFINEMENT_PARAM_FLAGS):
         return False
     return all(
         isinstance(item, (str, int, float))
@@ -107,14 +109,19 @@ def select_finalists(paths: list[Path], count: int) -> tuple[list[dict], list[di
             raise SystemExit(f"discovery results must contain a minimizing all_trials list: {path}")
         all_trials.extend({**trial, "_source_path": str(path)} for trial in result["all_trials"] if isinstance(trial, dict))
         sources.append({"path": str(path), "sha256": sha256_bytes(source)})
-    trials = sorted(
-        (trial for trial in all_trials if valid_trial(trial)),
-        key=lambda trial: (float(trial["value"]), int(trial["number"]), sha256_value(trial["params"])),
+    trials = [
+        {**trial, "_effective_params": effective_params(trial["params"])}
+        for trial in all_trials
+        if valid_trial(trial)
+    ]
+    trials.sort(
+        key=lambda trial: (float(trial["value"]), int(trial["number"]), sha256_value(trial["_effective_params"]))
     )
     selected = []
     seen = set()
     for trial in trials:
-        candidate_id = sha256_value(trial["params"])
+        params = trial["_effective_params"]
+        candidate_id = sha256_value(params)
         if candidate_id in seen:
             continue
         seen.add(candidate_id)
@@ -123,7 +130,7 @@ def select_finalists(paths: list[Path], count: int) -> tuple[list[dict], list[di
             "source_trial": int(trial["number"]),
             "source_result": trial["_source_path"],
             "discovery_value": float(trial["value"]),
-            "params": trial["params"],
+            "params": params,
         })
         if len(selected) == count:
             break

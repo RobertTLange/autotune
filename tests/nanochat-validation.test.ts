@@ -6,6 +6,42 @@ import path from "node:path";
 const VALIDATOR = path.join("examples", "nanochat", "validate_nanochat.py");
 
 describe("nanochat finalist validation", () => {
+  it("fills benchmark defaults for parameters dropped by refinement", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-refined-finalist-"));
+    const discovery = path.join(dir, "results.round_1.json");
+    const { weight_decay: _dropped, ...refinedParams } = nanochatParams({ depth: 12 });
+    await writeFile(
+      discovery,
+      JSON.stringify({ direction: "minimize", all_trials: [trial(0, 0.85, refinedParams)] }),
+      "utf8"
+    );
+
+    const selected = await selectOneFinalist(discovery);
+
+    expect(selected).toMatchObject({
+      discovery_value: 0.85,
+      params: { depth: 12, weight_decay: 0.2 }
+    });
+  });
+
+  it("normalizes direct batch parameters introduced by refinement", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-refined-batch-"));
+    const discovery = path.join(dir, "results.round_1.json");
+    const { batch_config: _dropped, ...refinedParams } = nanochatParams({ depth: 12 });
+    await writeFile(
+      discovery,
+      JSON.stringify({
+        direction: "minimize",
+        all_trials: [trial(0, 0.8, { ...refinedParams, device_batch_size: 64, total_batch_size: 262144 })]
+      }),
+      "utf8"
+    );
+
+    const selected = await selectOneFinalist(discovery);
+
+    expect(selected.params).toMatchObject({ batch_config: "64x262144" });
+  });
+
   it("selects valid unique finalists and resumes completed seed jobs", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-validation-"));
     const discovery = path.join(dir, "results.json");
@@ -180,6 +216,21 @@ async function runPython(args: string[], env: Record<string, string>) {
   const result = await runPythonProcess(args, env);
   if (result.code !== 0) throw new Error(result.stderr || result.stdout);
   return result.stdout;
+}
+
+async function selectOneFinalist(discovery: string) {
+  const selected = await runPython([
+    "-c",
+    [
+      "import json, sys",
+      "from pathlib import Path",
+      "from validate_nanochat import select_finalists",
+      "selected, _ = select_finalists([Path(sys.argv[1])], 1)",
+      "print(json.dumps(selected[0]))"
+    ].join("; "),
+    discovery
+  ], { PYTHONPATH: path.dirname(VALIDATOR) });
+  return JSON.parse(selected);
 }
 
 function runPythonProcess(args: string[], env: Record<string, string> = {}) {
