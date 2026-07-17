@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=0
-#SBATCH --time=4-00:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=autotune-nanobench-%j.out
 #SBATCH --error=autotune-nanobench-%j.err
 
@@ -49,12 +49,37 @@ if [[ "$SAMPLER" == "centaur" ]]; then
     exit 2
 fi
 
-BASELINE_TRIALS="${BASELINE_TRIALS:-100}"
-REFINE_INITIAL_TRIALS="${REFINE_INITIAL_TRIALS:-50}"
-REFINE_ROUNDS="${REFINE_ROUNDS:-2}"
-REFINE_TRIALS="${REFINE_TRIALS:-25}"
-REFINED_TOTAL_TRIALS=$((REFINE_INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
+validate_decimal_integer() {
+    local name="$1"
+    local value="$2"
+    local minimum="$3"
+    local maximum="$4"
+    if [[ ! "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+        echo "$name must be a decimal integer between $minimum and $maximum" >&2
+        exit 2
+    fi
+    if ((10#$value < minimum || 10#$value > maximum)); then
+        echo "$name must be a decimal integer between $minimum and $maximum" >&2
+        exit 2
+    fi
+}
+
+BASELINE_TRIALS="${BASELINE_TRIALS:-240}"
+REFINE_INITIAL_TRIALS="${REFINE_INITIAL_TRIALS:-60}"
+REFINE_ROUNDS="${REFINE_ROUNDS:-3}"
+REFINE_TRIALS="${REFINE_TRIALS:-60}"
 CENTAUR_TRIALS="${CENTAUR_TRIALS:-$BASELINE_TRIALS}"
+ALLOW_UNEQUAL_TRIALS="${ALLOW_UNEQUAL_TRIALS:-0}"
+validate_decimal_integer BASELINE_TRIALS "$BASELINE_TRIALS" 1 1000000
+validate_decimal_integer REFINE_INITIAL_TRIALS "$REFINE_INITIAL_TRIALS" 1 1000000
+validate_decimal_integer REFINE_ROUNDS "$REFINE_ROUNDS" 0 1000
+validate_decimal_integer REFINE_TRIALS "$REFINE_TRIALS" 1 1000000
+validate_decimal_integer CENTAUR_TRIALS "$CENTAUR_TRIALS" 1 1000000
+if [[ "$ALLOW_UNEQUAL_TRIALS" != "0" && "$ALLOW_UNEQUAL_TRIALS" != "1" ]]; then
+    echo "ALLOW_UNEQUAL_TRIALS must be 0 or 1" >&2
+    exit 2
+fi
+REFINED_TOTAL_TRIALS=$((REFINE_INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
 CENTAUR_LLM_PROBABILITY="${CENTAUR_LLM_PROBABILITY:-0.3}"
 CENTAUR_WARMUP_TRIALS="${CENTAUR_WARMUP_TRIALS:-10}"
 CENTAUR_SEED="${CENTAUR_SEED:-42}"
@@ -72,7 +97,7 @@ if [[ ! "$CANCEL_GRACE_SECONDS" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
-TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-86400}"
+TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-108000}"
 if [[ "${NANOCHAT_BENCHMARK_SEED:-42}" != "42" ]]; then
     echo "NANOCHAT_BENCHMARK_SEED must be 42 for discovery" >&2
     exit 2
@@ -84,7 +109,7 @@ RUN_GROUP="${RUN_GROUP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUT_ROOT="${OUT_ROOT:-$EXAMPLE_DIR/autotune/nanobench_ablation/$RUN_GROUP}"
 CACHE_ROOT="${AUTOTUNE_RUNTIME_CACHE_DIR:-$OUT_ROOT/runtime_cache}"
 
-if [[ "${ALLOW_UNEQUAL_TRIALS:-0}" != "1" &&
+if [[ "$ALLOW_UNEQUAL_TRIALS" != "1" &&
     ("$BASELINE_TRIALS" -ne "$REFINED_TOTAL_TRIALS" || "$BASELINE_TRIALS" -ne "$CENTAUR_TRIALS") ]]; then
     echo "Expected equal trial budgets; baseline=$BASELINE_TRIALS refined=$REFINED_TOTAL_TRIALS centaur=$CENTAUR_TRIALS" >&2
     echo "Set ALLOW_UNEQUAL_TRIALS=1 to run unequal budgets." >&2
@@ -242,6 +267,32 @@ cancel_active_variants() {
     active_variant_pids=()
 }
 
+verify_variant_completion() {
+    local name="$1"
+    local round expected_trials
+    local -a results=()
+    case "$name" in
+        01_optuna_baseline)
+            results+=(--result "optuna_baseline=$BASELINE_TRIALS:$OUT_ROOT/$name/results.json")
+            ;;
+        04_centaur)
+            results+=(--result "centaur=$CENTAUR_TRIALS:$OUT_ROOT/$name/results.json")
+            ;;
+        02_autotune_resets_no_trial_transfer|03_autotune_resets_trial_transfer)
+            for ((round = 0; round <= REFINE_ROUNDS; round++)); do
+                expected_trials="$REFINE_TRIALS"
+                [[ "$round" -eq 0 ]] && expected_trials="$REFINE_INITIAL_TRIALS"
+                results+=(--result "${name}_round_$round=$expected_trials:$OUT_ROOT/$name/results.round_$round.json")
+            done
+            ;;
+        *)
+            echo "Unknown discovery arm: $name" >&2
+            return 2
+            ;;
+    esac
+    python3 "$EXAMPLE_DIR/manage_nanochat_run.py" check --root "$OUT_ROOT" "${results[@]}"
+}
+
 trap cancel_active_variants EXIT
 trap 'exit 130' INT TERM
 
@@ -260,6 +311,9 @@ wait_for_variants() {
             name="${variant_names_by_pid[$pid]}"
             log="${variant_logs_by_pid[$pid]}"
             remove_active_variant "$pid"
+            if [[ "$status" -eq 0 ]]; then
+                verify_variant_completion "$name" || status="$?"
+            fi
             if [[ "$status" -eq 0 ]]; then
                 echo "<== completed $name"
                 continue

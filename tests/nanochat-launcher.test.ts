@@ -13,6 +13,7 @@ describe("nanochat Slurm ablation launcher", () => {
     const result = await runLauncher(fixture.env);
 
     expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
+    expect(await readFile(LAUNCHER, "utf8")).toContain("#SBATCH --time=2-00:00:00");
     const commands = (await readFile(fixture.nodeLog, "utf8")).trim().split("\n").map((line) => line.split(" "));
     expect(commands).toHaveLength(4);
 
@@ -24,12 +25,21 @@ describe("nanochat Slurm ablation launcher", () => {
       const command = commandFor(commands, name);
       expect(flagValue(command, "--sampler")).toBe("tpe");
       expect(flagValue(command, "--sampler-seed")).toBe("42");
+      expect(flagValue(command, "--time-budget-seconds")).toBe("108000");
+    }
+
+    expect(flagValue(commandFor(commands, "01_optuna_baseline"), "--trials")).toBe("240");
+    for (const name of ["02_autotune_resets_no_trial_transfer", "03_autotune_resets_trial_transfer"]) {
+      const command = commandFor(commands, name);
+      expect(flagValue(command, "--trials")).toBe("60");
+      expect(flagValue(command, "--refine-rounds")).toBe("3");
+      expect(flagValue(command, "--refine-trials")).toBe("60");
     }
 
     const centaur = commandFor(commands, "04_centaur");
     expect(flagValue(centaur, "--sampler")).toBe("centaur");
     expect(centaur).not.toContain("--sampler-seed");
-    expect(flagValue(centaur, "--trials")).toBe("100");
+    expect(flagValue(centaur, "--trials")).toBe("240");
     expect(flagValue(centaur, "--refine-rounds")).toBe("0");
     expect(flagValue(centaur, "--centaur-llm-probability")).toBe("0.3");
     expect(flagValue(centaur, "--centaur-warmup-trials")).toBe("10");
@@ -39,7 +49,7 @@ describe("nanochat Slurm ablation launcher", () => {
     for (const label of ["optuna_baseline", "resets_no_transfer", "resets_trial_transfer", "centaur"]) {
       expect(validation).toContain(`--result ${label}=`);
     }
-    for (const round of [0, 1, 2]) {
+    for (const round of [0, 1, 2, 3]) {
       expect(validation).toContain(`results.round_${round}.json`);
     }
   });
@@ -49,7 +59,7 @@ describe("nanochat Slurm ablation launcher", () => {
     const rejected = await runLauncher({ ...fixture.env, CENTAUR_TRIALS: "99" });
 
     expect(rejected.code).toBe(2);
-    expect(rejected.stderr).toContain("baseline=100 refined=100 centaur=99");
+    expect(rejected.stderr).toContain("baseline=240 refined=240 centaur=99");
 
     const allowed = await runLauncher({
       ...fixture.env,
@@ -59,6 +69,19 @@ describe("nanochat Slurm ablation launcher", () => {
     expect(allowed.code, `${allowed.stderr}\n${allowed.stdout}`).toBe(0);
     const commands = (await readFile(fixture.nodeLog, "utf8")).trim().split("\n").map((line) => line.split(" "));
     expect(flagValue(commandFor(commands, "04_centaur"), "--trials")).toBe("99");
+  });
+
+  it("rejects arithmetic expressions in numeric environment overrides", async () => {
+    const fixture = await createLauncherFixture();
+    const marker = path.join(path.dirname(fixture.outRoot), "arithmetic-injection");
+    const result = await runLauncher({
+      ...fixture.env,
+      REFINE_ROUNDS: `rounds[$(touch ${marker})]`
+    });
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("REFINE_ROUNDS must be a decimal integer");
+    await expect(readFile(marker, "utf8")).rejects.toThrow();
   });
 
   it("rejects a duplicate Centaur sampler arm and existing discovery storage", async () => {
@@ -108,6 +131,19 @@ describe("nanochat Slurm ablation launcher", () => {
     await expect(readFile(fixture.validationLog, "utf8")).rejects.toThrow();
   });
 
+  it("fails fast when a discovery arm stops before its expected trial count", async () => {
+    const fixture = await createLauncherFixture();
+    const result = await runLauncher({
+      ...fixture.env,
+      NANOCHAT_INCOMPLETE_VARIANT: "04_centaur"
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("04_centaur");
+    expect((await readFile(fixture.cancellationLog, "utf8")).trim().split("\n")).toHaveLength(3);
+    await expect(readFile(fixture.validationLog, "utf8")).rejects.toThrow();
+  });
+
   it("attests complete discovery counts and detects result drift", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-manifest-"));
     const manifest = path.join(dir, "discovery_complete.json");
@@ -120,6 +156,16 @@ describe("nanochat Slurm ablation launcher", () => {
       );
     }
     const resultArgs = results.flatMap((name) => ["--result", `${name}=1:${path.join(dir, `${name}.json`)}`]);
+    const checked = await runProcess("python3", [
+      MANIFEST_TOOL, "check", "--root", dir, "--result", `baseline=1:${path.join(dir, "baseline.json")}`
+    ]);
+    expect(checked.code, checked.stderr).toBe(0);
+    const incomplete = await runProcess("python3", [
+      MANIFEST_TOOL, "check", "--root", dir, "--result", `baseline=2:${path.join(dir, "baseline.json")}`
+    ]);
+    expect(incomplete.code).not.toBe(0);
+    expect(incomplete.stderr).toContain("attempted 1 new trials; expected 2");
+
     const created = await runProcess("python3", [
       MANIFEST_TOOL, "create", "--manifest", manifest, "--refine-rounds", "1", ...resultArgs
     ]);
@@ -166,6 +212,12 @@ async function createLauncherFixture() {
   ]);
   await writeExecutable(binDir, "node", [
     "#!/usr/bin/env bash",
+    "if [[ -n \"${NANOCHAT_INCOMPLETE_VARIANT:-}\" ]]; then",
+    "  if [[ \" $* \" == *\"/$NANOCHAT_INCOMPLETE_VARIANT \"* ]]; then printf '%s\\n' \"$*\" >> \"$NANOCHAT_NODE_LOG\"; exit 0; fi",
+    "  trap 'printf \"%s\\n\" \"$$\" >> \"$NANOCHAT_CANCELLATION_LOG\"; exit 143' TERM",
+    "  for _ in {1..30}; do sleep 0.1; done",
+    "  exit 90",
+    "fi",
     "if [[ -n \"${NANOCHAT_FAIL_VARIANT:-}\" && \" $* \" == *\"/$NANOCHAT_FAIL_VARIANT \"* ]]; then exit 17; fi",
     "if [[ \"${NANOCHAT_BLOCK_SIBLINGS:-0}\" == 1 ]]; then",
     "  trap 'printf \"%s\\n\" \"$$\" >> \"$NANOCHAT_CANCELLATION_LOG\"; exit 143' TERM",
@@ -184,6 +236,8 @@ async function createLauncherFixture() {
     "#!/usr/bin/env bash",
     "if [[ \"$1\" == *prepare_nanochat_cache.py ]]; then",
     "  printf '%064d\\n' 0",
+    "elif [[ \"$1\" == *manage_nanochat_run.py && \"$2\" == check ]]; then",
+    "  if [[ -n \"${NANOCHAT_INCOMPLETE_VARIANT:-}\" && \" $* \" == *\"/$NANOCHAT_INCOMPLETE_VARIANT/\"* ]]; then exit 19; fi",
     "elif [[ \"$1\" == *manage_nanochat_run.py && \"$2\" == verify ]]; then",
     "  printf '%s\\n' \"${NANOCHAT_TEST_REFINE_ROUNDS:-2}\"",
     "fi"

@@ -16,6 +16,9 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--manifest", type=Path, required=True)
     create.add_argument("--refine-rounds", type=int, required=True)
     create.add_argument("--result", action="append", default=[], metavar="LABEL=EXPECTED:PATH")
+    check = commands.add_parser("check")
+    check.add_argument("--root", type=Path, required=True)
+    check.add_argument("--result", action="append", default=[], metavar="LABEL=EXPECTED:PATH")
     verify = commands.add_parser("verify")
     verify.add_argument("--manifest", type=Path, required=True)
     return parser.parse_args()
@@ -92,6 +95,14 @@ def create_manifest(args: argparse.Namespace) -> None:
         os.fsync(handle.fileno())
 
 
+def check_results(args: argparse.Namespace) -> None:
+    if not args.result:
+        raise SystemExit("check requires at least one --result")
+    root = args.root.expanduser().resolve()
+    for raw in args.result:
+        parse_result_spec(raw, root)
+
+
 def verify_manifest(args: argparse.Namespace) -> None:
     manifest_path = args.manifest.expanduser().resolve()
     try:
@@ -130,8 +141,10 @@ def main() -> None:
     args = parse_args()
     if args.command == "create":
         create_manifest(args)
-    else:
+    elif args.command == "verify":
         verify_manifest(args)
+    else:
+        check_results(args)
 
 
 if __name__ == "__main__":
