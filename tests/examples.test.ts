@@ -110,8 +110,10 @@ describe("packaged examples", () => {
 
     expect(local).toContain("AUTORESEARCH_DIR");
     expect(local).toContain("--sampler-seed");
+    expect(local).toContain("validate_nanochat.py");
     expect(slurm).toContain("#SBATCH --gres=gpu:1");
     expect(slurm).toContain('N_JOBS must be 1');
+    expect(slurm).toContain("results.round_$round.json");
     expect(slurm).toContain("uv run --frozen prepare.py");
     expect(`${local}\n${slurm}`).not.toMatch(/export NANOCHAT_DATA_IDENTITY_SHA256="\$\(/);
     expect(`${local}\n${slurm}`).not.toContain("TOKENS_PER_SECOND");

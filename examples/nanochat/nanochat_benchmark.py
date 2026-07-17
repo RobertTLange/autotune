@@ -391,6 +391,7 @@ def main() -> int:
         "gpu_count": 1,
         "autoresearch_commit": commit,
         "source_sha256": source_hashes,
+        "benchmark_sha256": sha256_file(Path(__file__).resolve()),
         "adapter_sha256": sha256_file(adapter),
         "data_identity_sha256": dataset["identity_sha256"],
         "runtime": runtime,

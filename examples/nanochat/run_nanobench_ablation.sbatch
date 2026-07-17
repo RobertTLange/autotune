@@ -50,9 +50,16 @@ REFINE_INITIAL_TRIALS="${REFINE_INITIAL_TRIALS:-50}"
 REFINE_ROUNDS="${REFINE_ROUNDS:-2}"
 REFINE_TRIALS="${REFINE_TRIALS:-25}"
 REFINED_TOTAL_TRIALS=$((REFINE_INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
+FINALISTS="${FINALISTS:-3}"
+VALIDATION_SEEDS="${VALIDATION_SEEDS:-0,1,2,3,4,5,6,7,8,9}"
+VALIDATION_MAX_ATTEMPTS="${VALIDATION_MAX_ATTEMPTS:-2}"
 
 TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-86400}"
-export NANOCHAT_BENCHMARK_SEED="${NANOCHAT_BENCHMARK_SEED:-42}"
+if [[ "${NANOCHAT_BENCHMARK_SEED:-42}" != "42" ]]; then
+  echo "NANOCHAT_BENCHMARK_SEED must be 42 for discovery" >&2
+  exit 2
+fi
+export NANOCHAT_BENCHMARK_SEED=42
 TRIAL_TIMEOUT_SECONDS="${NANOCHAT_TRIAL_TIMEOUT_SECONDS:-1200}"
 
 RUN_GROUP="${RUN_GROUP:-$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -153,6 +160,23 @@ run_variant "03_autotune_resets_trial_transfer" "$REFINE_INITIAL_TRIALS" \
   --refine-mode auto \
   --no-refine-transfer-fixed-params
 
+validation_results=(--result "optuna_baseline=$OUT_ROOT/01_optuna_baseline/results.json")
+for ((round = 0; round <= REFINE_ROUNDS; round++)); do
+  validation_results+=(
+    --result "resets_no_transfer=$OUT_ROOT/02_autotune_resets_no_trial_transfer/results.round_$round.json"
+    --result "resets_trial_transfer=$OUT_ROOT/03_autotune_resets_trial_transfer/results.round_$round.json"
+  )
+done
+
+python3 "$EXAMPLE_DIR/validate_nanochat.py" \
+  "${validation_results[@]}" \
+  --output-dir "$OUT_ROOT/finalist_validation" \
+  --finalists "$FINALISTS" \
+  --seeds "$VALIDATION_SEEDS" \
+  --timeout-seconds "$TRIAL_TIMEOUT_SECONDS" \
+  --max-attempts "$VALIDATION_MAX_ATTEMPTS"
+
 echo
 echo "Nanobench ablations complete."
 echo "Results root: $OUT_ROOT"
+echo "Finalist summary: $OUT_ROOT/finalist_validation/summary.json"

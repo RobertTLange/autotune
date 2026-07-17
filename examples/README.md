@@ -134,16 +134,18 @@ python3 examples/nanochat/prepare_nanochat_cache.py create
 
 Use a fresh `~/.cache/autoresearch` containing exactly the default ten training shards plus pinned validation shard `06542`. Manifest creation is an explicit trust step: it hashes every shard and the tokenizer after pinned preparation. Each benchmark launcher rehashes the cache once before starting trials, then passes the verified content identity to every trial.
 
-Run 100 seeded TPE trials:
+Run 100 seeded TPE trials, then evaluate its best configuration on seeds 0–9:
 
 ```bash
 export AUTORESEARCH_DIR=~/projects/autoresearch
 ./examples/nanochat/run_nanochat_benchmark.sh
 ```
 
-Every score uses one GPU, a 2048-token context, 8192-token vocabulary, 300 measured training seconds excluding compilation/startup, and 20,971,520 validation tokens. `NANOCHAT_BENCHMARK_SEED` controls training randomness but is not tunable; discovery defaults to seed 42. The wrapper syncs the pinned lockfile through `uv --frozen`, emits source/data/tokenizer/runtime provenance, and assigns `100.0` to infeasible or OOM trials. Hardware still affects how much training fits into five minutes, so compare runs on the same accelerator type.
+Every score uses one GPU, a 2048-token context, 8192-token vocabulary, 300 measured training seconds excluding compilation/startup, and 20,971,520 validation tokens. `NANOCHAT_BENCHMARK_SEED` controls training randomness but is not tunable; discovery uses seed 42. The wrapper syncs the pinned lockfile through `uv --frozen`, emits source/data/tokenizer/runtime provenance, and assigns `100.0` to infeasible or OOM trials. Hardware still affects how much training fits into five minutes, so compare runs on the same accelerator type.
 
-Key launcher controls: `TRIALS`, `SAMPLER`, `SAMPLER_SEED`, `TIME_BUDGET_SECONDS`, `WORK_DIR`, `STORAGE`, `STUDY_NAME`, and `NANOCHAT_TRIAL_TIMEOUT_SECONDS` (default 1200 seconds). `NANOCHAT_BENCHMARK_RESULTS_DIR` stores per-trial provenance JSON.
+`validate_nanochat.py` excludes failed/penalty trials, deduplicates configurations across every refinement round and method, freezes the selected finalists, runs each directly on a disjoint seed panel, resumes completed jobs, and refuses mixed evaluator/GPU/kernel protocol hashes immediately. It reports mean, standard deviation, standard error, and a Student-t 95% confidence interval. The local launcher defaults to one finalist; the Slurm ablation validates the top three from each method over the same ten seeds.
+
+Key launcher controls: `TRIALS`, `SAMPLER`, `SAMPLER_SEED`, `TIME_BUDGET_SECONDS`, `WORK_DIR`, `STORAGE`, `STUDY_NAME`, `FINALISTS`, `VALIDATION_SEEDS`, `VALIDATION_MAX_ATTEMPTS`, and `NANOCHAT_TRIAL_TIMEOUT_SECONDS` (default 1200 seconds). Set `VALIDATE_FINALISTS=0` to run only local discovery. `NANOCHAT_BENCHMARK_RESULTS_DIR` stores per-trial provenance JSON.
 
 Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/nanochat/run_nanobench_ablation.sbatch`.
 
