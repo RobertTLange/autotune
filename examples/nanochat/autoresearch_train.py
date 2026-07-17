@@ -12,6 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from nanochat_validation_support import PINNED_KERNEL_REVISIONS
+
 
 CONFIG_TO_CONSTANT = {
     "aspect_ratio": "ASPECT_RATIO",
@@ -79,6 +81,13 @@ def materialize_source(source: str, config: dict[str, int | float | str]) -> str
         f"torch.cuda.manual_seed({seed!r})",
         "CUDA seed",
     )
+    pinned_revisions = repr(PINNED_KERNEL_REVISIONS)
+    updated = replace_once(
+        updated,
+        r"^fa3 = get_kernel\(repo\)\.flash_attn_interface\s*$",
+        f"fa3 = get_kernel(repo, revision={pinned_revisions}[repo]).flash_attn_interface",
+        "kernel revision",
+    )
     ast.parse(updated, filename="train.py")
     return updated
 
@@ -93,14 +102,15 @@ def loaded_kernel_provenance(globals_dict: dict) -> list[dict[str, str]]:
     repo_id = globals_dict.get("repo")
     kernel_file = str(getattr(globals_dict.get("fa3"), "__file__", ""))
     snapshot_match = re.search(r"/snapshots/([0-9a-f]{40,64})/", kernel_file)
-    if not isinstance(repo_id, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_id):
+    if not isinstance(repo_id, str) or repo_id not in PINNED_KERNEL_REVISIONS:
         raise RuntimeError("canonical kernel repository is unavailable")
-    if snapshot_match is None:
-        raise RuntimeError("canonical kernel snapshot is unavailable")
+    expected_revision = PINNED_KERNEL_REVISIONS[repo_id]
+    if snapshot_match is None or snapshot_match.group(1) != expected_revision:
+        raise RuntimeError("canonical kernel did not load from the pinned kernel snapshot")
     return [{
         "repo_id": repo_id,
-        "revision": "main",
-        "snapshot_commit": snapshot_match.group(1),
+        "revision": expected_revision,
+        "snapshot_commit": expected_revision,
         "metadata_id": Path(kernel_file).stem,
     }]
 

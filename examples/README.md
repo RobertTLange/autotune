@@ -117,7 +117,7 @@ Submit the equal-budget speedrun ablation on Slurm with `sbatch examples/cifar10
 
 ## Nanochat Benchmark
 
-`nanochat/nanochat_benchmark.py` keeps Autotune's adaptive HPO workflow while using the evaluator from `karpathy/autoresearch` commit `228791fb499afffb54b46200aca536f79142f117`. Autotune changes only the 14 declared training constants and never edits the wider codebase.
+`nanochat/nanochat_benchmark.py` keeps Autotune's adaptive HPO workflow while using the evaluator from `karpathy/autoresearch` commit `228791fb499afffb54b46200aca536f79142f117`. The adapter changes only the 14 declared training constants and fixed seed, pins the evaluator's kernel dependency, and never edits the wider checkout.
 
 Prepare the pinned checkout and its default clean cache:
 
@@ -141,7 +141,7 @@ export AUTORESEARCH_DIR=~/projects/autoresearch
 ./examples/nanochat/run_nanochat_benchmark.sh
 ```
 
-Every score uses one GPU, a 2048-token context, 8192-token vocabulary, 300 measured training seconds excluding compilation/startup, and 20,971,520 validation tokens. `NANOCHAT_BENCHMARK_SEED` controls training randomness but is not tunable; discovery uses seed 42. The wrapper syncs the pinned lockfile through `uv --frozen`, emits source/data/tokenizer/runtime provenance, and assigns `100.0` to infeasible or OOM trials. Hardware still affects how much training fits into five minutes, so compare runs on the same accelerator type.
+Every score uses one GPU, a 2048-token context, 8192-token vocabulary, 300 measured training seconds excluding compilation/startup, and 20,971,520 validation tokens. `NANOCHAT_BENCHMARK_SEED` controls training randomness but is not tunable; discovery uses seed 42. The wrapper syncs the pinned lockfile through `uv --frozen`, pins the Hopper kernel to `varunneal/flash-attention-3@de87b9b5af06dd9984df595bef90b2eba44b181a` and the fallback kernel to `kernels-community/flash-attn3@9542c462013476380ce4b395b9ddc0e8118161ee`, emits source/data/tokenizer/runtime provenance, and assigns `100.0` to infeasible or OOM trials. Hardware still affects how much training fits into five minutes, so compare runs on the same accelerator type.
 
 `validate_nanochat.py` excludes failed/penalty trials, deduplicates configurations across every refinement round and method, freezes the selected finalists, runs each directly on a disjoint seed panel, resumes completed jobs, and refuses mixed evaluator/GPU/kernel protocol hashes immediately. It reports mean, standard deviation, standard error, and a Student-t 95% confidence interval. The local launcher defaults to one finalist; the Slurm ablation compares TPE, both reset variants, and Centaur, then validates the top three from each method over the same ten seeds.
 

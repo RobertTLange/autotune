@@ -10,6 +10,10 @@ DISCOVERY_SEED = 42
 FAILURE_VALUE = 100.0
 DEFAULT_DEVICE_BATCH_SIZE = 128
 DEFAULT_TOTAL_BATCH_SIZE = 524288
+PINNED_KERNEL_REVISIONS = {
+    "varunneal/flash-attention-3": "de87b9b5af06dd9984df595bef90b2eba44b181a",
+    "kernels-community/flash-attn3": "9542c462013476380ce4b395b9ddc0e8118161ee",
+}
 PARAM_FLAGS = {
     "depth": "--depth",
     "aspect_ratio": "--aspect-ratio",

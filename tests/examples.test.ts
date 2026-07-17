@@ -105,24 +105,48 @@ describe("packaged examples", () => {
   });
 
   it("derives pinned kernel provenance without a get_loaded_kernels API", async () => {
-    const snapshot = "a".repeat(40);
+    const adapterPath = path.resolve(EXAMPLES.nanochatTrain);
+    const kernels = [
+      ["varunneal/flash-attention-3", "de87b9b5af06dd9984df595bef90b2eba44b181a"],
+      ["kernels-community/flash-attn3", "9542c462013476380ce4b395b9ddc0e8118161ee"]
+    ];
+    for (const [repo, snapshot] of kernels) {
+      const script = [
+        "import importlib.util, json, sys, types",
+        `sys.path.insert(0, ${JSON.stringify(path.dirname(adapterPath))})`,
+        `spec = importlib.util.spec_from_file_location('nanochat_adapter', ${JSON.stringify(adapterPath)})`,
+        "adapter = importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(adapter)",
+        `kernel = types.SimpleNamespace(__file__='/cache/snapshots/${snapshot}/build/variant/flash_attn_interface.py')`,
+        `print(json.dumps(adapter.loaded_kernel_provenance({'repo': '${repo}', 'fa3': kernel}), sort_keys=True))`
+      ].join("\n");
+
+      const provenance = JSON.parse(await runPythonScript(["-c", script], {}));
+      expect(provenance).toEqual([{
+        metadata_id: "flash_attn_interface",
+        repo_id: repo,
+        revision: snapshot,
+        snapshot_commit: snapshot
+      }]);
+    }
+  });
+
+  it("rejects kernel provenance outside the pinned snapshot", async () => {
     const adapterPath = path.resolve(EXAMPLES.nanochatTrain);
     const script = [
-      "import importlib.util, json, types",
+      "import importlib.util, sys, types",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(adapterPath))})`,
       `spec = importlib.util.spec_from_file_location('nanochat_adapter', ${JSON.stringify(adapterPath)})`,
       "adapter = importlib.util.module_from_spec(spec)",
       "spec.loader.exec_module(adapter)",
-      `kernel = types.SimpleNamespace(__file__='/cache/models--owner--repo/snapshots/${snapshot}/build/variant/flash_attn_interface.py')`,
-      "print(json.dumps(adapter.loaded_kernel_provenance({'repo': 'owner/repo', 'fa3': kernel}), sort_keys=True))"
+      "kernel = types.SimpleNamespace(__file__='/cache/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/build/kernel.py')",
+      "adapter.loaded_kernel_provenance({'repo': 'varunneal/flash-attention-3', 'fa3': kernel})"
     ].join("\n");
 
-    const provenance = JSON.parse(await runPythonScript(["-c", script], {}));
-    expect(provenance).toEqual([{
-      metadata_id: "flash_attn_interface",
-      repo_id: "owner/repo",
-      revision: "main",
-      snapshot_commit: snapshot
-    }]);
+    const result = await runPythonProcess(["-c", script], {});
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("pinned kernel snapshot");
   });
 
   it("launches each comparable nanochat arm on one GPU without throughput calibration", async () => {
@@ -245,7 +269,7 @@ describe("packaged examples", () => {
     });
   });
 
-  it("injects only HPO constants and the evaluation seed into canonical train.py", async () => {
+  it("injects only HPO constants, the seed, and the pinned kernel into canonical train.py", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-autoresearch-adapter-"));
     const source = [
       "import json",
@@ -263,6 +287,15 @@ describe("packaged examples", () => {
       "FINAL_LR_FRAC = 0.0",
       "DEPTH = 8",
       "DEVICE_BATCH_SIZE = 128",
+      "class Kernel:",
+      "    flash_attn_interface = None",
+      "kernel_revision = None",
+      "def get_kernel(repo, revision=None):",
+      "    global kernel_revision",
+      "    kernel_revision = revision",
+      "    return Kernel()",
+      "repo = 'varunneal/flash-attention-3'",
+      "fa3 = get_kernel(repo).flash_attn_interface",
       "class Cuda:",
       "    def manual_seed(self, value): self.seed = value",
       "class Torch:",
@@ -271,7 +304,7 @@ describe("packaged examples", () => {
       "torch = Torch()",
       "torch.manual_seed(42)",
       "torch.cuda.manual_seed(42)",
-      "print(json.dumps({'depth': DEPTH, 'aspect_ratio': ASPECT_RATIO, 'head_dim': HEAD_DIM, 'window_pattern': WINDOW_PATTERN, 'device_batch_size': DEVICE_BATCH_SIZE, 'total_batch_size': TOTAL_BATCH_SIZE, 'embedding_lr': EMBEDDING_LR, 'unembedding_lr': UNEMBEDDING_LR, 'matrix_lr': MATRIX_LR, 'scalar_lr': SCALAR_LR, 'weight_decay': WEIGHT_DECAY, 'warmup_ratio': WARMUP_RATIO, 'warmdown_ratio': WARMDOWN_RATIO, 'final_lr_frac': FINAL_LR_FRAC, 'seed': torch.seed, 'cuda_seed': torch.cuda.seed}))"
+      "print(json.dumps({'depth': DEPTH, 'aspect_ratio': ASPECT_RATIO, 'head_dim': HEAD_DIM, 'window_pattern': WINDOW_PATTERN, 'device_batch_size': DEVICE_BATCH_SIZE, 'total_batch_size': TOTAL_BATCH_SIZE, 'embedding_lr': EMBEDDING_LR, 'unembedding_lr': UNEMBEDDING_LR, 'matrix_lr': MATRIX_LR, 'scalar_lr': SCALAR_LR, 'weight_decay': WEIGHT_DECAY, 'warmup_ratio': WARMUP_RATIO, 'warmdown_ratio': WARMDOWN_RATIO, 'final_lr_frac': FINAL_LR_FRAC, 'seed': torch.seed, 'cuda_seed': torch.cuda.seed, 'kernel_revision': kernel_revision}))"
     ].join("\n");
     await writeFile(path.join(dir, "train.py"), source, "utf8");
     await writeFile(path.join(dir, "prepare.py"), "# canonical prepare fixture\n", "utf8");
@@ -298,7 +331,11 @@ describe("packaged examples", () => {
       AUTOTUNE_NANOCHAT_CONFIG: JSON.stringify(config)
     });
 
-    expect(JSON.parse(output)).toEqual({ ...config, cuda_seed: 9 });
+    expect(JSON.parse(output)).toEqual({
+      ...config,
+      cuda_seed: 9,
+      kernel_revision: "de87b9b5af06dd9984df595bef90b2eba44b181a"
+    });
 
     const changedAfterVerification = await runPythonProcess([EXAMPLES.nanochatTrain], {
       AUTORESEARCH_DIR: dir,
@@ -452,7 +489,7 @@ async function createFakeAutoresearch(commit = "228791fb499afffb54b46200aca536f7
       "printf '%s\\n' \"$@\" > \"$AUTORESEARCH_DIR/uv-argv.txt\"",
       "printf '%s' \"$AUTOTUNE_NANOCHAT_CONFIG\" > \"$AUTORESEARCH_DIR/config.json\"",
       "echo 'autotune_materialized_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
-      "echo 'autotune_runtime={\"cuda\":\"12.8\",\"gpu_capability\":[9,0],\"gpu_name\":\"Fake H100\",\"kernels_package\":\"0.12.1\",\"loaded_kernels\":[{\"metadata_id\":\"fake\",\"repo_id\":\"varunneal/flash-attention-3\",\"revision\":\"main\",\"snapshot_commit\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}],\"python\":\"3.10.12\",\"torch\":\"2.9.1\"}'",
+      "echo 'autotune_runtime={\"cuda\":\"12.8\",\"gpu_capability\":[9,0],\"gpu_name\":\"Fake H100\",\"kernels_package\":\"0.12.1\",\"loaded_kernels\":[{\"metadata_id\":\"fake\",\"repo_id\":\"varunneal/flash-attention-3\",\"revision\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\",\"snapshot_commit\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\"}],\"python\":\"3.10.12\",\"torch\":\"2.9.1\"}'",
       "echo 'val_bpb:          0.912345'",
       "echo 'training_seconds: 300.0'",
       "echo 'total_tokens_M:   501.2'",

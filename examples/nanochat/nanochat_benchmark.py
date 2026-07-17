@@ -20,6 +20,7 @@ from nanochat_validation_support import (
     DEFAULT_DEVICE_BATCH_SIZE,
     DEFAULT_PARAMS,
     DEFAULT_TOTAL_BATCH_SIZE,
+    PINNED_KERNEL_REVISIONS,
 )
 
 
@@ -310,7 +311,21 @@ def parse_execution_provenance(output: str) -> tuple[str, dict]:
     required = {"python", "torch", "cuda", "kernels_package", "loaded_kernels", "gpu_name", "gpu_capability"}
     if not isinstance(runtime, dict) or set(runtime) != required:
         raise ValueError("canonical adapter runtime provenance has an unexpected schema")
+    validate_kernel_provenance(runtime["loaded_kernels"])
     return materialized[0], runtime
+
+
+def validate_kernel_provenance(loaded_kernels: object) -> None:
+    if not isinstance(loaded_kernels, list) or len(loaded_kernels) != 1:
+        raise ValueError("canonical adapter did not attest one pinned kernel")
+    loaded_kernel = loaded_kernels[0]
+    if not isinstance(loaded_kernel, dict):
+        raise ValueError("canonical adapter emitted invalid kernel provenance")
+    expected_revision = PINNED_KERNEL_REVISIONS.get(loaded_kernel.get("repo_id"))
+    observed_revision = loaded_kernel.get("revision")
+    observed_snapshot = loaded_kernel.get("snapshot_commit")
+    if expected_revision is None or observed_revision != expected_revision or observed_snapshot != expected_revision:
+        raise ValueError("canonical adapter kernel provenance does not match a pinned revision")
 
 
 def write_result(path: Path, result: dict) -> None:
