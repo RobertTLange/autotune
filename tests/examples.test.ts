@@ -104,6 +104,27 @@ describe("packaged examples", () => {
     expect(adapter.indexOf("emit_execution_provenance(materialized, globals_dict)")).toBeGreaterThan(adapter.indexOf("exec(compile("));
   });
 
+  it("derives pinned kernel provenance without a get_loaded_kernels API", async () => {
+    const snapshot = "a".repeat(40);
+    const adapterPath = path.resolve(EXAMPLES.nanochatTrain);
+    const script = [
+      "import importlib.util, json, types",
+      `spec = importlib.util.spec_from_file_location('nanochat_adapter', ${JSON.stringify(adapterPath)})`,
+      "adapter = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(adapter)",
+      `kernel = types.SimpleNamespace(__file__='/cache/models--owner--repo/snapshots/${snapshot}/build/variant/flash_attn_interface.py')`,
+      "print(json.dumps(adapter.loaded_kernel_provenance({'repo': 'owner/repo', 'fa3': kernel}), sort_keys=True))"
+    ].join("\n");
+
+    const provenance = JSON.parse(await runPythonScript(["-c", script], {}));
+    expect(provenance).toEqual([{
+      metadata_id: "flash_attn_interface",
+      repo_id: "owner/repo",
+      revision: "main",
+      snapshot_commit: snapshot
+    }]);
+  });
+
   it("launches each comparable nanochat arm on one GPU without throughput calibration", async () => {
     const local = await readFile(path.join("examples", "nanochat", "run_nanochat_benchmark.sh"), "utf8");
     const slurm = await readFile(path.join("examples", "nanochat", "run_nanobench_ablation.sbatch"), "utf8");

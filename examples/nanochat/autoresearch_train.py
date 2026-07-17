@@ -89,28 +89,33 @@ def verify_source(source: str, expected_name: str, label: str) -> None:
         raise SystemExit(f"canonical {label} changed after checkout verification")
 
 
+def loaded_kernel_provenance(globals_dict: dict) -> list[dict[str, str]]:
+    repo_id = globals_dict.get("repo")
+    kernel_file = str(getattr(globals_dict.get("fa3"), "__file__", ""))
+    snapshot_match = re.search(r"/snapshots/([0-9a-f]{40,64})/", kernel_file)
+    if not isinstance(repo_id, str) or not re.fullmatch(r"[\w.-]+/[\w.-]+", repo_id):
+        raise RuntimeError("canonical kernel repository is unavailable")
+    if snapshot_match is None:
+        raise RuntimeError("canonical kernel snapshot is unavailable")
+    return [{
+        "repo_id": repo_id,
+        "revision": "main",
+        "snapshot_commit": snapshot_match.group(1),
+        "metadata_id": Path(kernel_file).stem,
+    }]
+
+
 def emit_execution_provenance(materialized: str, globals_dict: dict) -> None:
     if not os.environ.get("AUTOTUNE_AUTORESEARCH_TRAIN_SHA256"):
         return
-    from kernels import get_loaded_kernels
 
     torch = globals_dict["torch"]
-    loaded_kernels = []
-    for loaded in get_loaded_kernels():
-        module_file = str(getattr(loaded.module, "__file__", ""))
-        snapshot_match = re.search(r"/snapshots/([0-9a-f]{40,64})/", module_file)
-        loaded_kernels.append({
-            "repo_id": loaded.repo_info.repo_id if loaded.repo_info else None,
-            "revision": loaded.repo_info.revision if loaded.repo_info else None,
-            "snapshot_commit": snapshot_match.group(1) if snapshot_match else None,
-            "metadata_id": loaded.metadata.id,
-        })
     runtime = {
         "python": platform.python_version(),
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
         "kernels_package": importlib.metadata.version("kernels"),
-        "loaded_kernels": loaded_kernels,
+        "loaded_kernels": loaded_kernel_provenance(globals_dict),
         "gpu_name": torch.cuda.get_device_name(0),
         "gpu_capability": list(torch.cuda.get_device_capability(0)),
     }
