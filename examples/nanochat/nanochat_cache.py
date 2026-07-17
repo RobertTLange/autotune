@@ -150,23 +150,30 @@ def snapshot_manifest(dataset: dict) -> dict:
     }
 
 
+def is_owned_and_nonwritable_by_others(metadata: os.stat_result) -> bool:
+    return metadata.st_uid == os.getuid() and not metadata.st_mode & 0o022
+
+
 def verified_data_snapshot(dataset: dict, rehash_data: bool = False) -> Path:
     snapshot = data_snapshot_path(dataset)
     data_dir = snapshot / "data"
     marker = snapshot / SNAPSHOT_MANIFEST_NAME
     try:
-        snapshot_mode = snapshot.lstat().st_mode
-        data_mode = data_dir.lstat().st_mode
-        marker_mode = marker.lstat().st_mode
+        snapshot_metadata = snapshot.lstat()
+        data_metadata = data_dir.lstat()
+        marker_metadata = marker.lstat()
     except OSError as exc:
         raise SystemExit(f"missing immutable data snapshot; run prepare_nanochat_cache.py verify: {snapshot}") from exc
     if (
-        not stat.S_ISDIR(snapshot_mode)
-        or stat.S_IMODE(snapshot_mode) != 0o500
-        or not stat.S_ISDIR(data_mode)
-        or stat.S_IMODE(data_mode) != 0o500
-        or not stat.S_ISREG(marker_mode)
-        or stat.S_IMODE(marker_mode) != 0o400
+        not stat.S_ISDIR(snapshot_metadata.st_mode)
+        or stat.S_IMODE(snapshot_metadata.st_mode) != 0o500
+        or not is_owned_and_nonwritable_by_others(snapshot_metadata)
+        or not stat.S_ISDIR(data_metadata.st_mode)
+        or stat.S_IMODE(data_metadata.st_mode) != 0o500
+        or not is_owned_and_nonwritable_by_others(data_metadata)
+        or not stat.S_ISREG(marker_metadata.st_mode)
+        or stat.S_IMODE(marker_metadata.st_mode) != 0o400
+        or not is_owned_and_nonwritable_by_others(marker_metadata)
     ):
         raise SystemExit(f"immutable data snapshot contains a symlink or unexpected file type: {snapshot}")
     try:
@@ -188,6 +195,7 @@ def verified_data_snapshot(dataset: dict, rehash_data: bool = False) -> Path:
         if (
             not stat.S_ISREG(metadata.st_mode)
             or stat.S_IMODE(metadata.st_mode) != 0o400
+            or not is_owned_and_nonwritable_by_others(metadata)
             or metadata.st_size != entry["bytes"]
         ):
             raise SystemExit(f"immutable data snapshot shard metadata differs: {path}")
@@ -234,16 +242,22 @@ def prepare_data_snapshot(dataset: dict) -> Path:
     snapshot = data_snapshot_path(dataset)
     parent = snapshot.parent
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not stat.S_ISDIR(parent.lstat().st_mode):
+    parent_metadata = parent.lstat()
+    if not stat.S_ISDIR(parent_metadata.st_mode):
         raise SystemExit(f"immutable data snapshot parent must be a non-symlink directory: {parent}")
+    if not is_owned_and_nonwritable_by_others(parent_metadata):
+        raise SystemExit(
+            f"immutable data snapshot parent must be owned and non-writable by group or world: {parent}"
+        )
     lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         lock_descriptor = os.open(parent / f".{snapshot.name}.lock", lock_flags, 0o600)
     except OSError as exc:
         raise SystemExit(f"could not safely open immutable data snapshot lock under {parent}") from exc
-    if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+    lock_metadata = os.fstat(lock_descriptor)
+    if not stat.S_ISREG(lock_metadata.st_mode) or not is_owned_and_nonwritable_by_others(lock_metadata):
         os.close(lock_descriptor)
-        raise SystemExit(f"immutable data snapshot lock must be a regular file under {parent}")
+        raise SystemExit(f"immutable data snapshot lock must be an owned, private regular file under {parent}")
     try:
         fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
         if snapshot.exists():

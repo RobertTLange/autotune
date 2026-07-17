@@ -553,6 +553,17 @@ describe("packaged examples", () => {
     expect(result.stderr).toContain("immutable data snapshot shard content differs");
   });
 
+  it("rejects a group-writable immutable snapshot cache", async () => {
+    const fixture = await createFakeAutoresearch();
+    const snapshotParent = path.join(fixture.home, ".cache", "autotune");
+    await chmod(snapshotParent, 0o770);
+
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("snapshot parent must be owned and non-writable by group or world");
+  });
+
   it("marks canonical harness OOM penalties as failed trials", async () => {
     const fixture = await createFakeAutoresearch();
     await writeFile(fixture.python, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
