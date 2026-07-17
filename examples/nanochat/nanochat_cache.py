@@ -245,7 +245,15 @@ def prepare_data_snapshot(dataset: dict) -> Path:
     parent_metadata = parent.lstat()
     if not stat.S_ISDIR(parent_metadata.st_mode):
         raise SystemExit(f"immutable data snapshot parent must be a non-symlink directory: {parent}")
-    if not is_owned_and_nonwritable_by_others(parent_metadata):
+    if parent_metadata.st_uid != os.getuid():
+        raise SystemExit(f"immutable data snapshot parent must be owned by the current user: {parent}")
+    if parent_metadata.st_mode & 0o022:
+        try:
+            parent.chmod(0o700)
+            parent_metadata = parent.lstat()
+        except OSError as exc:
+            raise SystemExit(f"could not tighten immutable data snapshot parent permissions: {parent}") from exc
+    if not stat.S_ISDIR(parent_metadata.st_mode) or not is_owned_and_nonwritable_by_others(parent_metadata):
         raise SystemExit(
             f"immutable data snapshot parent must be owned and non-writable by group or world: {parent}"
         )

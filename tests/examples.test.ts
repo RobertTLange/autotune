@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -553,15 +553,15 @@ describe("packaged examples", () => {
     expect(result.stderr).toContain("immutable data snapshot shard content differs");
   });
 
-  it("rejects a group-writable immutable snapshot cache", async () => {
+  it("tightens a current-user group-writable snapshot cache", async () => {
     const fixture = await createFakeAutoresearch();
     const snapshotParent = path.join(fixture.home, ".cache", "autotune");
     await chmod(snapshotParent, 0o770);
 
     const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
 
-    expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain("snapshot parent must be owned and non-writable by group or world");
+    expect(result.code, result.stderr).toBe(0);
+    expect((await stat(snapshotParent)).mode & 0o777).toBe(0o700);
   });
 
   it("marks canonical harness OOM penalties as failed trials", async () => {
