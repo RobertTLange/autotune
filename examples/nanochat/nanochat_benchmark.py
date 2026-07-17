@@ -128,15 +128,56 @@ def prepare_uv_project(sources: dict[str, bytes], source_hashes: dict[str, str])
     if project.is_symlink():
         raise SystemExit(f"refusing symlink uv project directory: {project}")
     for name in ("pyproject.toml", "uv.lock", ".python-version", "README.md"):
-        path = project / name
-        if path.exists():
-            if path.is_symlink() or path.read_bytes() != sources[name]:
-                raise SystemExit(f"cached uv project differs from pinned {name}: {path}")
-            continue
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(sources[name])
+        create_cached_project_file(project / name, sources[name])
     return project
+
+
+def create_cached_project_file(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o600)
+            publish_cached_project_file(handle.fileno(), temporary, path, content)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish_cached_project_file(descriptor: int, temporary: Path, path: Path, content: bytes) -> None:
+    while True:
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            if verify_cached_project_file(path, content):
+                return
+            continue
+        source = os.fstat(descriptor)
+        published = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(published.st_mode) or (published.st_dev, published.st_ino) != (source.st_dev, source.st_ino):
+            raise SystemExit(f"cached uv project publication changed unexpectedly: {path}")
+        if verify_cached_project_file(path, content):
+            return
+
+
+def verify_cached_project_file(path: Path, expected: bytes) -> bool:
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise SystemExit(f"could not safely open cached uv project file: {path}") from exc
+    with os.fdopen(descriptor, "rb") as handle:
+        metadata = os.fstat(handle.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size != len(expected):
+            raise SystemExit(f"cached uv project differs from pinned source: {path}")
+        actual = handle.read(len(expected) + 1)
+    if actual != expected:
+        raise SystemExit(f"cached uv project differs from pinned source: {path}")
+    return True
 
 
 def build_training_command(project: Path, adapter: Path) -> list[str]:

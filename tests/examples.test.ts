@@ -269,6 +269,63 @@ describe("packaged examples", () => {
     });
   });
 
+  it("publishes a complete uv project file atomically", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-uv-race-"));
+    const benchmarkPath = path.resolve(EXAMPLES.nanochat);
+    const script = [
+      "import importlib.util, os, sys, threading",
+      "from pathlib import Path",
+      "from unittest.mock import patch",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(benchmarkPath))})`,
+      `spec = importlib.util.spec_from_file_location('nanochat_benchmark', ${JSON.stringify(benchmarkPath)})`,
+      "benchmark = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(benchmark)",
+      `destination = Path(${JSON.stringify(path.join(dir, "uv.lock"))})`,
+      "content = b'complete pinned uv project content'",
+      "write_started = threading.Event()",
+      "resume_write = threading.Event()",
+      "original_fdopen = os.fdopen",
+      "class PausedWriter:",
+      "    def __init__(self, handle): self.handle = handle",
+      "    def __enter__(self): return self",
+      "    def __exit__(self, *args): return self.handle.__exit__(*args)",
+      "    def fileno(self): return self.handle.fileno()",
+      "    def flush(self): return self.handle.flush()",
+      "    def write(self, value):",
+      "        written = self.handle.write(value[:1])",
+      "        self.handle.flush()",
+      "        os.fsync(self.handle.fileno())",
+      "        write_started.set()",
+      "        if not resume_write.wait(5): raise RuntimeError('test writer timed out')",
+      "        return written + self.handle.write(value[1:])",
+      "def paused_fdopen(descriptor, mode):",
+      "    handle = original_fdopen(descriptor, mode)",
+      "    return PausedWriter(handle) if 'w' in mode and threading.current_thread().name == 'paused-writer' else handle",
+      "failure = []",
+      "def create_file():",
+      "    try: benchmark.create_cached_project_file(destination, content)",
+      "    except BaseException as error: failure.append(error)",
+      "with patch.object(benchmark.os, 'fdopen', side_effect=paused_fdopen):",
+      "    writer = threading.Thread(target=create_file, name='paused-writer')",
+      "    writer.start()",
+      "    assert write_started.wait(5)",
+      "    assert not destination.exists(), 'partial destination became visible'",
+      "    benchmark.create_cached_project_file(destination, content)",
+      "    assert destination.read_bytes() == content",
+      "    resume_write.set()",
+      "    writer.join(5)",
+      "assert not writer.is_alive()",
+      "assert not failure, failure",
+      "assert destination.read_bytes() == content",
+      "destination.write_bytes(b'mismatched')",
+      "try: benchmark.create_cached_project_file(destination, content)",
+      "except SystemExit as error: assert 'differs from pinned source' in str(error)",
+      "else: raise AssertionError('mismatched cached file was accepted')"
+    ].join("\n");
+
+    await runPythonScript(["-c", script], {});
+  });
+
   it("injects only HPO constants, the seed, and the pinned kernel into canonical train.py", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-autoresearch-adapter-"));
     const source = [
