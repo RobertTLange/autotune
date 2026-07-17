@@ -104,15 +104,21 @@ describe("packaged examples", () => {
     expect(adapter.indexOf("emit_execution_provenance(materialized, globals_dict)")).toBeGreaterThan(adapter.indexOf("exec(compile("));
   });
 
-  it("launches the comparable nanochat protocol on one GPU without throughput calibration", async () => {
+  it("launches each comparable nanochat arm on one GPU without throughput calibration", async () => {
     const local = await readFile(path.join("examples", "nanochat", "run_nanochat_benchmark.sh"), "utf8");
     const slurm = await readFile(path.join("examples", "nanochat", "run_nanobench_ablation.sbatch"), "utf8");
 
     expect(local).toContain("AUTORESEARCH_DIR");
     expect(local).toContain("--sampler-seed");
     expect(local).toContain("validate_nanochat.py");
-    expect(slurm).toContain("#SBATCH --gres=gpu:1");
+    expect(slurm).toContain("#SBATCH --gres=gpu:4");
+    expect(slurm).toContain("srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1");
     expect(slurm).toContain('N_JOBS must be 1');
+    expect(slurm).toContain('launch_variant "04_centaur" "$CENTAUR_TRIALS" centaur');
+    expect(slurm).toContain('--centaur-llm-probability "$CENTAUR_LLM_PROBABILITY"');
+    expect(slurm).toContain('--centaur-warmup-trials "$CENTAUR_WARMUP_TRIALS"');
+    expect(slurm).toContain('--centaur-seed "$CENTAUR_SEED"');
+    expect(slurm).toContain('centaur=$OUT_ROOT/04_centaur/results.json');
     expect(slurm).toContain("results.round_$round.json");
     expect(slurm).toContain("uv run --frozen prepare.py");
     expect(`${local}\n${slurm}`).not.toMatch(/export NANOCHAT_DATA_IDENTITY_SHA256="\$\(/);
