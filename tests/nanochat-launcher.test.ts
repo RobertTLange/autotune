@@ -84,6 +84,22 @@ describe("nanochat Slurm ablation launcher", () => {
     await expect(readFile(marker, "utf8")).rejects.toThrow();
   });
 
+  it("rejects unsafe cancellation grace values before launching jobs", async () => {
+    const fixture = await createLauncherFixture();
+    const leadingZero = await runLauncher({ ...fixture.env, CANCEL_GRACE_SECONDS: "09" });
+
+    expect(leadingZero.code).toBe(2);
+    expect(leadingZero.stderr).toContain("CANCEL_GRACE_SECONDS must be a decimal integer");
+
+    const overflow = await runLauncher({
+      ...fixture.env,
+      CANCEL_GRACE_SECONDS: "18446744073709551616"
+    });
+    expect(overflow.code).toBe(2);
+    expect(overflow.stderr).toContain("CANCEL_GRACE_SECONDS must be a decimal integer");
+    await expect(readFile(fixture.nodeLog, "utf8")).rejects.toThrow();
+  });
+
   it("rejects a duplicate Centaur sampler arm and existing discovery storage", async () => {
     const samplerFixture = await createLauncherFixture();
     const duplicateCentaur = await runLauncher({ ...samplerFixture.env, SAMPLER: "centaur" });

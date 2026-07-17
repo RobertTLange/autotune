@@ -58,6 +58,10 @@ validate_decimal_integer() {
         echo "$name must be a decimal integer between $minimum and $maximum" >&2
         exit 2
     fi
+    if ((${#value} > ${#maximum})); then
+        echo "$name must be a decimal integer between $minimum and $maximum" >&2
+        exit 2
+    fi
     if ((10#$value < minimum || 10#$value > maximum)); then
         echo "$name must be a decimal integer between $minimum and $maximum" >&2
         exit 2
@@ -92,10 +96,7 @@ if [[ "$VALIDATION_ONLY" != "0" && "$VALIDATION_ONLY" != "1" ]]; then
     echo "VALIDATION_ONLY must be 0 or 1" >&2
     exit 2
 fi
-if [[ ! "$CANCEL_GRACE_SECONDS" =~ ^[0-9]+$ ]]; then
-    echo "CANCEL_GRACE_SECONDS must be a non-negative integer" >&2
-    exit 2
-fi
+validate_decimal_integer CANCEL_GRACE_SECONDS "$CANCEL_GRACE_SECONDS" 0 300
 
 TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-108000}"
 if [[ "${NANOCHAT_BENCHMARK_SEED:-42}" != "42" ]]; then
