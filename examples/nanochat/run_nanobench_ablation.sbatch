@@ -3,8 +3,8 @@
 #SBATCH --partition=aisci
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:8
-#SBATCH --cpus-per-task=64
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=0
 #SBATCH --time=4-00:00:00
 #SBATCH --output=autotune-nanobench-%j.out
@@ -23,13 +23,13 @@ EXAMPLE_DIR="$ROOT_DIR/examples/nanochat"
 SCRIPT="$EXAMPLE_DIR/nanochat_benchmark.py"
 CONFIG="$EXAMPLE_DIR/nanochat_search_space.yaml"
 
-if [[ -z "${NANOCHAT_DIR:-}" ]]; then
-  echo "NANOCHAT_DIR must point at a local karpathy/nanochat checkout" >&2
+if [[ -z "${AUTORESEARCH_DIR:-}" ]]; then
+  echo "AUTORESEARCH_DIR must point at the pinned karpathy/autoresearch checkout" >&2
   exit 2
 fi
-if [[ ! -f "$NANOCHAT_DIR/scripts/base_train.py" ]]; then
-  echo "NANOCHAT_DIR does not look like nanochat: $NANOCHAT_DIR" >&2
-  echo "Expected file: $NANOCHAT_DIR/scripts/base_train.py" >&2
+if [[ ! -f "$AUTORESEARCH_DIR/train.py" || ! -f "$AUTORESEARCH_DIR/prepare.py" ]]; then
+  echo "AUTORESEARCH_DIR does not look like autoresearch: $AUTORESEARCH_DIR" >&2
+  echo "Expected train.py and prepare.py at the checkout root." >&2
   exit 2
 fi
 
@@ -39,6 +39,11 @@ REASONING_EFFORT="${REASONING_EFFORT:-}"
 SAMPLER="${SAMPLER:-tpe}"
 PRUNER="${PRUNER:-none}"
 N_JOBS="${N_JOBS:-1}"
+SAMPLER_SEED="${SAMPLER_SEED:-42}"
+if [[ "$N_JOBS" != "1" ]]; then
+  echo "N_JOBS must be 1 for the single-GPU comparable protocol" >&2
+  exit 2
+fi
 
 BASELINE_TRIALS="${BASELINE_TRIALS:-100}"
 REFINE_INITIAL_TRIALS="${REFINE_INITIAL_TRIALS:-50}"
@@ -47,11 +52,8 @@ REFINE_TRIALS="${REFINE_TRIALS:-25}"
 REFINED_TOTAL_TRIALS=$((REFINE_INITIAL_TRIALS + REFINE_ROUNDS * REFINE_TRIALS))
 
 TIME_BUDGET_SECONDS="${TIME_BUDGET_SECONDS:-86400}"
-export NANOCHAT_BASE_DIR="${NANOCHAT_BASE_DIR:-$HOME/.cache/nanochat}"
-export NANOCHAT_BENCHMARK_NPROC_PER_NODE="${NANOCHAT_BENCHMARK_NPROC_PER_NODE:-8}"
-export NANOCHAT_BENCHMARK_TARGET_SECONDS="${NANOCHAT_BENCHMARK_TARGET_SECONDS:-300}"
-export NANOCHAT_BENCHMARK_TOKENS_PER_SECOND="${NANOCHAT_BENCHMARK_TOKENS_PER_SECOND:-10000000}"
-TRIAL_TIMEOUT_SECONDS="${NANOCHAT_TRIAL_TIMEOUT_SECONDS:-$((NANOCHAT_BENCHMARK_TARGET_SECONDS + 600))}"
+export NANOCHAT_BENCHMARK_SEED="${NANOCHAT_BENCHMARK_SEED:-42}"
+TRIAL_TIMEOUT_SECONDS="${NANOCHAT_TRIAL_TIMEOUT_SECONDS:-1200}"
 
 RUN_GROUP="${RUN_GROUP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 OUT_ROOT="${OUT_ROOT:-$EXAMPLE_DIR/autotune/nanobench_ablation/$RUN_GROUP}"
@@ -62,17 +64,20 @@ if [[ "${ALLOW_UNEQUAL_TRIALS:-0}" != "1" && "$BASELINE_TRIALS" -ne "$REFINED_TO
   echo "Set ALLOW_UNEQUAL_TRIALS=1 to run unequal budgets." >&2
   exit 2
 fi
-if ! compgen -G "$NANOCHAT_BASE_DIR/base_data_climbmix/*.parquet" >/dev/null; then
-  echo "Missing nanochat parquet data under $NANOCHAT_BASE_DIR/base_data_climbmix" >&2
-  echo "Prepare with: cd \"$NANOCHAT_DIR\" && NANOCHAT_BASE_DIR=\"$NANOCHAT_BASE_DIR\" .venv/bin/python -m nanochat.dataset -n 8" >&2
+AUTORESEARCH_CACHE_DIR="$HOME/.cache/autoresearch"
+if [[ ! -f "$AUTORESEARCH_CACHE_DIR/data/shard_06542.parquet" ]]; then
+  echo "Missing canonical validation shard under $AUTORESEARCH_CACHE_DIR/data" >&2
+  echo "Prepare with: cd \"$AUTORESEARCH_DIR\" && uv sync --frozen && uv run --frozen prepare.py" >&2
   exit 2
 fi
-if [[ ! -f "$NANOCHAT_BASE_DIR/tokenizer/tokenizer.pkl" || ! -f "$NANOCHAT_BASE_DIR/tokenizer/token_bytes.pt" ]]; then
-  echo "Missing nanochat tokenizer artifacts under NANOCHAT_BASE_DIR=$NANOCHAT_BASE_DIR" >&2
+if [[ ! -f "$AUTORESEARCH_CACHE_DIR/tokenizer/tokenizer.pkl" || ! -f "$AUTORESEARCH_CACHE_DIR/tokenizer/token_bytes.pt" ]]; then
+  echo "Missing autoresearch tokenizer artifacts under $AUTORESEARCH_CACHE_DIR" >&2
   echo "Expected tokenizer/tokenizer.pkl and tokenizer/token_bytes.pt." >&2
-  echo "Prepare after dataset download with: cd \"$NANOCHAT_DIR\" && NANOCHAT_BASE_DIR=\"$NANOCHAT_BASE_DIR\" .venv/bin/python -m scripts.tok_train --max-chars=2000000000" >&2
+  echo "Prepare with: cd \"$AUTORESEARCH_DIR\" && uv sync --frozen && uv run --frozen prepare.py" >&2
   exit 2
 fi
+NANOCHAT_DATA_IDENTITY_SHA256="$(python3 "$EXAMPLE_DIR/prepare_nanochat_cache.py" verify)"
+export NANOCHAT_DATA_IDENTITY_SHA256
 
 cd "$ROOT_DIR"
 npm run build
@@ -109,6 +114,7 @@ run_variant() {
     --config "$CONFIG"
     --trials "$trials"
     --sampler "$SAMPLER"
+    --sampler-seed "$SAMPLER_SEED"
     --pruner "$PRUNER"
     --n-jobs "$N_JOBS"
     --timeout-seconds "$TRIAL_TIMEOUT_SECONDS"
@@ -129,7 +135,7 @@ run_variant() {
   fi
 
   base_cmd "$name"
-  PATH="$ROOT_DIR/.venv/bin:$PATH" "${cmd[@]}" "$@"
+  NANOCHAT_BENCHMARK_RESULTS_DIR="$work_dir/trial_results" PATH="$ROOT_DIR/.venv/bin:$PATH" "${cmd[@]}" "$@"
 }
 
 run_variant "01_optuna_baseline" "$BASELINE_TRIALS"
