@@ -113,6 +113,8 @@ describe("packaged examples", () => {
     expect(local).toContain("validate_nanochat.py");
     expect(slurm).toContain("#SBATCH --gres=gpu:4");
     expect(slurm).toContain("srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1");
+    expect(slurm.match(/--gres=gpu:1 \/usr\/bin\/env/g)).toHaveLength(2);
+    expect(slurm).not.toContain("--gres=gpu:1 env");
     expect(slurm).toContain('N_JOBS must be 1');
     expect(slurm).toContain('launch_variant "04_centaur" "$CENTAUR_TRIALS" centaur');
     expect(slurm).toContain('--centaur-llm-probability "$CENTAUR_LLM_PROBABILITY"');

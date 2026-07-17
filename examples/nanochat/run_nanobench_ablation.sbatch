@@ -178,7 +178,7 @@ run_variant() {
     fi
 
     mkdir -p "$cache_dir/tmp" "$cache_dir/torchinductor" "$cache_dir/triton"
-    exec srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1 env \
+    exec srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1 /usr/bin/env \
         TMPDIR="$cache_dir/tmp" \
         TORCHINDUCTOR_CACHE_DIR="$cache_dir/torchinductor" \
         TRITON_CACHE_DIR="$cache_dir/triton" \
@@ -329,7 +329,7 @@ for ((round = 0; round <= REFINE_ROUNDS; round++)); do
 done
 
 mkdir -p "$CACHE_ROOT/validation/tmp" "$CACHE_ROOT/validation/torchinductor" "$CACHE_ROOT/validation/triton"
-srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1 env \
+srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1 /usr/bin/env \
     TMPDIR="$CACHE_ROOT/validation/tmp" \
     TORCHINDUCTOR_CACHE_DIR="$CACHE_ROOT/validation/torchinductor" \
     TRITON_CACHE_DIR="$CACHE_ROOT/validation/triton" \
