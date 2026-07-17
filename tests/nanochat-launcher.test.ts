@@ -5,9 +5,46 @@ import path from "node:path";
 
 const ROOT_DIR = process.cwd();
 const LAUNCHER = path.join(ROOT_DIR, "examples", "nanochat", "run_nanobench_ablation.sbatch");
+const LOCAL_LAUNCHER = path.join(ROOT_DIR, "examples", "nanochat", "run_nanochat_benchmark.sh");
 const MANIFEST_TOOL = path.join(ROOT_DIR, "examples", "nanochat", "manage_nanochat_run.py");
 
 describe("nanochat Slurm ablation launcher", () => {
+  it("omits the unsupported sampler seed for local Centaur runs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-local-launcher-"));
+    const binDir = path.join(dir, "bin");
+    const nodeLog = path.join(dir, "node.log");
+    await mkdir(binDir);
+    await writeExecutable(binDir, "python3", ["#!/usr/bin/env bash", "printf '%064d\\n' 0"]);
+    await writeExecutable(binDir, "node", ["#!/usr/bin/env bash", `printf '%s\\n' "$*" > ${JSON.stringify(nodeLog)}`]);
+
+    const launcherEnv = {
+      ...process.env,
+      AUTORESEARCH_DIR: path.join(dir, "autoresearch"),
+      HOME: path.join(dir, "home"),
+      PATH: `${binDir}:${process.env.PATH}`,
+      SAMPLER: "centaur",
+      VALIDATE_FINALISTS: "0",
+      WORK_DIR: path.join(dir, "work")
+    };
+    const result = await runProcess("bash", [LOCAL_LAUNCHER], launcherEnv);
+
+    expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const command = (await readFile(nodeLog, "utf8")).trim().split(" ");
+    expect(flagValue(command, "--sampler")).toBe("centaur");
+    expect(command).not.toContain("--sampler-seed");
+
+    const seeded = await runProcess("bash", [LOCAL_LAUNCHER], {
+      ...launcherEnv,
+      SAMPLER: "tpe",
+      SAMPLER_SEED: "17"
+    });
+    expect(seeded.code, `${seeded.stderr}\n${seeded.stdout}`).toBe(0);
+    const seededCommand = (await readFile(nodeLog, "utf8")).trim().split(" ");
+    expect(flagValue(seededCommand, "--sampler")).toBe("tpe");
+    expect(seededCommand.filter((argument) => argument === "--sampler-seed")).toHaveLength(1);
+    expect(flagValue(seededCommand, "--sampler-seed")).toBe("17");
+  });
+
   it("runs four one-GPU discovery arms concurrently and validates every method", async () => {
     const fixture = await createLauncherFixture();
     const result = await runLauncher(fixture.env);

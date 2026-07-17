@@ -30,20 +30,25 @@ FINALISTS="${FINALISTS:-1}"
 VALIDATION_SEEDS="${VALIDATION_SEEDS:-0,1,2,3,4,5,6,7,8,9}"
 VALIDATION_MAX_ATTEMPTS="${VALIDATION_MAX_ATTEMPTS:-2}"
 
-PATH="$ROOT_DIR/.venv/bin:$PATH" node "$ROOT_DIR/dist/cli.js" run "$SCRIPT_DIR/nanochat_benchmark.py" \
-  --config "$SCRIPT_DIR/nanochat_search_space.yaml" \
-  --trials "$TRIALS" \
-  --sampler "$SAMPLER" \
-  --sampler-seed "$SAMPLER_SEED" \
-  --pruner none \
-  --n-jobs 1 \
-  --timeout-seconds "$TRIAL_TIMEOUT_SECONDS" \
-  --time-budget-seconds "$TIME_BUDGET_SECONDS" \
-  --storage "$STORAGE" \
-  --study-name "$STUDY_NAME" \
-  --work-dir "$WORK_DIR" \
-  --yes \
+command=(
+  node "$ROOT_DIR/dist/cli.js" run "$SCRIPT_DIR/nanochat_benchmark.py"
+  --config "$SCRIPT_DIR/nanochat_search_space.yaml"
+  --trials "$TRIALS"
+  --sampler "$SAMPLER"
+  --pruner none
+  --n-jobs 1
+  --timeout-seconds "$TRIAL_TIMEOUT_SECONDS"
+  --time-budget-seconds "$TIME_BUDGET_SECONDS"
+  --storage "$STORAGE"
+  --study-name "$STUDY_NAME"
+  --work-dir "$WORK_DIR"
+  --yes
   --json
+)
+if [[ "$SAMPLER" != "centaur" ]]; then
+  command+=(--sampler-seed "$SAMPLER_SEED")
+fi
+PATH="$ROOT_DIR/.venv/bin:$PATH" "${command[@]}"
 
 if [[ "$VALIDATE_FINALISTS" == "1" ]]; then
   python3 "$SCRIPT_DIR/validate_nanochat.py" \
