@@ -100,7 +100,8 @@ describe("nanochat finalist validation", () => {
         "metric = float(os.environ.get('FAKE_METRIC', 0.9 + seed * 0.01))",
         "result = {'schema_version': 1, 'status': 'complete', 'metric': metric, 'seed': seed, 'config': config, 'protocol': protocol, 'protocol_sha256': protocol_hash}",
         "Path(os.environ['NANOCHAT_BENCHMARK_RESULT_JSON']).write_text(json.dumps(result))",
-        "print(f'autotune_metric={result[\"metric\"]}')"
+        "print(f'autotune_metric={result[\"metric\"]}')",
+        "raise SystemExit(int(os.environ.get('FAKE_EXIT_CODE', '0')))"
       ].join("\n"),
       "utf8"
     );
@@ -146,8 +147,39 @@ describe("nanochat finalist validation", () => {
     const tampered = JSON.parse(await readFile(cachedResult, "utf8"));
     tampered.protocol_sha256 = "b".repeat(64);
     await writeFile(cachedResult, JSON.stringify(tampered), "utf8");
+    await mkdir(path.join(output, "jobs", candidateId, "seed_0", "attempt_002"));
     await runPython(args, validationEnv);
     expect(await readFile(counter, "utf8")).toBe("xxx");
+
+    const failedOutput = path.join(dir, "failed-validation");
+    const failedCounter = path.join(dir, "failed-counter.txt");
+    const failedArgs = args.map((value) => (value === output ? failedOutput : value));
+    failedArgs.push("--seeds", "0", "--max-attempts", "1");
+    const failedEnv = {
+      FAKE_VALIDATION_COUNTER: failedCounter,
+      FAKE_EXIT_CODE: "1",
+      NANOCHAT_DATA_IDENTITY_SHA256: "d".repeat(64)
+    };
+    const failedAttempt = await runPythonProcess(failedArgs, failedEnv);
+    expect(failedAttempt.code).not.toBe(0);
+    expect(failedAttempt.stderr).toContain("validation exhausted 1 attempts");
+    expect(await readFile(failedCounter, "utf8")).toBe("x");
+
+    const failedResume = await runPythonProcess(failedArgs, {
+      FAKE_VALIDATION_COUNTER: failedCounter,
+      NANOCHAT_DATA_IDENTITY_SHA256: "d".repeat(64)
+    });
+    expect(failedResume.code).not.toBe(0);
+    expect(failedResume.stderr).toContain("validation exhausted 1 attempts");
+    expect(await readFile(failedCounter, "utf8")).toBe("x");
+
+    const failedSelection = JSON.parse(await readFile(path.join(failedOutput, "selected_finalists.json"), "utf8"));
+    const failedCandidateId = failedSelection.methods.baseline[0].candidate_id;
+    const completion = path.join(failedOutput, "jobs", failedCandidateId, "seed_0", "attempt_001", "completed.json");
+    await writeFile(completion, "{}", "utf8");
+    const malformedResume = await runPythonProcess(failedArgs, failedEnv);
+    expect(malformedResume.code).not.toBe(0);
+    expect(malformedResume.stderr).toContain("invalid validation completion marker");
   });
 
   it("rejects validation seeds that overlap the discovery seed", async () => {
@@ -168,6 +200,51 @@ describe("nanochat finalist validation", () => {
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("must not include discovery seed 42");
+  });
+
+  it("serializes concurrent validators for the same seed job", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-validation-lock-"));
+    const validatorPath = path.resolve(VALIDATOR);
+    const childPath = path.join(dir, "lock_child.py");
+    const jobDir = path.join(dir, "job");
+    const readyPath = path.join(dir, "ready");
+    const acquiredPath = path.join(dir, "acquired");
+    await writeFile(
+      childPath,
+      [
+        "import importlib.util, sys",
+        "from pathlib import Path",
+        `sys.path.insert(0, ${JSON.stringify(path.dirname(validatorPath))})`,
+        `spec = importlib.util.spec_from_file_location('validator', ${JSON.stringify(validatorPath)})`,
+        "validator = importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(validator)",
+        `Path(${JSON.stringify(readyPath)}).write_text('ready')`,
+        `with validator.locked_job(Path(${JSON.stringify(jobDir)})):`,
+        `    Path(${JSON.stringify(acquiredPath)}).write_text('acquired')`
+      ].join("\n"),
+      "utf8"
+    );
+    const script = [
+      "import importlib.util, subprocess, sys, time",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(validatorPath))})`,
+      `spec = importlib.util.spec_from_file_location('validator', ${JSON.stringify(validatorPath)})`,
+      "validator = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(validator)",
+      `ready = Path(${JSON.stringify(readyPath)})`,
+      `acquired = Path(${JSON.stringify(acquiredPath)})`,
+      `with validator.locked_job(Path(${JSON.stringify(jobDir)})):`,
+      `    child = subprocess.Popen([sys.executable, ${JSON.stringify(childPath)}])`,
+      "    deadline = time.monotonic() + 5",
+      "    while not ready.exists() and time.monotonic() < deadline: time.sleep(0.01)",
+      "    assert ready.exists(), 'child did not reach the lock'",
+      "    time.sleep(0.1)",
+      "    assert not acquired.exists(), 'child acquired a held job lock'",
+      "assert child.wait(timeout=5) == 0",
+      "assert acquired.read_text() == 'acquired'"
+    ].join("\n");
+
+    await runPython(["-c", script], {});
   });
 });
 

@@ -2,16 +2,19 @@
 """Select discovery finalists and evaluate each over a fixed seed panel."""
 
 import argparse
+import fcntl
 import json
 import math
 import os
 import re
 import signal
+import stat
 import statistics
 import subprocess
 import sys
 import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from nanochat_validation_support import (
@@ -228,6 +231,9 @@ def load_valid_attempt(
 ) -> dict | None:
     expected_config = normalized_config(params)
     for path in sorted(job_dir.glob("attempt_*/result.json")):
+        completion = load_completion(path.parent)
+        if completion is None or completion["returncode"] != 0 or completion["timed_out"]:
+            continue
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -279,6 +285,65 @@ def interrupt_run(_signum, _frame) -> None:
     raise InterruptedRun()
 
 
+def attempt_directories(job_dir: Path) -> list[tuple[int, Path]]:
+    attempts = []
+    for path in job_dir.glob("attempt_*"):
+        match = re.fullmatch(r"attempt_([0-9]+)", path.name)
+        if match and path.is_dir() and not path.is_symlink():
+            attempts.append((int(match.group(1)), path))
+    return attempts
+
+
+def load_completion(attempt_dir: Path) -> dict | None:
+    path = attempt_dir / "completed.json"
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SystemExit(f"could not safely open validation completion marker: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
+                raise ValueError("invalid completion marker file")
+            source = handle.read(4097)
+        completion = json.loads(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise SystemExit(f"invalid validation completion marker: {path}") from exc
+    if (
+        not isinstance(completion, dict)
+        or set(completion) != {"schema_version", "returncode", "timed_out"}
+        or completion["schema_version"] != 1
+        or isinstance(completion["returncode"], bool)
+        or not isinstance(completion["returncode"], int)
+        or not isinstance(completion["timed_out"], bool)
+    ):
+        raise SystemExit(f"invalid validation completion marker: {path}")
+    return completion
+
+
+def completed_attempt_count(job_dir: Path) -> int:
+    return sum(1 for _, path in attempt_directories(job_dir) if load_completion(path) is not None)
+
+
+@contextmanager
+def locked_job(job_dir: Path):
+    job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(job_dir / ".lock", flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"could not open validation job lock: {job_dir / '.lock'}") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def run_attempt(
     benchmark: Path,
     benchmark_sha256: str,
@@ -288,7 +353,7 @@ def run_attempt(
     timeout_seconds: int,
     data_identity_sha256: str | None,
 ) -> dict | None:
-    attempts = [int(path.name.removeprefix("attempt_")) for path in job_dir.glob("attempt_[0-9][0-9][0-9]")]
+    attempts = [number for number, _ in attempt_directories(job_dir)]
     attempt_dir = job_dir / f"attempt_{max(attempts, default=0) + 1:03d}"
     attempt_dir.mkdir(mode=0o700, parents=True)
     result_path = attempt_dir / "result.json"
@@ -298,6 +363,7 @@ def run_attempt(
     env["NANOCHAT_BENCHMARK_RESULT_JSON"] = str(result_path)
     command = benchmark_argv(benchmark, params)
     atomic_write(attempt_dir / "job.json", {"command": command, "seed": seed, "params": params})
+    timed_out = False
     with log_path.open("w", encoding="utf-8") as log:
         previous_sigterm = signal.signal(signal.SIGTERM, interrupt_run)
         process = None
@@ -315,6 +381,7 @@ def run_attempt(
             output_thread.start()
             returncode = process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
+            timed_out = True
             print(f"validation timed out after {timeout_seconds}s for seed {seed}", file=sys.stderr)
             terminate_process_group(process)
             returncode = process.returncode
@@ -326,6 +393,10 @@ def run_attempt(
             signal.signal(signal.SIGTERM, previous_sigterm)
             if output_thread is not None:
                 output_thread.join()
+    atomic_write(
+        attempt_dir / "completed.json",
+        {"schema_version": 1, "returncode": returncode, "timed_out": timed_out},
+    )
     if returncode != 0:
         print(f"validation failed for seed {seed}; see {log_path}", file=sys.stderr)
         return None
@@ -379,25 +450,26 @@ def collect_results(
         for candidate in candidates:
             for seed in seeds:
                 job_dir = output_dir / "jobs" / candidate["candidate_id"] / f"seed_{seed}"
-                result = load_valid_attempt(
-                    job_dir,
-                    seed,
-                    candidate["params"],
-                    benchmark_sha256,
-                    data_identity_sha256,
-                )
-                attempts = len(list(job_dir.glob("attempt_[0-9][0-9][0-9]")))
-                while result is None and attempts < max_attempts:
-                    result = run_attempt(
-                        benchmark,
-                        benchmark_sha256,
+                with locked_job(job_dir):
+                    result = load_valid_attempt(
                         job_dir,
                         seed,
                         candidate["params"],
-                        timeout_seconds,
+                        benchmark_sha256,
                         data_identity_sha256,
                     )
-                    attempts += 1
+                    attempts = completed_attempt_count(job_dir)
+                    while result is None and attempts < max_attempts:
+                        result = run_attempt(
+                            benchmark,
+                            benchmark_sha256,
+                            job_dir,
+                            seed,
+                            candidate["params"],
+                            timeout_seconds,
+                            data_identity_sha256,
+                        )
+                        attempts = completed_attempt_count(job_dir)
                 if result is None:
                     raise SystemExit(
                         f"validation exhausted {max_attempts} attempts for "
