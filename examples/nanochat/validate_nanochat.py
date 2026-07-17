@@ -328,6 +328,22 @@ def completed_attempt_count(job_dir: Path) -> int:
     return sum(1 for _, path in attempt_directories(job_dir) if load_completion(path) is not None)
 
 
+def ensure_private_directory(path: Path) -> Path:
+    path.mkdir(mode=0o700, exist_ok=True)
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise SystemExit(f"could not inspect validation directory: {path}") from exc
+    if not stat.S_ISDIR(mode):
+        raise SystemExit(f"validation directory must be a non-symlink directory: {path}")
+    return path
+
+
+def method_jobs_directory(output_dir: Path, label: str) -> Path:
+    jobs_dir = ensure_private_directory(output_dir / "jobs")
+    return ensure_private_directory(jobs_dir / sha256_bytes(label.encode("utf-8")))
+
+
 @contextmanager
 def locked_job(job_dir: Path):
     job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -447,9 +463,10 @@ def collect_results(
     data_identity_sha256 = selection["data_identity_sha256"]
     discovery_protocol_sha256 = selection["discovery_protocol_sha256"]
     for label, candidates in selection["methods"].items():
+        method_jobs = method_jobs_directory(output_dir, label)
         for candidate in candidates:
             for seed in seeds:
-                job_dir = output_dir / "jobs" / candidate["candidate_id"] / f"seed_{seed}"
+                job_dir = method_jobs / candidate["candidate_id"] / f"seed_{seed}"
                 with locked_job(job_dir):
                     result = load_valid_attempt(
                         job_dir,

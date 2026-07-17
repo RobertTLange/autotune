@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -51,6 +52,7 @@ describe("nanochat finalist validation", () => {
     const counter = path.join(dir, "counter.txt");
     const good = nanochatParams({ depth: 10 });
     const better = nanochatParams({ depth: 12 });
+    const duplicateLabel = "duplicate".repeat(40);
     await writeFile(
       discovery,
       JSON.stringify({
@@ -123,6 +125,10 @@ describe("nanochat finalist validation", () => {
       `baseline=${discovery}`,
       "--result",
       `baseline=${discoveryRound}`,
+      "--result",
+      `${duplicateLabel}=${discovery}`,
+      "--result",
+      `${duplicateLabel}=${discoveryRound}`,
       "--output-dir",
       output,
       "--benchmark",
@@ -140,16 +146,18 @@ describe("nanochat finalist validation", () => {
     const summary = JSON.parse(await readFile(path.join(output, "summary.json"), "utf8"));
     expect(selection.methods.baseline[0]).toMatchObject({ source_trial: 1, discovery_value: 0.85, params: better });
     expect(summary.methods.baseline[0]).toMatchObject({ mean: 0.905, n: 2, metrics_by_seed: { "0": 0.9, "1": 0.91 } });
-    expect(await readFile(counter, "utf8")).toBe("xx");
+    expect(summary.methods[duplicateLabel][0]).toMatchObject({ mean: 0.905, n: 2 });
+    expect(await readFile(counter, "utf8")).toBe("xxxx");
 
     const candidateId = selection.methods.baseline[0].candidate_id;
-    const cachedResult = path.join(output, "jobs", candidateId, "seed_0", "attempt_001", "result.json");
+    const baselineJobs = path.join(output, "jobs", methodJobId("baseline"));
+    const cachedResult = path.join(baselineJobs, candidateId, "seed_0", "attempt_001", "result.json");
     const tampered = JSON.parse(await readFile(cachedResult, "utf8"));
     tampered.protocol_sha256 = "b".repeat(64);
     await writeFile(cachedResult, JSON.stringify(tampered), "utf8");
-    await mkdir(path.join(output, "jobs", candidateId, "seed_0", "attempt_002"));
+    await mkdir(path.join(baselineJobs, candidateId, "seed_0", "attempt_002"));
     await runPython(args, validationEnv);
-    expect(await readFile(counter, "utf8")).toBe("xxx");
+    expect(await readFile(counter, "utf8")).toBe("xxxxx");
 
     const failedOutput = path.join(dir, "failed-validation");
     const failedCounter = path.join(dir, "failed-counter.txt");
@@ -175,7 +183,15 @@ describe("nanochat finalist validation", () => {
 
     const failedSelection = JSON.parse(await readFile(path.join(failedOutput, "selected_finalists.json"), "utf8"));
     const failedCandidateId = failedSelection.methods.baseline[0].candidate_id;
-    const completion = path.join(failedOutput, "jobs", failedCandidateId, "seed_0", "attempt_001", "completed.json");
+    const completion = path.join(
+      failedOutput,
+      "jobs",
+      methodJobId("baseline"),
+      failedCandidateId,
+      "seed_0",
+      "attempt_001",
+      "completed.json"
+    );
     await writeFile(completion, "{}", "utf8");
     const malformedResume = await runPythonProcess(failedArgs, failedEnv);
     expect(malformedResume.code).not.toBe(0);
@@ -209,6 +225,8 @@ describe("nanochat finalist validation", () => {
     const jobDir = path.join(dir, "job");
     const readyPath = path.join(dir, "ready");
     const acquiredPath = path.join(dir, "acquired");
+    const redirectPath = path.join(dir, "redirect");
+    const linkedPath = path.join(dir, "linked-method");
     await writeFile(
       childPath,
       [
@@ -231,6 +249,13 @@ describe("nanochat finalist validation", () => {
       `spec = importlib.util.spec_from_file_location('validator', ${JSON.stringify(validatorPath)})`,
       "validator = importlib.util.module_from_spec(spec)",
       "spec.loader.exec_module(validator)",
+      `redirect = Path(${JSON.stringify(redirectPath)})`,
+      "redirect.mkdir()",
+      `linked = Path(${JSON.stringify(linkedPath)})`,
+      "linked.symlink_to(redirect, target_is_directory=True)",
+      "try: validator.ensure_private_directory(linked)",
+      "except SystemExit as error: assert 'non-symlink directory' in str(error)",
+      "else: raise AssertionError('symlinked method directory was accepted')",
       `ready = Path(${JSON.stringify(readyPath)})`,
       `acquired = Path(${JSON.stringify(acquiredPath)})`,
       `with validator.locked_job(Path(${JSON.stringify(jobDir)})):`,
@@ -265,6 +290,10 @@ function nanochatParams(overrides: Record<string, string | number> = {}) {
     window_pattern: "SSSL",
     ...overrides
   };
+}
+
+function methodJobId(label: string): string {
+  return createHash("sha256").update(label).digest("hex");
 }
 
 function paramFlags() {
