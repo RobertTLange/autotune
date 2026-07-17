@@ -230,8 +230,9 @@ def load_valid_attempt(
     data_identity_sha256: str | None,
 ) -> dict | None:
     expected_config = normalized_config(params)
-    for path in sorted(job_dir.glob("attempt_*/result.json")):
-        completion = load_completion(path.parent)
+    for _, attempt_dir in sorted(attempt_directories(job_dir)):
+        path = attempt_dir / "result.json"
+        completion = load_completion(attempt_dir)
         if completion is None or completion["returncode"] != 0 or completion["timed_out"]:
             continue
         try:
@@ -289,7 +290,8 @@ def attempt_directories(job_dir: Path) -> list[tuple[int, Path]]:
     attempts = []
     for path in job_dir.glob("attempt_*"):
         match = re.fullmatch(r"attempt_([0-9]+)", path.name)
-        if match and path.is_dir() and not path.is_symlink():
+        if match:
+            verify_private_directory(path)
             attempts.append((int(match.group(1)), path))
     return attempts
 
@@ -328,30 +330,45 @@ def completed_attempt_count(job_dir: Path) -> int:
     return sum(1 for _, path in attempt_directories(job_dir) if load_completion(path) is not None)
 
 
-def ensure_private_directory(path: Path) -> Path:
-    path.mkdir(mode=0o700, exist_ok=True)
+def verify_private_directory(path: Path) -> Path:
     try:
-        mode = path.lstat().st_mode
+        metadata = path.lstat()
     except OSError as exc:
         raise SystemExit(f"could not inspect validation directory: {path}") from exc
-    if not stat.S_ISDIR(mode):
+    if not stat.S_ISDIR(metadata.st_mode):
         raise SystemExit(f"validation directory must be a non-symlink directory: {path}")
+    if metadata.st_uid != os.getuid() or metadata.st_mode & 0o022:
+        raise SystemExit(f"validation directory must be an owned, private directory: {path}")
     return path
 
 
+def ensure_private_directory(path: Path) -> Path:
+    path.mkdir(mode=0o700, exist_ok=True)
+    return verify_private_directory(path)
+
+
 def method_jobs_directory(output_dir: Path, label: str) -> Path:
+    verify_private_directory(output_dir)
     jobs_dir = ensure_private_directory(output_dir / "jobs")
     return ensure_private_directory(jobs_dir / sha256_bytes(label.encode("utf-8")))
 
 
 @contextmanager
 def locked_job(job_dir: Path):
-    job_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ensure_private_directory(job_dir)
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(job_dir / ".lock", flags, 0o600)
     except OSError as exc:
         raise SystemExit(f"could not open validation job lock: {job_dir / '.lock'}") from exc
+    lock_metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(lock_metadata.st_mode)
+        or lock_metadata.st_uid != os.getuid()
+        or lock_metadata.st_mode & 0o022
+    ):
+        os.close(descriptor)
+        raise SystemExit(f"validation job lock must be an owned, private regular file: {job_dir / '.lock'}")
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
@@ -465,8 +482,9 @@ def collect_results(
     for label, candidates in selection["methods"].items():
         method_jobs = method_jobs_directory(output_dir, label)
         for candidate in candidates:
+            candidate_jobs = ensure_private_directory(method_jobs / candidate["candidate_id"])
             for seed in seeds:
-                job_dir = method_jobs / candidate["candidate_id"] / f"seed_{seed}"
+                job_dir = ensure_private_directory(candidate_jobs / f"seed_{seed}")
                 with locked_job(job_dir):
                     result = load_valid_attempt(
                         job_dir,

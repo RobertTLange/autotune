@@ -155,7 +155,7 @@ describe("nanochat finalist validation", () => {
     const tampered = JSON.parse(await readFile(cachedResult, "utf8"));
     tampered.protocol_sha256 = "b".repeat(64);
     await writeFile(cachedResult, JSON.stringify(tampered), "utf8");
-    await mkdir(path.join(baselineJobs, candidateId, "seed_0", "attempt_002"));
+    await mkdir(path.join(baselineJobs, candidateId, "seed_0", "attempt_002"), { mode: 0o700 });
     await runPython(args, validationEnv);
     expect(await readFile(counter, "utf8")).toBe("xxxxx");
 
@@ -227,6 +227,7 @@ describe("nanochat finalist validation", () => {
     const acquiredPath = path.join(dir, "acquired");
     const redirectPath = path.join(dir, "redirect");
     const linkedPath = path.join(dir, "linked-method");
+    const permissivePath = path.join(dir, "permissive-method");
     await writeFile(
       childPath,
       [
@@ -256,6 +257,12 @@ describe("nanochat finalist validation", () => {
       "try: validator.ensure_private_directory(linked)",
       "except SystemExit as error: assert 'non-symlink directory' in str(error)",
       "else: raise AssertionError('symlinked method directory was accepted')",
+      `permissive = Path(${JSON.stringify(permissivePath)})`,
+      "permissive.mkdir()",
+      "permissive.chmod(0o777)",
+      "try: validator.ensure_private_directory(permissive)",
+      "except SystemExit as error: assert 'owned, private directory' in str(error)",
+      "else: raise AssertionError('group/world-writable method directory was accepted')",
       `ready = Path(${JSON.stringify(readyPath)})`,
       `acquired = Path(${JSON.stringify(acquiredPath)})`,
       `with validator.locked_job(Path(${JSON.stringify(jobDir)})):`,
