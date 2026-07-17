@@ -256,10 +256,14 @@ describe("packaged examples", () => {
     const result = JSON.parse(await readFile(resultPath, "utf8"));
     const config = JSON.parse(await readFile(configPath, "utf8"));
     const uvArgv = await readFile(path.join(fixture.root, "uv-argv.txt"), "utf8");
+    const dataSnapshot = await readFile(path.join(fixture.root, "data-snapshot.txt"), "utf8");
     expect(output).toContain("autotune_metric=0.912345");
     expect(config).toMatchObject({ device_batch_size: 64, total_batch_size: 524288, seed: 7 });
     expect(uvArgv).toContain("--frozen");
     expect(uvArgv).not.toContain("--no-sync");
+    expect(dataSnapshot).toBe(
+      path.join(fixture.home, ".cache", "autotune", `nanochat-data-${fixture.identity}`, "data")
+    );
     expect(result).toMatchObject({
       metric: 0.912345,
       seed: 7,
@@ -411,6 +415,39 @@ describe("packaged examples", () => {
     expect(drifted.stderr).toContain("expected one DEPTH, found 0");
   });
 
+  it("isolates each trial from later canonical data mutations", async () => {
+    const fixture = await createFakeAutoresearch();
+    const manifest = JSON.parse(
+      await readFile(path.join(fixture.home, ".cache", "autoresearch", "autotune_data_manifest.json"), "utf8")
+    );
+    const snapshot = path.join(fixture.home, ".cache", "autotune", `nanochat-data-${fixture.identity}`, "data");
+    const privateSnapshot = path.join(path.dirname(fixture.home), "snapshot");
+    const liveShard = path.join(fixture.home, ".cache", "autoresearch", "data", "shard_00000.parquet");
+    const script = [
+      "import importlib.util, sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(path.resolve(EXAMPLES.nanochatTrain)))})`,
+      `spec = importlib.util.spec_from_file_location('adapter', ${JSON.stringify(path.resolve(EXAMPLES.nanochatTrain))})`,
+      "adapter = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(adapter)",
+      `snapshot = Path(${JSON.stringify(privateSnapshot)})`,
+      "adapter.snapshot_cache(snapshot)",
+      "private_data = snapshot / 'home' / '.cache' / 'autoresearch' / 'data'",
+      "assert private_data.is_symlink()",
+      `Path(${JSON.stringify(liveShard)}).write_bytes(b'evil')`,
+      "assert (private_data / 'shard_00000.parquet').read_bytes() == b'data'"
+    ].join("\n");
+
+    const result = await runPythonProcess(["-c", script], {
+      HOME: fixture.home,
+      AUTOTUNE_TOKENIZER_PKL_SHA256: manifest.tokenizer_sha256["tokenizer.pkl"],
+      AUTOTUNE_TOKEN_BYTES_SHA256: manifest.tokenizer_sha256["token_bytes.pt"],
+      AUTOTUNE_DATA_SNAPSHOT_DIR: snapshot
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it("rejects an unpinned autoresearch checkout", async () => {
     const fixture = await createFakeAutoresearch("not-the-pinned-commit");
     const result = await runPythonProcess([EXAMPLES.nanochat], {
@@ -490,6 +527,32 @@ describe("packaged examples", () => {
     expect(result.stderr).toContain("shard_00000.parquet");
   });
 
+  it("rejects a modified immutable data snapshot before launching trials", async () => {
+    const fixture = await createFakeAutoresearch();
+    const shard = path.join(
+      fixture.home,
+      ".cache",
+      "autotune",
+      `nanochat-data-${fixture.identity}`,
+      "data",
+      "shard_00000.parquet"
+    );
+    await chmod(shard, 0o600);
+
+    const writable = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(writable.code).not.toBe(0);
+    expect(writable.stderr).toContain("immutable data snapshot shard metadata differs");
+
+    await writeFile(shard, "evil", "utf8");
+    await chmod(shard, 0o400);
+
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("immutable data snapshot shard content differs");
+  });
+
   it("marks canonical harness OOM penalties as failed trials", async () => {
     const fixture = await createFakeAutoresearch();
     await writeFile(fixture.python, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
@@ -522,6 +585,7 @@ async function createFakeAutoresearch(commit = "228791fb499afffb54b46200aca536f7
   await writeFile(path.join(home, ".cache", "autoresearch", "tokenizer", "tokenizer.pkl"), "tokenizer", "utf8");
   await writeFile(path.join(home, ".cache", "autoresearch", "tokenizer", "token_bytes.pt"), "token bytes", "utf8");
   const identity = (await runPythonScript([EXAMPLES.nanochatCache, "create"], { HOME: home })).trim();
+  await runPythonScript([EXAMPLES.nanochatCache, "verify"], { HOME: home });
   await writeFile(path.join(root, "train.py"), "# fake canonical train\n", "utf8");
   await writeFile(path.join(root, "prepare.py"), "# fake canonical prepare\n", "utf8");
   await writeFile(path.join(root, "pyproject.toml"), "[project]\nname='fake'\n", "utf8");
@@ -545,6 +609,7 @@ async function createFakeAutoresearch(commit = "228791fb499afffb54b46200aca536f7
       "#!/usr/bin/env bash",
       "printf '%s\\n' \"$@\" > \"$AUTORESEARCH_DIR/uv-argv.txt\"",
       "printf '%s' \"$AUTOTUNE_NANOCHAT_CONFIG\" > \"$AUTORESEARCH_DIR/config.json\"",
+      "printf '%s' \"$AUTOTUNE_DATA_SNAPSHOT_DIR\" > \"$AUTORESEARCH_DIR/data-snapshot.txt\"",
       "echo 'autotune_materialized_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
       "echo 'autotune_runtime={\"cuda\":\"12.8\",\"gpu_capability\":[9,0],\"gpu_name\":\"Fake H100\",\"kernels_package\":\"0.12.1\",\"loaded_kernels\":[{\"metadata_id\":\"fake\",\"repo_id\":\"varunneal/flash-attention-3\",\"revision\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\",\"snapshot_commit\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\"}],\"python\":\"3.10.12\",\"torch\":\"2.9.1\"}'",
       "echo 'val_bpb:          0.912345'",

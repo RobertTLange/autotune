@@ -3,14 +3,19 @@
 
 import argparse
 
-from nanochat_cache import create_manifest, verify_manifest
+from nanochat_cache import create_manifest, prepare_data_snapshot, verify_manifest
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("create", "verify"))
     args = parser.parse_args()
-    identity = create_manifest() if args.action == "create" else verify_manifest(rehash_data=True)["identity_sha256"]
+    if args.action == "create":
+        identity = create_manifest()
+    else:
+        dataset = verify_manifest(rehash_data=True)
+        prepare_data_snapshot(dataset)
+        identity = dataset["identity_sha256"]
     print(identity)
 
 

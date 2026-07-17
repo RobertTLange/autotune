@@ -132,7 +132,7 @@ cd ~/autotune
 python3 examples/nanochat/prepare_nanochat_cache.py create
 ```
 
-Use a fresh `~/.cache/autoresearch` containing exactly the default ten training shards plus pinned validation shard `06542`. Manifest creation is an explicit trust step: it hashes every shard and the tokenizer after pinned preparation. Each benchmark launcher rehashes the cache once before starting trials, then passes the verified content identity to every trial.
+Use a fresh `~/.cache/autoresearch` containing exactly the default ten training shards plus pinned validation shard `06542`. Manifest creation is an explicit trust step: it hashes every shard and the tokenizer after pinned preparation. Each benchmark launcher rehashes the cache once, creates or verifies one read-only content-addressed copy under `~/.cache/autotune`, then gives every trial that immutable dataset snapshot. Allow roughly 1 GB of additional cache space.
 
 Run 100 seeded TPE trials, then evaluate its best configuration on seeds 0–9:
 

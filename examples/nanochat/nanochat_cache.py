@@ -1,8 +1,12 @@
 """Trusted preparation manifest for the canonical autoresearch cache."""
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
+import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -11,6 +15,7 @@ AUTORESEARCH_COMMIT = "228791fb499afffb54b46200aca536f79142f117"
 EXPECTED_SHARDS = {f"shard_{index:05d}.parquet" for index in range(10)} | {"shard_06542.parquet"}
 TOKENIZER_FILES = ("tokenizer.pkl", "token_bytes.pt")
 MANIFEST_NAME = "autotune_data_manifest.json"
+SNAPSHOT_MANIFEST_NAME = "snapshot.json"
 
 
 def sha256_file(path: Path) -> str:
@@ -131,3 +136,148 @@ def verify_manifest(expected_identity: str | None = None, rehash_data: bool = Fa
         "identity_sha256": identity_sha256,
         **content_identity,
     }
+
+
+def data_snapshot_path(dataset: dict) -> Path:
+    return Path.home() / ".cache" / "autotune" / f"nanochat-data-{dataset['identity_sha256']}"
+
+
+def snapshot_manifest(dataset: dict) -> dict:
+    return {
+        "schema_version": 1,
+        "identity_sha256": dataset["identity_sha256"],
+        "data_files": dataset["data_files"],
+    }
+
+
+def verified_data_snapshot(dataset: dict, rehash_data: bool = False) -> Path:
+    snapshot = data_snapshot_path(dataset)
+    data_dir = snapshot / "data"
+    marker = snapshot / SNAPSHOT_MANIFEST_NAME
+    try:
+        snapshot_mode = snapshot.lstat().st_mode
+        data_mode = data_dir.lstat().st_mode
+        marker_mode = marker.lstat().st_mode
+    except OSError as exc:
+        raise SystemExit(f"missing immutable data snapshot; run prepare_nanochat_cache.py verify: {snapshot}") from exc
+    if (
+        not stat.S_ISDIR(snapshot_mode)
+        or stat.S_IMODE(snapshot_mode) != 0o500
+        or not stat.S_ISDIR(data_mode)
+        or stat.S_IMODE(data_mode) != 0o500
+        or not stat.S_ISREG(marker_mode)
+        or stat.S_IMODE(marker_mode) != 0o400
+    ):
+        raise SystemExit(f"immutable data snapshot contains a symlink or unexpected file type: {snapshot}")
+    try:
+        recorded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid immutable data snapshot manifest: {marker}") from exc
+    if recorded != snapshot_manifest(dataset):
+        raise SystemExit(f"immutable data snapshot identity differs from the cache manifest: {snapshot}")
+    expected_names = {entry["name"] for entry in dataset["data_files"]}
+    actual_names = {path.name for path in data_dir.iterdir()}
+    if actual_names != expected_names:
+        raise SystemExit(f"immutable data snapshot has an unexpected file set: {snapshot}")
+    for entry in dataset["data_files"]:
+        path = data_dir / entry["name"]
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise SystemExit(f"missing immutable data snapshot shard: {path}") from exc
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_size != entry["bytes"]
+        ):
+            raise SystemExit(f"immutable data snapshot shard metadata differs: {path}")
+        if rehash_data and sha256_file(path) != entry["sha256"]:
+            raise SystemExit(f"immutable data snapshot shard content differs: {path}")
+    return data_dir
+
+
+def copy_snapshot_file(source: Path, destination: Path, expected_size: int, expected_sha256: str) -> None:
+    source_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_descriptor = os.open(source, source_flags)
+    except OSError as exc:
+        raise SystemExit(f"could not safely open canonical data shard: {source}") from exc
+    try:
+        source_metadata = os.fstat(source_descriptor)
+        if not stat.S_ISREG(source_metadata.st_mode) or source_metadata.st_size != expected_size:
+            raise SystemExit(f"canonical data shard metadata changed while snapshotting: {source}")
+        destination_descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            digest = hashlib.sha256()
+            remaining = expected_size
+            while remaining:
+                chunk = os.read(source_descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    raise SystemExit(f"canonical data shard ended while snapshotting: {source}")
+                digest.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination_descriptor, view)
+                    view = view[written:]
+                remaining -= len(chunk)
+            if os.read(source_descriptor, 1) or digest.hexdigest() != expected_sha256:
+                raise SystemExit(f"canonical data shard changed while snapshotting: {source}")
+            os.fsync(destination_descriptor)
+            os.fchmod(destination_descriptor, 0o400)
+        finally:
+            os.close(destination_descriptor)
+    finally:
+        os.close(source_descriptor)
+
+
+def prepare_data_snapshot(dataset: dict) -> Path:
+    snapshot = data_snapshot_path(dataset)
+    parent = snapshot.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not stat.S_ISDIR(parent.lstat().st_mode):
+        raise SystemExit(f"immutable data snapshot parent must be a non-symlink directory: {parent}")
+    lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        lock_descriptor = os.open(parent / f".{snapshot.name}.lock", lock_flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"could not safely open immutable data snapshot lock under {parent}") from exc
+    if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+        os.close(lock_descriptor)
+        raise SystemExit(f"immutable data snapshot lock must be a regular file under {parent}")
+    try:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        if snapshot.exists():
+            return verified_data_snapshot(dataset, rehash_data=True)
+        temporary = Path(tempfile.mkdtemp(prefix=f".{snapshot.name}.", suffix=".tmp", dir=parent))
+        try:
+            data_dir = temporary / "data"
+            data_dir.mkdir(mode=0o700)
+            for entry in dataset["data_files"]:
+                copy_snapshot_file(
+                    cache_root() / "data" / entry["name"],
+                    data_dir / entry["name"],
+                    entry["bytes"],
+                    entry["sha256"],
+                )
+            write_manifest(temporary / SNAPSHOT_MANIFEST_NAME, snapshot_manifest(dataset))
+            (temporary / SNAPSHOT_MANIFEST_NAME).chmod(0o400)
+            data_dir.chmod(0o500)
+            temporary.chmod(0o500)
+            published = False
+            try:
+                os.replace(temporary, snapshot)
+                published = True
+            except OSError as exc:
+                if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
+                    raise
+        finally:
+            if temporary.exists():
+                temporary.chmod(0o700)
+                data_dir = temporary / "data"
+                if data_dir.exists():
+                    data_dir.chmod(0o700)
+                shutil.rmtree(temporary)
+        return verified_data_snapshot(dataset, rehash_data=not published)
+    finally:
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)

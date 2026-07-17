@@ -151,7 +151,10 @@ def snapshot_cache(snapshot: Path) -> None:
         destination = tokenizer_dir / name
         destination.write_bytes(source)
         destination.chmod(0o600)
-    (private_cache / "data").symlink_to(live_cache / "data", target_is_directory=True)
+    data_snapshot = os.environ.get("AUTOTUNE_DATA_SNAPSHOT_DIR")
+    if not data_snapshot:
+        raise SystemExit("AUTOTUNE_DATA_SNAPSHOT_DIR is required")
+    (private_cache / "data").symlink_to(Path(data_snapshot), target_is_directory=True)
     os.environ.setdefault("HF_HOME", str(live_home / ".cache" / "huggingface"))
     os.environ["HOME"] = str(private_home)
 

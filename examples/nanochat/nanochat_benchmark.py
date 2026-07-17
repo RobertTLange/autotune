@@ -15,7 +15,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from nanochat_cache import verify_manifest
+from nanochat_cache import verified_data_snapshot, verify_manifest
 from nanochat_validation_support import (
     DEFAULT_DEVICE_BATCH_SIZE,
     DEFAULT_PARAMS,
@@ -409,6 +409,7 @@ def child_environment(config: dict, root: Path, source_hashes: dict[str, str], d
     env["AUTOTUNE_AUTORESEARCH_PREPARE_SHA256"] = source_hashes["prepare.py"]
     env["AUTOTUNE_TOKENIZER_PKL_SHA256"] = dataset["tokenizer_sha256"]["tokenizer.pkl"]
     env["AUTOTUNE_TOKEN_BYTES_SHA256"] = dataset["tokenizer_sha256"]["token_bytes.pt"]
+    env["AUTOTUNE_DATA_SNAPSHOT_DIR"] = dataset["snapshot_dir"]
     return env
 
 
@@ -426,6 +427,7 @@ def main() -> int:
     if not expected_data_identity:
         raise SystemExit("NANOCHAT_DATA_IDENTITY_SHA256 is required; run prepare_nanochat_cache.py verify")
     dataset = verify_manifest(expected_identity=expected_data_identity)
+    dataset["snapshot_dir"] = str(verified_data_snapshot(dataset))
     adapter = Path(__file__).with_name("autoresearch_train.py").resolve()
     uv_project = prepare_uv_project(sources, source_hashes)
     command = build_training_command(uv_project, adapter)
