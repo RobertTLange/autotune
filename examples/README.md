@@ -8,7 +8,7 @@ Each task has its own subdirectory. Start with BBOB for a fast local smoke test,
 - `mnist/mnist_cnn.py`: agent-compatible PyTorch MNIST example.
 - `pid_controller/pid_controller.cpp`: C++ PID simulation with a Centaur search space.
 - `cifar10_speedrun/cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
-- `nanochat/nanochat_benchmark.py`: wrapper around a local nanochat checkout.
+- `nanochat/nanochat_benchmark.py`: HPO wrapper around the pinned autoresearch evaluator.
 
 ## BBOB
 
@@ -117,72 +117,39 @@ Submit the equal-budget speedrun ablation on Slurm with `sbatch examples/cifar10
 
 ## Nanochat Benchmark
 
-`nanochat/nanochat_benchmark.py` wraps a local `karpathy/nanochat` checkout and exposes the paper-inspired 14-hyperparameter search space in `nanochat/nanochat_search_space.yaml`. It minimizes validation bits-per-byte and prints `autotune_metric=<val_bpb>`. CUDA out-of-memory and incompatible batch-geometry trials are reported as `100.0`, matching the finite penalty used in the paper setup.
+`nanochat/nanochat_benchmark.py` keeps Autotune's adaptive HPO workflow while using the evaluator from `karpathy/autoresearch` commit `228791fb499afffb54b46200aca536f79142f117`. The adapter changes only the 14 declared training constants and fixed seed, pins the evaluator's kernel dependency, and never edits the wider checkout.
 
-Prepare nanochat separately:
+Prepare the pinned checkout and its default clean cache:
 
 ```bash
-git clone https://github.com/karpathy/nanochat ~/projects/nanochat
-cd ~/projects/nanochat
-uv sync --extra gpu
+git clone https://github.com/karpathy/autoresearch ~/projects/autoresearch
+cd ~/projects/autoresearch
+git checkout 228791fb499afffb54b46200aca536f79142f117
+uv sync --frozen
+uv run --frozen prepare.py
+export AUTORESEARCH_DIR=~/projects/autoresearch
+cd ~/autotune
+python3 examples/nanochat/prepare_nanochat_cache.py create
 ```
 
-Set the checkout path before running Autotune:
+Use a fresh `~/.cache/autoresearch` containing exactly the default ten training shards plus pinned validation shard `06542`. Manifest creation is an explicit trust step: it hashes every shard and the tokenizer after pinned preparation. Each benchmark launcher rehashes the cache once, creates or verifies one read-only content-addressed copy under `~/.cache/autotune`, then gives every trial that immutable dataset snapshot. Allow roughly 1 GB of additional cache space.
+
+Run 100 seeded TPE trials, then evaluate its best configuration on seeds 0–9:
 
 ```bash
-export NANOCHAT_DIR=~/projects/nanochat
-```
-
-Nanochat downloads and prepares data through its own scripts. For a fresh checkout, follow the current nanochat README. The CPU demo path runs:
-
-```bash
-cd "$NANOCHAT_DIR"
-source .venv/bin/activate
-python -m nanochat.dataset -n 8
-python -m scripts.tok_train --max-chars=2000000000
-python -m scripts.tok_eval
-```
-
-Run the paper-style TPE workload with a 24-hour cumulative trial-time budget. The wrapper targets 300 seconds of training per trial by default, using a calibrated tokens/sec estimate to choose nanochat `--num-iterations` before launch:
-
-```bash
-export NANOCHAT_DIR=~/projects/nanochat
-export NANOCHAT_BENCHMARK_NPROC_PER_NODE=8
-export NANOCHAT_BENCHMARK_TOKENS_PER_SECOND=10000000
+export AUTORESEARCH_DIR=~/projects/autoresearch
 ./examples/nanochat/run_nanochat_benchmark.sh
 ```
 
-Run a short smoke benchmark:
+Every score uses one GPU, a 2048-token context, 8192-token vocabulary, 300 measured training seconds excluding compilation/startup, and 20,971,520 validation tokens. `NANOCHAT_BENCHMARK_SEED` controls training randomness but is not tunable; discovery uses seed 42. The wrapper syncs the pinned lockfile through `uv --frozen`, pins the Hopper kernel to `varunneal/flash-attention-3@de87b9b5af06dd9984df595bef90b2eba44b181a` and the fallback kernel to `kernels-community/flash-attn3@9542c462013476380ce4b395b9ddc0e8118161ee`, emits source/data/tokenizer/runtime provenance, and assigns `100.0` to infeasible or OOM trials. Hardware still affects how much training fits into five minutes, so compare runs on the same accelerator type.
 
-```bash
-export NANOCHAT_DIR=~/projects/nanochat
-NANOCHAT_BENCHMARK_NUM_ITERATIONS=20 \
-NANOCHAT_BENCHMARK_EVAL_TOKENS=524288 \
-TRIALS=3 \
-TIME_BUDGET_SECONDS=1800 \
-./examples/nanochat/run_nanochat_benchmark.sh
-```
+`validate_nanochat.py` excludes failed/penalty trials, deduplicates configurations across refinement rounds within each method, freezes the selected finalists, runs each method's finalists independently on a disjoint seed panel, resumes completed jobs, and refuses mixed evaluator/GPU/kernel protocol hashes immediately. It reports mean, standard deviation, standard error, and a Student-t 95% confidence interval. The local launcher defaults to one finalist; the Slurm ablation compares TPE, both reset variants, and Centaur, then validates the top three from each method over the same ten seeds.
 
-Measurement controls are environment-only and should not be tuned:
+Key launcher controls: `TRIALS`, `SAMPLER`, `SAMPLER_SEED`, `TIME_BUDGET_SECONDS`, `WORK_DIR`, `STORAGE`, `STUDY_NAME`, `FINALISTS`, `VALIDATION_SEEDS`, `VALIDATION_MAX_ATTEMPTS`, and `NANOCHAT_TRIAL_TIMEOUT_SECONDS` (default 1200 seconds). Set `VALIDATE_FINALISTS=0` to run only local discovery. `NANOCHAT_BENCHMARK_RESULTS_DIR` stores per-trial provenance JSON.
 
-- `NANOCHAT_DIR`: required local nanochat checkout.
-- `NANOCHAT_PYTHON`: optional Python executable; defaults to `$NANOCHAT_DIR/.venv/bin/python`.
-- `NANOCHAT_BENCHMARK_NUM_ITERATIONS`: explicit training steps per trial; overrides every target mode.
-- `NANOCHAT_BENCHMARK_TARGET_TOKENS`: approximate training tokens per trial when `NANOCHAT_BENCHMARK_NUM_ITERATIONS` is unset; overrides calibrated time mode.
-- `NANOCHAT_BENCHMARK_TARGET_SECONDS`: approximate training seconds per trial; `run_nanochat_benchmark.sh` defaults to `300`.
-- `NANOCHAT_BENCHMARK_TOKENS_PER_SECOND`: calibrated training throughput used with `NANOCHAT_BENCHMARK_TARGET_SECONDS`; `run_nanochat_benchmark.sh` defaults to `1666667`, matching roughly 500M tokens in 5 minutes on the paper's H200 setup. Set this from an observed `tok/sec` line for other hardware.
-- `NANOCHAT_BENCHMARK_MAX_SEQ_LEN`: context length; defaults to `2048`.
-- `NANOCHAT_BENCHMARK_EVAL_EVERY`: validation cadence; defaults to the trial's final step.
-- `NANOCHAT_BENCHMARK_EVAL_TOKENS`: validation token count; defaults to `524288`.
-- `NANOCHAT_BENCHMARK_DEVICE_TYPE`: optional nanochat `--device-type` override.
-- `NANOCHAT_BENCHMARK_NPROC_PER_NODE`: optional `torchrun` process count; defaults to `1`. Set to `8` on an 8-GPU H100 node.
-- `NANOCHAT_BENCHMARK_RUN`: wandb run name; defaults to `dummy`.
-- `NANOCHAT_BENCHMARK_MODEL_TAG`: checkpoint tag; defaults to a process-specific Autotune tag.
-- `NANOCHAT_TRIAL_TIMEOUT_SECONDS`: outer process timeout; defaults to `NANOCHAT_BENCHMARK_TARGET_SECONDS + 600`, matching the paper runner's training budget plus startup/compile grace.
-- `STORAGE`: Optuna storage URI; defaults to `sqlite:///$WORK_DIR/study.db` so interrupted runs can be resumed from the same work directory.
-- `STUDY_NAME`: Optuna study name; defaults to `nanochat_benchmark_autotune`.
+Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/nanochat/run_nanobench_ablation.sbatch`. The two-day preset requests four GPUs on one node and runs 240 discovery trials per arm concurrently, with one GPU and an isolated compilation cache per arm. Reset arms use four 60-trial phases, refining after trials 60, 120, and 180. Discovery has a 30-hour software budget so the serial finalist-validation phase retains allocation headroom. At the observed five-to-six-minute trial cadence, discovery takes roughly 20–26 hours and validation another 12–13 hours; hardware and sampled configurations can change this.
 
-Submit the equal-budget nanobench ablation on Slurm with `sbatch examples/nanochat/run_nanobench_ablation.sbatch`.
+Override `BASELINE_TRIALS`, `REFINE_INITIAL_TRIALS`, `REFINE_ROUNDS`, `REFINE_TRIALS`, `CENTAUR_TRIALS`, or `TIME_BUDGET_SECONDS` to use another budget. Unequal arm totals require `ALLOW_UNEQUAL_TRIALS=1`. Each discovery submission atomically claims a fresh `RUN_GROUP`/`OUT_ROOT`, and the timestamped defaults provide one. If only validation is interrupted, resubmit with the original `OUT_ROOT`, `VALIDATION_ONLY=1`, and a one-GPU `sbatch` resource override. Centaur retains its 10-trial CMA-ES warmup, LLM proposal probability 0.3, and scheduler seed 42; override these with `CENTAUR_WARMUP_TRIALS`, `CENTAUR_LLM_PROBABILITY`, and `CENTAUR_SEED`.
 
 ## Packaging Notes
 

@@ -4,35 +4,34 @@ parameters:
     type: int
     low: 8
     high: 20
-    current_value: 16
+    current_value: 8
   - name: aspect_ratio
     cli_flag: --aspect-ratio
     type: int
     low: 32
     high: 80
-    current_value: 56
+    current_value: 64
   - name: head_dim
     cli_flag: --head-dim
     type: categorical
     choices: [64, 128]
-    current_value: 64
+    current_value: 128
   - name: batch_config
     cli_flag: --batch-config
     type: categorical
     choices:
-      - 8x131072
-      - 8x262144
-      - 8x524288
-      - 8x1048576
-      - 8x2097152
+      - 16x131072
       - 16x262144
       - 16x524288
-      - 16x1048576
-      - 16x2097152
+      - 32x131072
+      - 32x262144
       - 32x524288
-      - 32x1048576
-      - 32x2097152
-    current_value: 32x1048576
+      - 64x131072
+      - 64x262144
+      - 64x524288
+      - 128x262144
+      - 128x524288
+    current_value: 128x524288
   - name: embedding_lr
     cli_flag: --embedding-lr
     type: float
@@ -88,8 +87,8 @@ parameters:
   - name: window_pattern
     cli_flag: --window-pattern
     type: categorical
-    choices: [LLLL, SLSL, SSSS]
-    current_value: LLLL
+    choices: [SSSL, LLLL, SLSL, SSSS]
+    current_value: SSSL
 has_arg_parsing: true
 needs_wrapper: false
 has_metric_output: true
@@ -98,5 +97,5 @@ failure_value: 100.0
 optuna:
   sampler: tpe
   pruner: none
-  reasoning: TPE over paired valid 8-GPU batch configs; no pruner because only final val_bpb is reported.
-reasoning: Minimize nanochat validation bits-per-byte. The narrowed 8-GPU H100 space uses valid batch pairs with device batch sizes 8, 16, and 32; OOM and failed trials are penalized with val_bpb 100.0.
+  reasoning: TPE over paired single-GPU batch configs; no pruner because only final val_bpb is reported.
+reasoning: Minimize canonical autoresearch validation bits-per-byte after 300 measured training seconds. Only HPO constants vary; the 2048 context, 8192-token vocabulary, 20,971,520-token evaluation, data, tokenizer, and evaluator remain fixed.

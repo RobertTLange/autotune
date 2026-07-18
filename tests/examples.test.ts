@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,7 +6,9 @@ import path from "node:path";
 const EXAMPLES = {
   cifar10Speedrun: path.join("examples", "cifar10_speedrun", "cifar10_speedrun.py"),
   mnist: path.join("examples", "mnist", "mnist_cnn.py"),
-  nanochat: path.join("examples", "nanochat", "nanochat_benchmark.py")
+  nanochat: path.join("examples", "nanochat", "nanochat_benchmark.py"),
+  nanochatTrain: path.join("examples", "nanochat", "autoresearch_train.py"),
+  nanochatCache: path.join("examples", "nanochat", "prepare_nanochat_cache.py")
 } as const;
 
 describe("packaged examples", () => {
@@ -38,11 +40,11 @@ describe("packaged examples", () => {
     expect(readme).toContain("CIFAR10_SPEEDRUN_DATA_DIR");
     expect(readme).toContain("CIFAR10_SPEEDRUN_RESULTS_DIR");
     expect(readme).toContain("CIFAR10_SPEEDRUN_NUM_RUNS=100");
-    expect(readme).toContain("NANOCHAT_DIR");
-    expect(readme).toContain("python -m nanochat.dataset");
-    expect(readme).toContain("NANOCHAT_BENCHMARK_NUM_ITERATIONS");
-    expect(readme).toContain("NANOCHAT_BENCHMARK_TARGET_SECONDS");
-    expect(readme).toContain("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND");
+    expect(readme).toContain("AUTORESEARCH_DIR");
+    expect(readme).toContain("uv run --frozen prepare.py");
+    expect(readme).toContain("NANOCHAT_BENCHMARK_SEED");
+    expect(readme).toContain("20,971,520");
+    expect(readme).not.toContain("NANOCHAT_BENCHMARK_TOKENS_PER_SECOND");
   });
 
   it("keeps the MNIST example intentionally agent-compatible", async () => {
@@ -90,13 +92,85 @@ describe("packaged examples", () => {
 
   it("defines an Autotune-native nanochat benchmark wrapper", async () => {
     const nanochat = await readFile(EXAMPLES.nanochat, "utf8");
+    const adapter = await readFile(EXAMPLES.nanochatTrain, "utf8");
 
     expect(nanochat).toContain("argparse.ArgumentParser");
-    expect(nanochat).toContain("NANOCHAT_DIR");
+    expect(nanochat).toContain("AUTORESEARCH_DIR");
+    expect(nanochat).toContain("228791fb499afffb54b46200aca536f79142f117");
     expect(nanochat).toContain("autotune_metric=");
     expect(nanochat).toContain("OOM_PENALTY = 100.0");
-    expect(nanochat).toContain("Minimum validation bpb");
+    expect(nanochat).toContain("EVAL_TOKENS = 40 * 524288");
     expect(nanochat).not.toContain("shell=True");
+    expect(adapter.indexOf("emit_execution_provenance(materialized, globals_dict)")).toBeGreaterThan(adapter.indexOf("exec(compile("));
+  });
+
+  it("derives pinned kernel provenance without a get_loaded_kernels API", async () => {
+    const adapterPath = path.resolve(EXAMPLES.nanochatTrain);
+    const kernels = [
+      ["varunneal/flash-attention-3", "de87b9b5af06dd9984df595bef90b2eba44b181a"],
+      ["kernels-community/flash-attn3", "9542c462013476380ce4b395b9ddc0e8118161ee"]
+    ];
+    for (const [repo, snapshot] of kernels) {
+      const script = [
+        "import importlib.util, json, sys, types",
+        `sys.path.insert(0, ${JSON.stringify(path.dirname(adapterPath))})`,
+        `spec = importlib.util.spec_from_file_location('nanochat_adapter', ${JSON.stringify(adapterPath)})`,
+        "adapter = importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(adapter)",
+        `kernel = types.SimpleNamespace(__file__='/cache/snapshots/${snapshot}/build/variant/flash_attn_interface.py')`,
+        `print(json.dumps(adapter.loaded_kernel_provenance({'repo': '${repo}', 'fa3': kernel}), sort_keys=True))`
+      ].join("\n");
+
+      const provenance = JSON.parse(await runPythonScript(["-c", script], {}));
+      expect(provenance).toEqual([{
+        metadata_id: "flash_attn_interface",
+        repo_id: repo,
+        revision: snapshot,
+        snapshot_commit: snapshot
+      }]);
+    }
+  });
+
+  it("rejects kernel provenance outside the pinned snapshot", async () => {
+    const adapterPath = path.resolve(EXAMPLES.nanochatTrain);
+    const script = [
+      "import importlib.util, sys, types",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(adapterPath))})`,
+      `spec = importlib.util.spec_from_file_location('nanochat_adapter', ${JSON.stringify(adapterPath)})`,
+      "adapter = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(adapter)",
+      "kernel = types.SimpleNamespace(__file__='/cache/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/build/kernel.py')",
+      "adapter.loaded_kernel_provenance({'repo': 'varunneal/flash-attention-3', 'fa3': kernel})"
+    ].join("\n");
+
+    const result = await runPythonProcess(["-c", script], {});
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("pinned kernel snapshot");
+  });
+
+  it("launches each comparable nanochat arm on one GPU without throughput calibration", async () => {
+    const local = await readFile(path.join("examples", "nanochat", "run_nanochat_benchmark.sh"), "utf8");
+    const slurm = await readFile(path.join("examples", "nanochat", "run_nanobench_ablation.sbatch"), "utf8");
+
+    expect(local).toContain("AUTORESEARCH_DIR");
+    expect(local).toContain("--sampler-seed");
+    expect(local).toContain("validate_nanochat.py");
+    expect(slurm).toContain("#SBATCH --gres=gpu:4");
+    expect(slurm).toContain("srun --exclusive --ntasks=1 --cpus-per-task=4 --gres=gpu:1");
+    expect(slurm.match(/--gres=gpu:1 \/usr\/bin\/env/g)).toHaveLength(2);
+    expect(slurm).not.toContain("--gres=gpu:1 env");
+    expect(slurm).toContain('N_JOBS must be 1');
+    expect(slurm).toContain('launch_variant "04_centaur" "$CENTAUR_TRIALS" centaur');
+    expect(slurm).toContain('--centaur-llm-probability "$CENTAUR_LLM_PROBABILITY"');
+    expect(slurm).toContain('--centaur-warmup-trials "$CENTAUR_WARMUP_TRIALS"');
+    expect(slurm).toContain('--centaur-seed "$CENTAUR_SEED"');
+    expect(slurm).toContain('centaur=$OUT_ROOT/04_centaur/results.json');
+    expect(slurm).toContain("results.round_$round.json");
+    expect(slurm).toContain("uv run --frozen prepare.py");
+    expect(`${local}\n${slurm}`).not.toMatch(/export NANOCHAT_DATA_IDENTITY_SHA256="\$\(/);
+    expect(`${local}\n${slurm}`).not.toContain("TOKENS_PER_SECOND");
+    expect(`${local}\n${slurm}`).not.toContain("NPROC_PER_NODE");
   });
 
   it("keeps nanochat benchmark CLI flags limited to paper hyperparameters", async () => {
@@ -149,280 +223,417 @@ describe("packaged examples", () => {
     expect(batchConfig).toMatchObject({
       type: "categorical",
       choices: [
-        "8x131072",
-        "8x262144",
-        "8x524288",
-        "8x1048576",
-        "8x2097152",
+        "16x131072",
         "16x262144",
         "16x524288",
-        "16x1048576",
-        "16x2097152",
+        "32x131072",
+        "32x262144",
         "32x524288",
-        "32x1048576",
-        "32x2097152"
+        "64x131072",
+        "64x262144",
+        "64x524288",
+        "128x262144",
+        "128x524288"
       ]
     });
   });
 
-  it("runs the nanochat benchmark wrapper against a fake nanochat command", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Step 00020 | Validation bpb: 0.345678'",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
+  it("runs the pinned canonical harness and records comparable protocol metadata", async () => {
+    const fixture = await createFakeAutoresearch();
+    const resultPath = path.join(fixture.dir, "result.json");
+    const configPath = path.join(fixture.root, "config.json");
 
-    const output = await runPythonScript([EXAMPLES.nanochat, "--warmup-ratio", "0.1"], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      FAKE_NANOCHAT_ARGV: argvPath,
-      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
+    const output = await runPythonScript([EXAMPLES.nanochat, "--batch-config", "64x524288"], {
+      AUTORESEARCH_DIR: fixture.root,
+      AUTORESEARCH_UV: fixture.python,
+      NANOCHAT_BENCHMARK_RESULT_JSON: resultPath,
+      NANOCHAT_BENCHMARK_SEED: "7",
+      NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+      HOME: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH}`
     });
 
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(await readFile(argvPath, "utf8")).toContain("--warmup-steps\n2");
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    const uvArgv = await readFile(path.join(fixture.root, "uv-argv.txt"), "utf8");
+    const dataSnapshot = await readFile(path.join(fixture.root, "data-snapshot.txt"), "utf8");
+    expect(output).toContain("autotune_metric=0.912345");
+    expect(config).toMatchObject({ device_batch_size: 64, total_batch_size: 524288, seed: 7 });
+    expect(uvArgv).toContain("--frozen");
+    expect(uvArgv).not.toContain("--no-sync");
+    expect(dataSnapshot).toBe(
+      path.join(fixture.home, ".cache", "autotune", `nanochat-data-${fixture.identity}`, "data")
+    );
+    expect(result).toMatchObject({
+      metric: 0.912345,
+      seed: 7,
+      protocol: { time_budget_seconds: 300, eval_tokens: 20971520, max_seq_len: 2048, vocab_size: 8192 },
+      autoresearch_commit: "228791fb499afffb54b46200aca536f79142f117",
+      training: { training_seconds: 300, total_tokens_m: 501.2, num_steps: 956 }
+    });
   });
 
-  it("derives nanochat iterations from a target token budget", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
+  it("publishes a complete uv project file atomically", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-uv-race-"));
+    const benchmarkPath = path.resolve(EXAMPLES.nanochat);
+    const script = [
+      "import importlib.util, os, sys, threading",
+      "from pathlib import Path",
+      "from unittest.mock import patch",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(benchmarkPath))})`,
+      `spec = importlib.util.spec_from_file_location('nanochat_benchmark', ${JSON.stringify(benchmarkPath)})`,
+      "benchmark = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(benchmark)",
+      `destination = Path(${JSON.stringify(path.join(dir, "uv.lock"))})`,
+      "content = b'complete pinned uv project content'",
+      "write_started = threading.Event()",
+      "resume_write = threading.Event()",
+      "original_fdopen = os.fdopen",
+      "class PausedWriter:",
+      "    def __init__(self, handle): self.handle = handle",
+      "    def __enter__(self): return self",
+      "    def __exit__(self, *args): return self.handle.__exit__(*args)",
+      "    def fileno(self): return self.handle.fileno()",
+      "    def flush(self): return self.handle.flush()",
+      "    def write(self, value):",
+      "        written = self.handle.write(value[:1])",
+      "        self.handle.flush()",
+      "        os.fsync(self.handle.fileno())",
+      "        write_started.set()",
+      "        if not resume_write.wait(5): raise RuntimeError('test writer timed out')",
+      "        return written + self.handle.write(value[1:])",
+      "def paused_fdopen(descriptor, mode):",
+      "    handle = original_fdopen(descriptor, mode)",
+      "    return PausedWriter(handle) if 'w' in mode and threading.current_thread().name == 'paused-writer' else handle",
+      "failure = []",
+      "def create_file():",
+      "    try: benchmark.create_cached_project_file(destination, content)",
+      "    except BaseException as error: failure.append(error)",
+      "with patch.object(benchmark.os, 'fdopen', side_effect=paused_fdopen):",
+      "    writer = threading.Thread(target=create_file, name='paused-writer')",
+      "    writer.start()",
+      "    assert write_started.wait(5)",
+      "    assert not destination.exists(), 'partial destination became visible'",
+      "    benchmark.create_cached_project_file(destination, content)",
+      "    assert destination.read_bytes() == content",
+      "    resume_write.set()",
+      "    writer.join(5)",
+      "assert not writer.is_alive()",
+      "assert not failure, failure",
+      "assert destination.read_bytes() == content",
+      "destination.write_bytes(b'mismatched')",
+      "try: benchmark.create_cached_project_file(destination, content)",
+      "except SystemExit as error: assert 'differs from pinned source' in str(error)",
+      "else: raise AssertionError('mismatched cached file was accepted')"
+    ].join("\n");
 
-    const output = await runPythonScript([EXAMPLES.nanochat, "--warmup-ratio", "0.5"], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      FAKE_NANOCHAT_ARGV: argvPath,
-      NANOCHAT_BENCHMARK_TARGET_TOKENS: "1048576",
-      NANOCHAT_BENCHMARK_TARGET_SECONDS: "300",
-      NANOCHAT_BENCHMARK_TOKENS_PER_SECOND: "10000000"
+    await runPythonScript(["-c", script], {});
+  });
+
+  it("injects only HPO constants, the seed, and the pinned kernel into canonical train.py", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-autoresearch-adapter-"));
+    const source = [
+      "import json",
+      "ASPECT_RATIO = 64",
+      "HEAD_DIM = 128",
+      'WINDOW_PATTERN = "SSSL"',
+      "TOTAL_BATCH_SIZE = 2**19",
+      "EMBEDDING_LR = 0.6",
+      "UNEMBEDDING_LR = 0.004",
+      "MATRIX_LR = 0.04",
+      "SCALAR_LR = 0.5",
+      "WEIGHT_DECAY = 0.2",
+      "WARMUP_RATIO = 0.0",
+      "WARMDOWN_RATIO = 0.5",
+      "FINAL_LR_FRAC = 0.0",
+      "DEPTH = 8",
+      "DEVICE_BATCH_SIZE = 128",
+      "class Kernel:",
+      "    flash_attn_interface = None",
+      "kernel_revision = None",
+      "def get_kernel(repo, revision=None):",
+      "    global kernel_revision",
+      "    kernel_revision = revision",
+      "    return Kernel()",
+      "repo = 'varunneal/flash-attention-3'",
+      "fa3 = get_kernel(repo).flash_attn_interface",
+      "class Cuda:",
+      "    def manual_seed(self, value): self.seed = value",
+      "class Torch:",
+      "    cuda = Cuda()",
+      "    def manual_seed(self, value): self.seed = value",
+      "torch = Torch()",
+      "torch.manual_seed(42)",
+      "torch.cuda.manual_seed(42)",
+      "print(json.dumps({'depth': DEPTH, 'aspect_ratio': ASPECT_RATIO, 'head_dim': HEAD_DIM, 'window_pattern': WINDOW_PATTERN, 'device_batch_size': DEVICE_BATCH_SIZE, 'total_batch_size': TOTAL_BATCH_SIZE, 'embedding_lr': EMBEDDING_LR, 'unembedding_lr': UNEMBEDDING_LR, 'matrix_lr': MATRIX_LR, 'scalar_lr': SCALAR_LR, 'weight_decay': WEIGHT_DECAY, 'warmup_ratio': WARMUP_RATIO, 'warmdown_ratio': WARMDOWN_RATIO, 'final_lr_frac': FINAL_LR_FRAC, 'seed': torch.seed, 'cuda_seed': torch.cuda.seed, 'kernel_revision': kernel_revision}))"
+    ].join("\n");
+    await writeFile(path.join(dir, "train.py"), source, "utf8");
+    await writeFile(path.join(dir, "prepare.py"), "# canonical prepare fixture\n", "utf8");
+    const config = {
+      depth: 12,
+      aspect_ratio: 48,
+      head_dim: 64,
+      window_pattern: "LLLL",
+      device_batch_size: 32,
+      total_batch_size: 262144,
+      embedding_lr: 0.4,
+      unembedding_lr: 0.003,
+      matrix_lr: 0.03,
+      scalar_lr: 0.4,
+      weight_decay: 0.1,
+      warmup_ratio: 0.1,
+      warmdown_ratio: 0.4,
+      final_lr_frac: 0.05,
+      seed: 9
+    };
+
+    const output = await runPythonScript([EXAMPLES.nanochatTrain], {
+      AUTORESEARCH_DIR: dir,
+      AUTOTUNE_NANOCHAT_CONFIG: JSON.stringify(config)
     });
 
-    const argv = await readFile(argvPath, "utf8");
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(argv).toContain("--num-iterations\n2");
-    expect(argv).toContain("--warmup-steps\n1");
-  });
-
-  it("prefers explicit nanochat iterations over a target token budget", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
-
-    const output = await runPythonScript([EXAMPLES.nanochat], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      FAKE_NANOCHAT_ARGV: argvPath,
-      NANOCHAT_BENCHMARK_TARGET_TOKENS: "1048576",
-      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
+    expect(JSON.parse(output)).toEqual({
+      ...config,
+      cuda_seed: 9,
+      kernel_revision: "de87b9b5af06dd9984df595bef90b2eba44b181a"
     });
 
-    const argv = await readFile(argvPath, "utf8");
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(argv).toContain("--num-iterations\n20");
+    const changedAfterVerification = await runPythonProcess([EXAMPLES.nanochatTrain], {
+      AUTORESEARCH_DIR: dir,
+      AUTOTUNE_NANOCHAT_CONFIG: JSON.stringify(config),
+      AUTOTUNE_AUTORESEARCH_TRAIN_SHA256: "0".repeat(64)
+    });
+    expect(changedAfterVerification.code).not.toBe(0);
+    expect(changedAfterVerification.stderr).toContain("train.py changed after checkout verification");
+
+    await writeFile(path.join(dir, "train.py"), source.replace("DEPTH = 8\n", ""), "utf8");
+    const drifted = await runPythonProcess([EXAMPLES.nanochatTrain], {
+      AUTORESEARCH_DIR: dir,
+      AUTOTUNE_NANOCHAT_CONFIG: JSON.stringify(config)
+    });
+    expect(drifted.code).not.toBe(0);
+    expect(drifted.stderr).toContain("expected one DEPTH, found 0");
   });
 
-  it("derives nanochat iterations from a calibrated time budget", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
+  it("isolates each trial from later canonical data mutations", async () => {
+    const fixture = await createFakeAutoresearch();
+    const manifest = JSON.parse(
+      await readFile(path.join(fixture.home, ".cache", "autoresearch", "autotune_data_manifest.json"), "utf8")
     );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
+    const snapshot = path.join(fixture.home, ".cache", "autotune", `nanochat-data-${fixture.identity}`, "data");
+    const privateSnapshot = path.join(path.dirname(fixture.home), "snapshot");
+    const liveShard = path.join(fixture.home, ".cache", "autoresearch", "data", "shard_00000.parquet");
+    const script = [
+      "import importlib.util, sys",
+      "from pathlib import Path",
+      `sys.path.insert(0, ${JSON.stringify(path.dirname(path.resolve(EXAMPLES.nanochatTrain)))})`,
+      `spec = importlib.util.spec_from_file_location('adapter', ${JSON.stringify(path.resolve(EXAMPLES.nanochatTrain))})`,
+      "adapter = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(adapter)",
+      `snapshot = Path(${JSON.stringify(privateSnapshot)})`,
+      "adapter.snapshot_cache(snapshot)",
+      "private_data = snapshot / 'home' / '.cache' / 'autoresearch' / 'data'",
+      "assert private_data.is_symlink()",
+      `Path(${JSON.stringify(liveShard)}).write_bytes(b'evil')`,
+      "assert (private_data / 'shard_00000.parquet').read_bytes() == b'data'"
+    ].join("\n");
 
-    const output = await runPythonScript([EXAMPLES.nanochat], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      FAKE_NANOCHAT_ARGV: argvPath,
-      NANOCHAT_BENCHMARK_TARGET_SECONDS: "300",
-      NANOCHAT_BENCHMARK_TOKENS_PER_SECOND: "10000000"
+    const result = await runPythonProcess(["-c", script], {
+      HOME: fixture.home,
+      AUTOTUNE_TOKENIZER_PKL_SHA256: manifest.tokenizer_sha256["tokenizer.pkl"],
+      AUTOTUNE_TOKEN_BYTES_SHA256: manifest.tokenizer_sha256["token_bytes.pt"],
+      AUTOTUNE_DATA_SNAPSHOT_DIR: snapshot
     });
 
-    const argv = await readFile(argvPath, "utf8");
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(argv).toContain("--num-iterations\n5723");
+    expect(result.code, result.stderr).toBe(0);
   });
 
-  it("can launch nanochat through torchrun for multi-GPU trials", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
-
-    const output = await runPythonScript(
-      [
-        EXAMPLES.nanochat,
-        "--device-batch-size",
-        "32",
-        "--total-batch-size",
-        "524288"
-      ],
-      {
-        NANOCHAT_DIR: nanochatDir,
-        NANOCHAT_PYTHON: fakePython,
-        FAKE_NANOCHAT_ARGV: argvPath,
-        NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8"
-      }
-    );
-
-    const argv = await readFile(argvPath, "utf8");
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(argv).toContain("torch.distributed.run\n");
-    expect(argv).toContain("--standalone\n");
-    expect(argv).toContain("--nproc_per_node=8\n");
-    expect(argv).toContain("scripts.base_train\n");
-    expect(argv).toContain("scripts.base_train\n--\n--run\n");
-  });
-
-  it("maps nanochat paired batch configs to device and total batch flags", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(
-      fakePython,
-      [
-        "#!/usr/bin/env bash",
-        "printf '%s\\n' \"$@\" > \"$FAKE_NANOCHAT_ARGV\"",
-        "echo 'Minimum validation bpb: 0.123456'"
-      ].join("\n"),
-      "utf8"
-    );
-    await chmod(fakePython, 0o755);
-    const argvPath = path.join(dir, "argv.txt");
-
-    const output = await runPythonScript([EXAMPLES.nanochat, "--batch-config", "16x1048576"], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      FAKE_NANOCHAT_ARGV: argvPath,
-      NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8",
-      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "20"
-    });
-
-    const argv = await readFile(argvPath, "utf8");
-    expect(output).toContain("autotune_metric=0.123456");
-    expect(argv).toContain("--device-batch-size\n16");
-    expect(argv).toContain("--total-batch-size\n1048576");
-  });
-
-  it("penalizes infeasible nanochat batch geometry", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-
+  it("rejects an unpinned autoresearch checkout", async () => {
+    const fixture = await createFakeAutoresearch("not-the-pinned-commit");
     const result = await runPythonProcess([EXAMPLES.nanochat], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_BENCHMARK_MAX_SEQ_LEN: "8192"
+      AUTORESEARCH_DIR: fixture.root,
+      AUTORESEARCH_UV: fixture.python,
+      NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+      HOME: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH}`
     });
 
     expect(result.code).not.toBe(0);
-    expect(result.stdout).toContain("autotune_metric=100.0");
+    expect(result.stderr).toContain("expected pinned autoresearch commit");
   });
 
-  it("marks nanochat OOM penalties as failed trials", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    const fakePython = path.join(dir, "python");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-    await writeFile(fakePython, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
-    await chmod(fakePython, 0o755);
-
-    const result = await runPythonProcess([EXAMPLES.nanochat], {
-      NANOCHAT_DIR: nanochatDir,
-      NANOCHAT_PYTHON: fakePython,
-      NANOCHAT_BENCHMARK_NUM_ITERATIONS: "1"
-    });
-
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).toContain("autotune_metric=100.0");
-  });
-
-  it("accounts for torchrun world size when checking nanochat batch geometry", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-"));
-    const nanochatDir = path.join(dir, "nanochat");
-    await mkdir(path.join(nanochatDir, "scripts"), { recursive: true });
-    await writeFile(path.join(nanochatDir, "scripts", "base_train.py"), "# fake\n", "utf8");
-
+  it("penalizes batch geometry incompatible with the single-GPU protocol", async () => {
+    const fixture = await createFakeAutoresearch();
     const result = await runPythonProcess(
-      [
-        EXAMPLES.nanochat,
-        "--device-batch-size",
-        "32",
-        "--total-batch-size",
-        "65536"
-      ],
+      [EXAMPLES.nanochat, "--device-batch-size", "128", "--total-batch-size", "131072"],
       {
-        NANOCHAT_DIR: nanochatDir,
-        NANOCHAT_BENCHMARK_NPROC_PER_NODE: "8"
+        AUTORESEARCH_DIR: fixture.root,
+        AUTORESEARCH_UV: fixture.python,
+        NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+        HOME: fixture.home,
+        PATH: `${fixture.binDir}:${process.env.PATH}`
       }
     );
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain("autotune_metric=100.0");
+  });
+
+  it("rejects non-finite HPO values before launching training", async () => {
+    const result = await runPythonProcess([EXAMPLES.nanochat, "--embedding-lr", "NaN"], {});
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("embedding_lr must be finite");
+    expect(result.stdout).toContain("autotune_metric=100.0");
+  });
+
+  it("rejects extra training shards that change the canonical data profile", async () => {
+    const fixture = await createFakeAutoresearch();
+    await writeFile(path.join(fixture.home, ".cache", "autoresearch", "data", "shard_00010.parquet"), "data", "utf8");
+    const result = await runPythonProcess([EXAMPLES.nanochat], {
+      AUTORESEARCH_DIR: fixture.root,
+      AUTORESEARCH_UV: fixture.python,
+      NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+      HOME: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH}`
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("extra=['shard_00010.parquet']");
+  });
+
+  it("requires an explicit trusted cache manifest before loading the tokenizer", async () => {
+    const fixture = await createFakeAutoresearch();
+    const manifest = path.join(fixture.home, ".cache", "autoresearch", "autotune_data_manifest.json");
+    await rename(manifest, `${manifest}.untrusted`);
+    const result = await runPythonProcess([EXAMPLES.nanochat], {
+      AUTORESEARCH_DIR: fixture.root,
+      AUTORESEARCH_UV: fixture.python,
+      NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+      HOME: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH}`
+    });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("missing trusted cache manifest");
+  });
+
+  it("rehashes canonical data before launching a benchmark group", async () => {
+    const fixture = await createFakeAutoresearch();
+    await writeFile(path.join(fixture.home, ".cache", "autoresearch", "data", "shard_00000.parquet"), "evil", "utf8");
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("shard_00000.parquet");
+  });
+
+  it("rejects a modified immutable data snapshot before launching trials", async () => {
+    const fixture = await createFakeAutoresearch();
+    const shard = path.join(
+      fixture.home,
+      ".cache",
+      "autotune",
+      `nanochat-data-${fixture.identity}`,
+      "data",
+      "shard_00000.parquet"
+    );
+    await chmod(shard, 0o600);
+
+    const writable = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(writable.code).not.toBe(0);
+    expect(writable.stderr).toContain("immutable data snapshot shard metadata differs");
+
+    await writeFile(shard, "evil", "utf8");
+    await chmod(shard, 0o400);
+
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("immutable data snapshot shard content differs");
+  });
+
+  it("tightens a current-user group-writable snapshot cache", async () => {
+    const fixture = await createFakeAutoresearch();
+    const snapshotParent = path.join(fixture.home, ".cache", "autotune");
+    await chmod(snapshotParent, 0o770);
+
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect((await stat(snapshotParent)).mode & 0o777).toBe(0o700);
+  });
+
+  it("marks canonical harness OOM penalties as failed trials", async () => {
+    const fixture = await createFakeAutoresearch();
+    await writeFile(fixture.python, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");
+    const result = await runPythonProcess([EXAMPLES.nanochat], {
+      AUTORESEARCH_DIR: fixture.root,
+      AUTORESEARCH_UV: fixture.python,
+      NANOCHAT_DATA_IDENTITY_SHA256: fixture.identity,
+      HOME: fixture.home,
+      PATH: `${fixture.binDir}:${process.env.PATH}`
+    });
 
     expect(result.code).not.toBe(0);
     expect(result.stdout).toContain("autotune_metric=100.0");
   });
 });
+
+async function createFakeAutoresearch(commit = "228791fb499afffb54b46200aca536f79142f117") {
+  const dir = await mkdtemp(path.join(tmpdir(), "autotune-autoresearch-"));
+  const root = path.join(dir, "autoresearch");
+  const home = path.join(dir, "home");
+  const binDir = path.join(dir, "bin");
+  const python = path.join(dir, "python");
+  await mkdir(root, { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await mkdir(path.join(home, ".cache", "autoresearch", "data"), { recursive: true });
+  await mkdir(path.join(home, ".cache", "autoresearch", "tokenizer"), { recursive: true });
+  for (const index of [...Array(10).keys(), 6542]) {
+    await writeFile(path.join(home, ".cache", "autoresearch", "data", `shard_${String(index).padStart(5, "0")}.parquet`), "data", "utf8");
+  }
+  await writeFile(path.join(home, ".cache", "autoresearch", "tokenizer", "tokenizer.pkl"), "tokenizer", "utf8");
+  await writeFile(path.join(home, ".cache", "autoresearch", "tokenizer", "token_bytes.pt"), "token bytes", "utf8");
+  const identity = (await runPythonScript([EXAMPLES.nanochatCache, "create"], { HOME: home })).trim();
+  await runPythonScript([EXAMPLES.nanochatCache, "verify"], { HOME: home });
+  await writeFile(path.join(root, "train.py"), "# fake canonical train\n", "utf8");
+  await writeFile(path.join(root, "prepare.py"), "# fake canonical prepare\n", "utf8");
+  await writeFile(path.join(root, "pyproject.toml"), "[project]\nname='fake'\n", "utf8");
+  await writeFile(path.join(root, "uv.lock"), "version = 1\n", "utf8");
+  await writeFile(path.join(root, ".python-version"), "3.10\n", "utf8");
+  await writeFile(path.join(root, "README.md"), "# fake autoresearch\n", "utf8");
+  await writeFile(
+    path.join(binDir, "git"),
+    [
+      "#!/usr/bin/env bash",
+      "if [[ \"$*\" == *\"rev-parse --show-toplevel\"* ]]; then echo \"$2\"; exit 0; fi",
+      `if [[ \"$*\" == *\"rev-parse HEAD\" ]]; then echo '${commit}'; exit 0; fi`,
+      "if [[ \"$*\" == *\"cat-file blob 228791fb499afffb54b46200aca536f79142f117:\"* ]]; then name=\"${5#*:}\"; cat \"$2/$name\"; exit 0; fi",
+      "exit 0"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    python,
+    [
+      "#!/usr/bin/env bash",
+      "printf '%s\\n' \"$@\" > \"$AUTORESEARCH_DIR/uv-argv.txt\"",
+      "printf '%s' \"$AUTOTUNE_NANOCHAT_CONFIG\" > \"$AUTORESEARCH_DIR/config.json\"",
+      "printf '%s' \"$AUTOTUNE_DATA_SNAPSHOT_DIR\" > \"$AUTORESEARCH_DIR/data-snapshot.txt\"",
+      "echo 'autotune_materialized_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'",
+      "echo 'autotune_runtime={\"cuda\":\"12.8\",\"gpu_capability\":[9,0],\"gpu_name\":\"Fake H100\",\"kernels_package\":\"0.12.1\",\"loaded_kernels\":[{\"metadata_id\":\"fake\",\"repo_id\":\"varunneal/flash-attention-3\",\"revision\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\",\"snapshot_commit\":\"de87b9b5af06dd9984df595bef90b2eba44b181a\"}],\"python\":\"3.10.12\",\"torch\":\"2.9.1\"}'",
+      "echo 'val_bpb:          0.912345'",
+      "echo 'training_seconds: 300.0'",
+      "echo 'total_tokens_M:   501.2'",
+      "echo 'num_steps:        956'"
+    ].join("\n"),
+    "utf8"
+  );
+  await chmod(path.join(binDir, "git"), 0o755);
+  await chmod(python, 0o755);
+  return { dir, root, home, binDir, python, identity };
+}
 
 async function runPythonScript(args: string[], env: Record<string, string>): Promise<string> {
   const result = await runPythonProcess(args, env);
