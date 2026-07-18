@@ -4,6 +4,10 @@ dist/
 examples/**/autotune/
 coverage/
 *.log
+/autotune-*.out
+/autotune-*.err
+/slurm-*.out
+/slurm-*.err
 .env
 __pycache__/
 *.py[cod]

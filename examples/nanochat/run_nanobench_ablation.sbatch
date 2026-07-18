@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=autotune-nanobench
-#SBATCH --partition=a3,aisci
+#SBATCH --partition=a3
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --gres=gpu:4
@@ -273,23 +273,23 @@ verify_variant_completion() {
     local round expected_trials
     local -a results=()
     case "$name" in
-        01_optuna_baseline)
-            results+=(--result "optuna_baseline=$BASELINE_TRIALS:$OUT_ROOT/$name/results.json")
-            ;;
-        04_centaur)
-            results+=(--result "centaur=$CENTAUR_TRIALS:$OUT_ROOT/$name/results.json")
-            ;;
-        02_autotune_resets_no_trial_transfer|03_autotune_resets_trial_transfer)
-            for ((round = 0; round <= REFINE_ROUNDS; round++)); do
-                expected_trials="$REFINE_TRIALS"
-                [[ "$round" -eq 0 ]] && expected_trials="$REFINE_INITIAL_TRIALS"
-                results+=(--result "${name}_round_$round=$expected_trials:$OUT_ROOT/$name/results.round_$round.json")
-            done
-            ;;
-        *)
-            echo "Unknown discovery arm: $name" >&2
-            return 2
-            ;;
+    01_optuna_baseline)
+        results+=(--result "optuna_baseline=$BASELINE_TRIALS:$OUT_ROOT/$name/results.json")
+        ;;
+    04_centaur)
+        results+=(--result "centaur=$CENTAUR_TRIALS:$OUT_ROOT/$name/results.json")
+        ;;
+    02_autotune_resets_no_trial_transfer | 03_autotune_resets_trial_transfer)
+        for ((round = 0; round <= REFINE_ROUNDS; round++)); do
+            expected_trials="$REFINE_TRIALS"
+            [[ "$round" -eq 0 ]] && expected_trials="$REFINE_INITIAL_TRIALS"
+            results+=(--result "${name}_round_$round=$expected_trials:$OUT_ROOT/$name/results.round_$round.json")
+        done
+        ;;
+    *)
+        echo "Unknown discovery arm: $name" >&2
+        return 2
+        ;;
     esac
     python3 "$EXAMPLE_DIR/manage_nanochat_run.py" check --root "$OUT_ROOT" "${results[@]}"
 }
