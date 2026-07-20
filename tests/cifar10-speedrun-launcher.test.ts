@@ -14,8 +14,10 @@ describe("CIFAR-10 speedrun Slurm launcher", () => {
     const result = await runLauncher(fixture.env);
     expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
     const launcher = await readFile(LAUNCHER, "utf8");
+    expect(launcher).toContain("#SBATCH --nodes=1");
     expect(launcher).toContain("#SBATCH --ntasks=4");
     expect(launcher).toContain("#SBATCH --gres=gpu:4");
+    expect(launcher).toContain("#SBATCH --cpus-per-task=8");
     expect(launcher).toContain("#SBATCH --mem=256G");
     expect(launcher).toContain("#SBATCH --time=2-00:00:00");
     expect((await readFile(fixture.prepareLog, "utf8")).trim().split("\n")).toHaveLength(1);
@@ -23,7 +25,7 @@ describe("CIFAR-10 speedrun Slurm launcher", () => {
     const srunCommands = (await readFile(fixture.srunLog, "utf8")).trim().split("\n");
     expect(srunCommands).toHaveLength(4);
     for (const command of srunCommands) {
-      expect(command).toContain("--exclusive --ntasks=1 --cpus-per-task=8 --gres=gpu:1 /usr/bin/env");
+      expect(command).toContain("--exclusive --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --mem=64G /usr/bin/env");
     }
     const commands = await readCommands(fixture.nodeLog);
     expect(commands).toHaveLength(4);

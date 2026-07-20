@@ -267,7 +267,7 @@ run_variant() {
         "$cache_dir/torch_extensions" \
         "$cache_dir/xdg" \
         "$work_dir/trial_metrics"
-    exec srun --exclusive --ntasks=1 --cpus-per-task=8 --gres=gpu:1 /usr/bin/env \
+    exec srun --exclusive --ntasks=1 --cpus-per-task=8 --gres=gpu:1 --mem=64G /usr/bin/env \
         TMPDIR="$cache_dir/tmp" \
         TORCHINDUCTOR_CACHE_DIR="$cache_dir/torchinductor" \
         TRITON_CACHE_DIR="$cache_dir/triton" \
