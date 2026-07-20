@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=autotune-cifar10-speedrun
-#SBATCH --partition=aisci,a3
+#SBATCH --partition=a3
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=0
+#SBATCH --mem=256G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=slurm-%x-%j.out
 #SBATCH --error=slurm-%x-%j.err
@@ -135,7 +135,7 @@ if [[ ! "$RUN_GROUP" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "RUN_GROUP may contain only letters, numbers, dots, underscores, and hyphens" >&2
     exit 2
 fi
-OUT_ROOT="${OUT_ROOT:-$HOME/.local/share/autotune/cifar10_speedrun_ablations/$RUN_GROUP}"
+OUT_ROOT="${OUT_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/autotune/cifar10_speedrun_ablations/$RUN_GROUP}"
 CACHE_ROOT="${AUTOTUNE_RUNTIME_CACHE_DIR:-$OUT_ROOT/runtime_cache}"
 INITIAL_CONFIG="$OUT_ROOT/search_space.initial.yaml"
 

@@ -16,6 +16,7 @@ describe("CIFAR-10 speedrun Slurm launcher", () => {
     const launcher = await readFile(LAUNCHER, "utf8");
     expect(launcher).toContain("#SBATCH --ntasks=4");
     expect(launcher).toContain("#SBATCH --gres=gpu:4");
+    expect(launcher).toContain("#SBATCH --mem=256G");
     expect(launcher).toContain("#SBATCH --time=2-00:00:00");
     expect((await readFile(fixture.prepareLog, "utf8")).trim().split("\n")).toHaveLength(1);
     expect((await readFile(fixture.analyzeLog, "utf8")).trim().split("\n")).toHaveLength(1);
@@ -104,6 +105,28 @@ describe("CIFAR-10 speedrun Slurm launcher", () => {
     expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
     const commands = await readCommands(fixture.nodeLog);
     expect(flagValue(commandFor(commands, "01_optuna_baseline"), "--trials")).toBe("20");
+  });
+
+  it("defaults durable results to private XDG state storage", async () => {
+    const fixture = await createLauncherFixture();
+    const home = fixture.env.HOME as string;
+    const localHome = path.join(home, ".local");
+    const dataHome = path.join(home, ".local", "share");
+    await mkdir(dataHome, { recursive: true });
+    await chmod(home, 0o700);
+    await chmod(localHome, 0o700);
+    await chmod(dataHome, 0o775);
+    const env: NodeJS.ProcessEnv = { ...fixture.env };
+    delete env.OUT_ROOT;
+
+    const result = await runLauncher(env);
+
+    expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
+    const defaultRoot = path.join(home, ".local", "state", "autotune", "cifar10_speedrun_ablations", "test");
+    expect((await stat(defaultRoot)).mode & 0o077).toBe(0);
+    const commands = await readCommands(fixture.nodeLog);
+    expect(flagValue(commandFor(commands, "01_optuna_baseline"), "--work-dir"))
+      .toBe(path.join(defaultRoot, "01_optuna_baseline"));
   });
 
   it("rejects unequal budgets unless explicitly allowed", async () => {
