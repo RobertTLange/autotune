@@ -4,6 +4,15 @@ import path from "node:path";
 import { plotProgress, readVariantProgress } from "../src/progress-plot.js";
 
 describe("progress plot", () => {
+  it("labels the fourth ablation arm as Centaur", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-progress-centaur-"));
+    await writeResult(path.join(root, "04_centaur", "results.json"), "maximize", [trial(0, 1)]);
+
+    const [variant] = await readVariantProgress(root);
+
+    expect(variant.label).toBe("Centaur");
+  });
+
   it("includes result variants with unrecognized directory names", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "autotune-progress-variants-"));
     await writeResult(path.join(root, "04_fixed_params_only", "results.json"), "maximize", [trial(0, 1)]);

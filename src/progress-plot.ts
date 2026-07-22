@@ -111,6 +111,9 @@ function labelForVariant(name: string): { order: number; label: string } {
   if (/^03_/.test(name) || /trial.*transfer/.test(name)) {
     return { order: 3, label: "Resets + transfer" };
   }
+  if (/centaur/i.test(name)) {
+    return { order: 4, label: "Centaur" };
+  }
   return { order: Number.POSITIVE_INFINITY, label: name };
 }
 
