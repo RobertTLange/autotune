@@ -8,10 +8,14 @@ const DEFAULT_HEIGHT = 650;
 const DEFAULT_MAX_TRIALS = 100;
 const COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#d97706"];
 
+export type ProgressXAxis = "trials" | "runtime";
+
 export interface PlotProgressOptions {
   output: string;
   title?: string;
   maxTrials?: number;
+  xAxis?: ProgressXAxis;
+  maxRuntimeHours?: number;
   width?: number;
   height?: number;
   yMin?: number;
@@ -30,12 +34,23 @@ interface ProgressPoint {
   improved: boolean;
 }
 
+interface ResetMarker {
+  x: number;
+  approximate: boolean;
+}
+
+interface ProgressReset {
+  round: number;
+  x: number;
+}
+
 interface VariantProgress {
   label: string;
   direction: Direction;
   points: ProgressPoint[];
-  resets: number[];
+  resets: ProgressReset[];
   totalTrials: number;
+  totalRuntimeHours: number;
   best?: number;
 }
 
@@ -55,6 +70,8 @@ export async function plotProgress(runDirectory: string, options: PlotProgressOp
     width: options.width ?? DEFAULT_WIDTH,
     height: options.height ?? DEFAULT_HEIGHT,
     maxTrials: options.maxTrials ?? DEFAULT_MAX_TRIALS,
+    xAxis: options.xAxis ?? "trials",
+    maxRuntimeHours: options.maxRuntimeHours,
     yMin: options.yMin,
     yMax: options.yMax
   });
@@ -64,20 +81,22 @@ export async function plotProgress(runDirectory: string, options: PlotProgressOp
 
 export async function readVariantProgress(
   runDirectory: string,
-  options: Pick<PlotProgressOptions, "maxTrials" | "includeFailed"> = {}
+  options: Pick<PlotProgressOptions, "maxTrials" | "includeFailed" | "xAxis"> = {}
 ): Promise<VariantProgress[]> {
   const maxTrials = options.maxTrials ?? DEFAULT_MAX_TRIALS;
+  const xAxis = options.xAxis ?? "trials";
   const variants = await discoverVariantDirectories(runDirectory);
   return Promise.all(
     variants.map(async (variant) => {
       const rounds = await discoverRoundFiles(variant.directory);
       const direction = await readDirection(rounds);
-      const { points, resets, totalTrials, best } = await buildProgress(rounds, {
+      const { points, resets, totalTrials, totalRuntimeHours, best } = await buildProgress(rounds, {
         direction,
         maxTrials,
+        xAxis,
         includeFailed: options.includeFailed ?? false
       });
-      return { label: variant.label, direction, points, resets, totalTrials, best };
+      return { label: variant.label, direction, points, resets, totalTrials, totalRuntimeHours, best };
     })
   );
 }
@@ -152,11 +171,12 @@ async function readDirection(rounds: RoundFile[]): Promise<Direction> {
 
 async function buildProgress(
   rounds: RoundFile[],
-  options: { direction: Direction; maxTrials: number; includeFailed: boolean }
-): Promise<{ points: ProgressPoint[]; resets: number[]; totalTrials: number; best?: number }> {
+  options: { direction: Direction; maxTrials: number; xAxis: ProgressXAxis; includeFailed: boolean }
+): Promise<{ points: ProgressPoint[]; resets: ProgressReset[]; totalTrials: number; totalRuntimeHours: number; best?: number }> {
   const points: ProgressPoint[] = [];
-  const resets: number[] = [];
-  let x = 0;
+  const resets: ProgressReset[] = [];
+  let totalTrials = 0;
+  let totalRuntimeHours = 0;
   let best: number | undefined;
 
   for (let index = 0; index < rounds.length; index += 1) {
@@ -165,10 +185,12 @@ async function buildProgress(
       if (isTransferTrial(trial)) {
         continue;
       }
-      if (x >= options.maxTrials) {
+      if (totalTrials >= options.maxTrials) {
         break;
       }
-      x += 1;
+      totalTrials += 1;
+      totalRuntimeHours += trialRuntimeHours(trial, options.xAxis === "runtime");
+      const x = options.xAxis === "runtime" ? totalRuntimeHours : totalTrials;
       let improved = false;
       if (isScoredTrial(trial, options.includeFailed)) {
         const previous = best;
@@ -179,14 +201,28 @@ async function buildProgress(
         points.push({ x, y: best, improved });
       }
     }
-    if (index < rounds.length - 1 && x < options.maxTrials) {
-      resets.push(x);
+    if (index < rounds.length - 1 && totalTrials < options.maxTrials) {
+      resets.push({
+        round: rounds[index + 1].round,
+        x: options.xAxis === "runtime" ? totalRuntimeHours : totalTrials
+      });
     }
-    if (x >= options.maxTrials) {
+    if (totalTrials >= options.maxTrials) {
       break;
     }
   }
-  return { points, resets, totalTrials: x, best };
+  return { points, resets, totalTrials, totalRuntimeHours, best };
+}
+
+function trialRuntimeHours(trial: TrialResult, required: boolean): number {
+  const duration = trial.user_attrs?.autotune_duration_seconds;
+  if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+    return duration / 3600;
+  }
+  if (required) {
+    throw new Error(`runtime x-axis requires autotune_duration_seconds for trial #${trial.number}`);
+  }
+  return 0;
 }
 
 function isScoredTrial(trial: TrialResult, includeFailed: boolean): boolean {
@@ -214,7 +250,16 @@ async function readStudyResult(file: string): Promise<StudyResult> {
 
 function renderProgressSvg(
   variants: VariantProgress[],
-  options: { title: string; width: number; height: number; maxTrials: number; yMin?: number; yMax?: number }
+  options: {
+    title: string;
+    width: number;
+    height: number;
+    maxTrials: number;
+    xAxis: ProgressXAxis;
+    maxRuntimeHours?: number;
+    yMin?: number;
+    yMax?: number;
+  }
 ): string {
   const margin = { top: 72, right: 40, bottom: 72, left: 86 };
   const chart = {
@@ -230,11 +275,17 @@ function renderProgressSvg(
   const yDomain = resolveYDomain(allY, options);
   const direction = variants[0]?.direction ?? "maximize";
   const subtitle = direction === "maximize" ? "higher is better" : "lower is better";
-  const xToPx = (value: number) => chart.left + (value / options.maxTrials) * chart.width;
+  const xMax = resolveXMax(variants, options);
+  const xToPx = (value: number) => chart.left + (value / xMax) * chart.width;
   const yToPx = (value: number) => chart.top + chart.height - ((value - yDomain.min) / (yDomain.max - yDomain.min)) * chart.height;
-  const resetXs = [...new Set(variants.flatMap((variant) => variant.resets))].sort((left, right) => left - right);
   const yTicks = ticks(yDomain.min, yDomain.max, 5);
-  const xTicks = ticks(0, options.maxTrials, 5).map(Math.round);
+  const runtimeAxis = options.xAxis === "runtime";
+  const xTicks = runtimeAxis ? ticks(0, xMax, 5) : ticks(0, xMax, 5).map(Math.round);
+  const resetMarkers = runtimeAxis
+    ? mergeCorrespondingResetMarkers(variants)
+    : [...new Set(variants.flatMap((variant) => variant.resets.map((reset) => reset.x)))]
+        .sort((left, right) => left - right)
+        .map((x) => ({ x, approximate: false }));
   const legend = legendBox(chart, variants.length, direction);
 
   const parts = [
@@ -252,7 +303,7 @@ function renderProgressSvg(
     `<defs><clipPath id="chart-clip"><rect x="${chart.left}" y="${chart.top}" width="${chart.width}" height="${chart.height}"/></clipPath></defs>`,
     `<rect width="${options.width}" height="${options.height}" fill="#ffffff"/>`,
     `<text x="${chart.left}" y="34" font-size="24" font-weight="700">${escapeXml(options.title)}</text>`,
-    `<text x="${chart.left}" y="58" font-size="14" class="muted">Best score so far (${subtitle}); failed trials counted on x-axis but ignored for best-score updates.</text>`
+    `<text x="${chart.left}" y="58" font-size="14" class="muted">Best score so far (${subtitle}); ${runtimeAxis ? "failed trial runtime included" : "failed trials counted"} on x-axis but ignored for best-score updates.</text>`
   ];
 
   for (const tick of yTicks) {
@@ -263,17 +314,22 @@ function renderProgressSvg(
   for (const tick of xTicks) {
     const x = xToPx(tick);
     parts.push(`<line x1="${formatSvgNumber(x)}" y1="${chart.top}" x2="${formatSvgNumber(x)}" y2="${chart.top + chart.height}" class="grid"/>`);
-    parts.push(`<text x="${formatSvgNumber(x)}" y="${chart.top + chart.height + 24}" font-size="12" text-anchor="middle" class="muted">${tick}</text>`);
+    parts.push(`<text x="${formatSvgNumber(x)}" y="${chart.top + chart.height + 24}" font-size="12" text-anchor="middle" class="muted">${runtimeAxis ? formatRuntimeHours(tick) : Math.round(tick)}</text>`);
   }
-  for (const reset of resetXs) {
-    const x = xToPx(reset);
+  for (const reset of resetMarkers) {
+    const x = xToPx(reset.x);
+    const alignRight = x > chart.left + chart.width - 100;
+    const labelX = x + (alignRight ? -6 : 6);
     parts.push(`<line x1="${formatSvgNumber(x)}" y1="${chart.top}" x2="${formatSvgNumber(x)}" y2="${chart.top + chart.height}" class="reset"/>`);
-    parts.push(`<text x="${formatSvgNumber(x + 6)}" y="${chart.top + 18}" font-size="12" class="muted">reset @ ${reset}</text>`);
+    const resetLabel = reset.approximate
+      ? `resets ≈ ${formatRuntimeHours(reset.x)}h`
+      : `reset @ ${runtimeAxis ? `${formatRuntimeHours(reset.x)}h` : reset.x}`;
+    parts.push(`<text x="${formatSvgNumber(labelX)}" y="${chart.top + 18}" font-size="12" text-anchor="${alignRight ? "end" : "start"}" class="muted">${resetLabel}</text>`);
   }
 
   parts.push(`<line x1="${chart.left}" y1="${chart.top + chart.height}" x2="${chart.left + chart.width}" y2="${chart.top + chart.height}" class="axis"/>`);
   parts.push(`<line x1="${chart.left}" y1="${chart.top}" x2="${chart.left}" y2="${chart.top + chart.height}" class="axis"/>`);
-  parts.push(`<text x="${chart.left + chart.width / 2}" y="${options.height - 24}" font-size="14" text-anchor="middle">Total evaluated trials</text>`);
+  parts.push(`<text x="${chart.left + chart.width / 2}" y="${options.height - 24}" font-size="14" text-anchor="middle">${runtimeAxis ? "Cumulative trial runtime (hours)" : "Total evaluated trials"}</text>`);
   parts.push(`<text transform="translate(24 ${chart.top + chart.height / 2}) rotate(-90)" font-size="14" text-anchor="middle">Best score so far</text>`);
   parts.push(`<rect x="${formatSvgNumber(legend.x)}" y="${formatSvgNumber(legend.y)}" width="${legend.width}" height="${legend.height}" rx="6" class="legend-bg"/>`);
 
@@ -288,18 +344,58 @@ function renderProgressSvg(
       parts.push(`</g>`);
       const last = variant.points[variant.points.length - 1];
       parts.push(`<circle cx="${formatSvgNumber(xToPx(last.x))}" cy="${formatSvgNumber(yToPx(last.y))}" r="4" fill="${color}"/>`);
-      const endpoint = endpointLabel(xToPx(last.x), yToPx(last.y), chart);
-      parts.push(`<text x="${formatSvgNumber(endpoint.x)}" y="${formatSvgNumber(endpoint.y)}" font-size="12" text-anchor="${endpoint.anchor}" fill="${color}">${formatTick(last.y)}</text>`);
+      if (!runtimeAxis) {
+        const endpoint = endpointLabel(xToPx(last.x), yToPx(last.y), chart);
+        parts.push(`<text x="${formatSvgNumber(endpoint.x)}" y="${formatSvgNumber(endpoint.y)}" font-size="12" text-anchor="${endpoint.anchor}" fill="${color}">${formatTick(last.y)}</text>`);
+      }
     }
     const legendY = legend.y + 20 + index * 28;
     const legendX = legend.x + 14;
     parts.push(`<line x1="${legendX}" y1="${legendY}" x2="${legendX + 24}" y2="${legendY}" class="line" stroke="${color}"/>`);
     parts.push(`<text x="${legendX + 34}" y="${legendY + 4}" font-size="13">${escapeXml(variant.label)}</text>`);
-    parts.push(`<text x="${legendX + 34}" y="${legendY + 20}" font-size="11" class="muted">best ${variant.best === undefined ? "n/a" : formatTick(variant.best)} · ${variant.totalTrials} trials</text>`);
+    const total = runtimeAxis
+      ? `${formatRuntimeHours(variant.totalRuntimeHours)}h · ${variant.totalTrials} trials`
+      : `${variant.totalTrials} trials`;
+    parts.push(`<text x="${legendX + 34}" y="${legendY + 20}" font-size="11" class="muted">best ${variant.best === undefined ? "n/a" : formatTick(variant.best)} · ${total}</text>`);
   });
 
   parts.push("</svg>");
   return `${parts.join("\n")}\n`;
+}
+
+function mergeCorrespondingResetMarkers(variants: VariantProgress[]): ResetMarker[] {
+  const groups = new Map<number, number[]>();
+  for (const variant of variants) {
+    for (const reset of variant.resets) {
+      const group = groups.get(reset.round) ?? [];
+      group.push(reset.x);
+      groups.set(reset.round, group);
+    }
+  }
+  return [...groups.values()]
+    .map((group) => ({
+      x: group.reduce((sum, value) => sum + value, 0) / group.length,
+      approximate: group.length > 1
+    }))
+    .sort((left, right) => left.x - right.x);
+}
+
+function resolveXMax(
+  variants: VariantProgress[],
+  options: { xAxis: ProgressXAxis; maxTrials: number; maxRuntimeHours?: number }
+): number {
+  if (options.xAxis === "trials") {
+    return options.maxTrials;
+  }
+  const observed = Math.max(...variants.map((variant) => variant.totalRuntimeHours));
+  const maximum = options.maxRuntimeHours ?? observed;
+  if (!Number.isFinite(maximum) || maximum <= 0) {
+    throw new Error(`expected max runtime hours greater than zero, got ${String(maximum)}`);
+  }
+  if (maximum < observed) {
+    throw new Error(`max runtime hours ${maximum} is less than observed runtime ${formatRuntimeHours(observed)}`);
+  }
+  return maximum;
 }
 
 function legendBox(
@@ -384,6 +480,15 @@ function formatTick(value: number): string {
     return value.toFixed(3);
   }
   return value.toPrecision(3);
+}
+
+function formatRuntimeHours(value: number): string {
+  const absolute = Math.abs(value);
+  if (absolute === 0) {
+    return "0";
+  }
+  const decimals = absolute >= 1 ? 1 : absolute >= 0.1 ? 2 : absolute >= 0.01 ? 3 : absolute >= 0.001 ? 4 : 6;
+  return value.toFixed(decimals).replace(/\.?0+$/, "");
 }
 
 function formatSvgNumber(value: number): string {

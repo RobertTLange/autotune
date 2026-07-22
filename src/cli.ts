@@ -3,6 +3,7 @@ import { Command, Option } from "commander";
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { plotProgress } from "./progress-plot.js";
+import type { ProgressXAxis } from "./progress-plot.js";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
@@ -105,7 +106,9 @@ export function createProgram(): Command {
   .argument("<run-dir>", "ablation run directory containing variant result subdirectories")
   .requiredOption("--output <file>", "write SVG plot to file")
   .option("--title <title>", "plot title")
-  .option("--max-trials <n>", "maximum evaluated trials on the x-axis", parsePositiveInt, 100)
+  .option("--max-trials <n>", "maximum evaluated trials to include", parsePositiveInt, 100)
+  .addOption(new Option("--x-axis <axis>", "x-axis scale").choices(["trials", "runtime"]).default("trials"))
+  .option("--max-runtime-hours <n>", "maximum cumulative runtime on a runtime x-axis", parseFiniteNumber)
   .option("--width <px>", "SVG width", parsePositiveInt, 1100)
   .option("--height <px>", "SVG height", parsePositiveInt, 650)
   .option("--y-min <n>", "minimum y-axis value", parseFiniteNumber)
@@ -115,6 +118,8 @@ export function createProgram(): Command {
     output: string;
     title?: string;
     maxTrials: number;
+    xAxis: ProgressXAxis;
+    maxRuntimeHours?: number;
     width: number;
     height: number;
     yMin?: number;
