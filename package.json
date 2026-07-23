@@ -34,7 +34,6 @@
     "examples/*/*.sbatch",
     "examples/README.md",
     "CHANGELOG.md",
-    "templates/*.md",
     "templates/*.py",
     "README.md"
   ],
