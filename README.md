@@ -255,6 +255,8 @@ npm run build
 
 The test suite uses fake `python3` and `headless` binaries for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.
 
+Maintainers: see [RELEASING.md](RELEASING.md) for the version, tag, npm provenance, and trusted-publisher workflow.
+
 ## Support
 
 Report bugs and request features through [GitHub Issues](https://github.com/RobertTLange/autotune/issues). Include `autotune --version`, the failing command, and relevant terminal output. Do not include credentials or private training data.
