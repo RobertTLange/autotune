@@ -131,6 +131,72 @@ describe("BBOB examples", () => {
     await expectProcessStopped(descendantPid);
   }, 10_000);
 
+  it.skipIf(process.platform !== "darwin")("supports Python runtimes without waitid", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-no-waitid-"));
+    const descendantPidFile = path.join(dir, "descendant.pid");
+    const childCommand = [
+      "sleep 2 &",
+      "child=$!",
+      "printf '%s\\n' \"$child\" > \"$DESCENDANT_PID_FILE\""
+    ].join("\n");
+    const bootstrap = [
+      "import os, runpy, sys",
+      'os.__dict__.pop("waitid", None)',
+      `sys.argv = ${JSON.stringify([
+        PROCESS_SUPERVISOR, "--grace-seconds", "1", "--", "bash", "-c", childCommand
+      ])}`,
+      `runpy.run_path(${JSON.stringify(PROCESS_SUPERVISOR)}, run_name="__main__")`
+    ].join("; ");
+
+    const result = await runCommand("python3", ["-c", bootstrap], {
+      DESCENDANT_PID_FILE: descendantPidFile
+    }, 5_000);
+
+    expect(result.code, result.stderr).toBe(0);
+    const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+    await expectProcessStopped(descendantPid);
+  }, 8_000);
+
+  it("reaps the process group when exit watcher setup fails", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-watcher-failure-"));
+    const processPidFile = path.join(dir, "process.pid");
+    const childCommand = [
+      "trap '' TERM",
+      "printf '%s\\n' \"$$\" > \"$PROCESS_PID_FILE\"",
+      "sleep 5"
+    ].join("\n");
+    const failureHook = [
+      "def fail_kqueue():",
+      "    time.sleep(0.2)",
+      '    raise OSError(24, "forced kqueue failure")'
+    ].join("\n");
+    const bootstrap = [
+      "import os, runpy, select, sys, time",
+      `exec(${JSON.stringify(failureHook)})`,
+      "select.kqueue = fail_kqueue",
+      'os.__dict__.pop("waitid", None)',
+      `sys.argv = ${JSON.stringify([
+        PROCESS_SUPERVISOR, "--grace-seconds", "1", "--", "bash", "-c", childCommand
+      ])}`,
+      `runpy.run_path(${JSON.stringify(PROCESS_SUPERVISOR)}, run_name="__main__")`
+    ].join("; ");
+    const supervisor = spawn("python3", ["-c", bootstrap], {
+      env: { ...process.env, PROCESS_PID_FILE: processPidFile },
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+
+    const resultCode = await new Promise<number | null>((resolve, reject) => {
+      supervisor.on("error", reject);
+      supervisor.on("exit", resolve);
+    });
+    await waitForFile(processPidFile);
+    const processPid = Number((await readFile(processPidFile, "utf8")).trim());
+
+    expect(resultCode).not.toBe(0);
+    const state = spawnSync("ps", ["-o", "stat=", "-p", String(processPid)], { encoding: "utf8" });
+    expect(state.status !== 0 || state.stdout.trim().startsWith("Z")).toBe(true);
+  }, 8_000);
+
   it("force-kills a TERM-resistant process-group leader", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-term-"));
     const processPidFile = path.join(dir, "processes.pid");

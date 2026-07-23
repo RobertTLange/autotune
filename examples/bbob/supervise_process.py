@@ -5,6 +5,7 @@ import argparse
 import ctypes
 import errno
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -76,7 +77,7 @@ def active_group_members(group_id: int) -> list[int] | None:
     return [
         pid
         for pid, _, process_group, state in rows
-        if process_group == group_id and pid != group_id and not state.startswith("Z")
+        if process_group == group_id and not state.startswith("Z")
     ]
 
 
@@ -174,6 +175,42 @@ def exit_code(wait_status: int, forwarded_signal: int | None) -> int:
     return 1
 
 
+def create_exit_queue(child_pid: int) -> tuple[object | None, bool]:
+    if hasattr(os, "waitid"):
+        return None, False
+    if not hasattr(select, "kqueue"):
+        raise RuntimeError("this platform provides neither waitid nor kqueue")
+
+    queue = select.kqueue()
+    event = select.kevent(
+        child_pid,
+        filter=select.KQ_FILTER_PROC,
+        flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+        fflags=select.KQ_NOTE_EXIT,
+    )
+    while True:
+        try:
+            queue.control([event], 0, 0)
+            break
+        except InterruptedError:
+            continue
+        except ProcessLookupError:
+            queue.close()
+            return None, True
+        except BaseException:
+            queue.close()
+            raise
+    return queue, False
+
+
+def child_has_exited(child_pid: int, exit_queue: object | None, already_exited: bool) -> bool:
+    if already_exited:
+        return True
+    if exit_queue is not None:
+        return bool(exit_queue.control(None, 1, 0))
+    return os.waitid(os.P_PID, child_pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
 def main() -> int:
     grace_seconds, command = parse_args()
     enable_child_subreaper()
@@ -194,19 +231,30 @@ def main() -> int:
 
     child = subprocess.Popen(command, start_new_session=True)
     child_pid = child.pid
+    try:
+        exit_queue, already_exited = create_exit_queue(child_pid)
+    except BaseException:
+        clean_process_group(child_pid, grace_seconds)
+        clean_adopted_descendants(child_pid, grace_seconds)
+        os.waitpid(child_pid, 0)
+        reap_adopted_children()
+        raise
     if forwarded_signal is not None:
         signal_group(child_pid, forwarded_signal)
 
-    while True:
-        try:
-            child_status = os.waitid(os.P_PID, child_pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-        except InterruptedError:
-            continue
-        if child_status is not None:
-            break
-        if termination_deadline is not None and time.monotonic() >= termination_deadline:
-            signal_group(child_pid, signal.SIGKILL)
-        time.sleep(0.05)
+    try:
+        while True:
+            try:
+                if child_has_exited(child_pid, exit_queue, already_exited):
+                    break
+            except InterruptedError:
+                continue
+            if termination_deadline is not None and time.monotonic() >= termination_deadline:
+                signal_group(child_pid, signal.SIGKILL)
+            time.sleep(0.05)
+    finally:
+        if exit_queue is not None:
+            exit_queue.close()
 
     clean_process_group(child_pid, grace_seconds, termination_deadline)
     clean_adopted_descendants(child_pid, grace_seconds, termination_deadline)
