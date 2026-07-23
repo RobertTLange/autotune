@@ -8,7 +8,7 @@ const EXAMPLE_DIR = path.join(ROOT_DIR, "examples", "cifar10_speedrun");
 const LAUNCHER = path.join(EXAMPLE_DIR, "run_cifar10_speedrun_ablations.sbatch");
 const MANIFEST_TOOL = path.join(EXAMPLE_DIR, "manage_cifar10_run.py");
 const PREPARE_TOOL = path.join(EXAMPLE_DIR, "prepare_cifar10_data.py");
-describe("CIFAR-10 speedrun Slurm launcher", () => {
+describe.skipIf(process.platform !== "linux")("CIFAR-10 speedrun Slurm launcher", () => {
   it("runs four isolated one-GPU arms concurrently with the two-day preset", async () => {
     const fixture = await createLauncherFixture();
     const result = await runLauncher(fixture.env);

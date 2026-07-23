@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { plotProgress } from "./progress-plot.js";
 import type { ProgressXAxis } from "./progress-plot.js";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
 const MAX_AGENT_GUIDANCE_FILE_BYTES = 65536;
+export const PACKAGE_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  version: string;
+}).version;
 
 export function createProgram(): Command {
   const program = new Command();
@@ -15,7 +18,7 @@ export function createProgram(): Command {
   program
     .name("autotune")
     .description("Automatic hyperparameter optimization CLI powered by headless and Optuna.")
-    .version("0.1.0");
+    .version(PACKAGE_VERSION);
 
   program
   .command("run")
@@ -342,5 +345,5 @@ export function isMainModule(moduleUrl = import.meta.url, argvPath = process.arg
   if (argvPath === undefined) {
     return false;
   }
-  return moduleUrl === pathToFileURL(realpathSync(argvPath)).href;
+  return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(argvPath);
 }

@@ -7,6 +7,7 @@ const ROOT_DIR = process.cwd();
 const LAUNCHER = path.join(ROOT_DIR, "examples", "nanochat", "run_nanobench_ablation.sbatch");
 const LOCAL_LAUNCHER = path.join(ROOT_DIR, "examples", "nanochat", "run_nanochat_benchmark.sh");
 const MANIFEST_TOOL = path.join(ROOT_DIR, "examples", "nanochat", "manage_nanochat_run.py");
+const slurmIt = process.platform === "linux" ? it : it.skip;
 
 describe("nanochat Slurm ablation launcher", () => {
   it("omits the unsupported sampler seed for local Centaur runs", async () => {
@@ -45,7 +46,7 @@ describe("nanochat Slurm ablation launcher", () => {
     expect(flagValue(seededCommand, "--sampler-seed")).toBe("17");
   });
 
-  it("runs four one-GPU discovery arms concurrently and validates every method", async () => {
+  slurmIt("runs four one-GPU discovery arms concurrently and validates every method", async () => {
     const fixture = await createLauncherFixture();
     const result = await runLauncher(fixture.env);
 
@@ -91,7 +92,7 @@ describe("nanochat Slurm ablation launcher", () => {
     }
   });
 
-  it("rejects unequal Centaur trials unless explicitly allowed", async () => {
+  slurmIt("rejects unequal Centaur trials unless explicitly allowed", async () => {
     const fixture = await createLauncherFixture();
     const rejected = await runLauncher({ ...fixture.env, CENTAUR_TRIALS: "99" });
 
@@ -108,7 +109,7 @@ describe("nanochat Slurm ablation launcher", () => {
     expect(flagValue(commandFor(commands, "04_centaur"), "--trials")).toBe("99");
   });
 
-  it("rejects arithmetic expressions in numeric environment overrides", async () => {
+  slurmIt("rejects arithmetic expressions in numeric environment overrides", async () => {
     const fixture = await createLauncherFixture();
     const marker = path.join(path.dirname(fixture.outRoot), "arithmetic-injection");
     const result = await runLauncher({
@@ -121,7 +122,7 @@ describe("nanochat Slurm ablation launcher", () => {
     await expect(readFile(marker, "utf8")).rejects.toThrow();
   });
 
-  it("rejects unsafe cancellation grace values before launching jobs", async () => {
+  slurmIt("rejects unsafe cancellation grace values before launching jobs", async () => {
     const fixture = await createLauncherFixture();
     const leadingZero = await runLauncher({ ...fixture.env, CANCEL_GRACE_SECONDS: "09" });
 
@@ -137,7 +138,7 @@ describe("nanochat Slurm ablation launcher", () => {
     await expect(readFile(fixture.nodeLog, "utf8")).rejects.toThrow();
   });
 
-  it("rejects a duplicate Centaur sampler arm and existing discovery storage", async () => {
+  slurmIt("rejects a duplicate Centaur sampler arm and existing discovery storage", async () => {
     const samplerFixture = await createLauncherFixture();
     const duplicateCentaur = await runLauncher({ ...samplerFixture.env, SAMPLER: "centaur" });
     expect(duplicateCentaur.code).toBe(2);
@@ -152,7 +153,7 @@ describe("nanochat Slurm ablation launcher", () => {
     expect(existingStorage.stderr).toContain("Run root already exists");
   });
 
-  it("resumes finalist validation without relaunching discovery", async () => {
+  slurmIt("resumes finalist validation without relaunching discovery", async () => {
     const fixture = await createLauncherFixture();
     await mkdir(fixture.outRoot, { recursive: true });
     await writeFile(path.join(fixture.outRoot, "discovery_complete.json"), "{}", "utf8");
@@ -168,7 +169,7 @@ describe("nanochat Slurm ablation launcher", () => {
     expect(await readFile(fixture.validationLog, "utf8")).toContain("results.round_3.json");
   });
 
-  it("fails fast and cancels sibling discovery steps", async () => {
+  slurmIt("fails fast and cancels sibling discovery steps", async () => {
     const fixture = await createLauncherFixture();
     const startedAt = Date.now();
     const result = await runLauncher({
@@ -184,7 +185,7 @@ describe("nanochat Slurm ablation launcher", () => {
     await expect(readFile(fixture.validationLog, "utf8")).rejects.toThrow();
   });
 
-  it("fails fast when a discovery arm stops before its expected trial count", async () => {
+  slurmIt("fails fast when a discovery arm stops before its expected trial count", async () => {
     const fixture = await createLauncherFixture();
     const result = await runLauncher({
       ...fixture.env,

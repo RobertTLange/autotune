@@ -2,6 +2,23 @@
   "name": "@roberttlange/autotune",
   "version": "0.1.0",
   "description": "Automatic hyperparameter optimization CLI powered by headless and Optuna.",
+  "keywords": [
+    "hyperparameter-optimization",
+    "optuna",
+    "cli",
+    "ai-agents",
+    "machine-learning"
+  ],
+  "author": "Robert Lange <robertlange0@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RobertTLange/autotune.git"
+  },
+  "homepage": "https://github.com/RobertTLange/autotune#readme",
+  "bugs": {
+    "url": "https://github.com/RobertTLange/autotune/issues"
+  },
   "type": "module",
   "bin": {
     "autotune": "./dist/cli.js"
@@ -31,6 +48,11 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "packageManager": "npm@11.16.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
     "commander": "^15.0.0",

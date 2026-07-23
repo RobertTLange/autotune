@@ -1,5 +1,5 @@
 import { Command, Option } from "commander";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   isMainModule,
   normalizeReasoningEffort,
   normalizeRunOptions,
+  PACKAGE_VERSION,
   parseProbability,
   parseNonNegativeInt,
   parsePositiveInt,
@@ -14,6 +15,15 @@ import {
 } from "../src/cli.js";
 
 describe("CLI option normalization", () => {
+  it("uses package.json as the CLI version source of truth", async () => {
+    const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+      version: string;
+    };
+
+    expect(PACKAGE_VERSION).toBe(packageJson.version);
+    expect(createProgram().version()).toBe(packageJson.version);
+  });
+
   it("uses --effort as an alias for --reasoning-effort", () => {
     expect(normalizeReasoningEffort({ effort: "high" })).toBe("high");
     expect(normalizeReasoningEffort({ reasoningEffort: "xhigh", effort: "low" })).toBe("xhigh");
