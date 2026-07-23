@@ -73,7 +73,7 @@ Use `--yes` only when accepting the first proposed space is intended.
 - Configure the Headless backend with `--agent codex`, `--model gpt-5.5`, and `--reasoning-effort high`; `--effort high` is a shorter alias.
 - Use `--output results.json` for an explicit results path.
 - Use refinement rounds when useful: `--refine-rounds 2 --refine-trials 10 --refine-mode ask`.
-- Inspect prior output with `autotune results .autotune` or `autotune results results.json`.
+- Inspect prior output with `autotune results autotune` or `autotune results results.json`.
 
 ## Compiled Scripts
 
