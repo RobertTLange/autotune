@@ -173,7 +173,7 @@ jobs:
           PACKAGE_INTEGRITY: ${{ steps.metadata.outputs.integrity }}
         run: |
           set -euo pipefail
-          registry_integrity="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.integrity 2>/dev/null || true)"
+          registry_integrity="$(timeout 10s npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.integrity --fetch-retries=0 --fetch-timeout=9000 2>/dev/null || true)"
           if [[ -n "$registry_integrity" && "$registry_integrity" != "$PACKAGE_INTEGRITY" ]]; then
             echo "Registry version exists with different integrity" >&2
             exit 1
@@ -181,9 +181,54 @@ jobs:
           if [[ -z "$registry_integrity" ]]; then
             npm publish "$PACKAGE_TARBALL" --access public --provenance --ignore-scripts
           fi
-          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version)" = "$PACKAGE_VERSION"
-          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.integrity)" = "$PACKAGE_INTEGRITY"
-          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.attestations.provenance.predicateType)" = "https://slsa.dev/provenance/v1"
+          metadata_field() {
+            node --input-type=commonjs -e '
+              let metadata = {};
+              try { metadata = JSON.parse(process.argv[1]); } catch {}
+              const value = metadata[process.argv[2]];
+              if (typeof value === "string") process.stdout.write(value);
+            ' "$1" "$2"
+          }
+          verification_deadline=$((SECONDS + 60))
+          for attempt in {1..12}; do
+            remaining_seconds=$((verification_deadline - SECONDS))
+            if (( remaining_seconds <= 0 )); then break; fi
+            lookup_timeout=$((remaining_seconds < 5 ? remaining_seconds : 5))
+            registry_metadata="$(timeout "${lookup_timeout}s" npm view \
+              "$PACKAGE_NAME@$PACKAGE_VERSION" \
+              version \
+              dist.integrity \
+              dist.attestations.provenance.predicateType \
+              --json \
+              --fetch-retries=0 \
+              --fetch-timeout="$((lookup_timeout * 1000))" \
+              2>/dev/null || true)"
+            registry_version=""
+            registry_integrity=""
+            provenance_type=""
+            if [[ -n "$registry_metadata" ]]; then
+              registry_version="$(metadata_field "$registry_metadata" version)"
+              registry_integrity="$(metadata_field "$registry_metadata" dist.integrity)"
+              provenance_type="$(metadata_field "$registry_metadata" dist.attestations.provenance.predicateType)"
+            fi
+            if [[ "$registry_version" = "$PACKAGE_VERSION" && \
+                  "$registry_integrity" = "$PACKAGE_INTEGRITY" && \
+                  "$provenance_type" = "https://slsa.dev/provenance/v1" ]]; then
+              exit 0
+            fi
+            if [[ -n "$registry_integrity" && "$registry_integrity" != "$PACKAGE_INTEGRITY" ]]; then
+              echo "Registry version exists with different integrity" >&2
+              exit 1
+            fi
+            remaining_seconds=$((verification_deadline - SECONDS))
+            if (( attempt < 12 && remaining_seconds > 0 )); then
+              sleep_seconds=$((remaining_seconds < 5 ? remaining_seconds : 5))
+              echo "Waiting for npm registry metadata to propagate (attempt $attempt/12)"
+              sleep "$sleep_seconds"
+            fi
+          done
+          echo "Published package metadata did not propagate before timeout" >&2
+          exit 1
 
   github-release:
     name: Create GitHub Release
