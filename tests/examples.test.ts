@@ -564,6 +564,57 @@ describe("packaged examples", () => {
     expect((await stat(snapshotParent)).mode & 0o777).toBe(0o700);
   });
 
+  it("recovers an interrupted owner-writable snapshot publication", async () => {
+    const fixture = await createFakeAutoresearch();
+    const snapshot = path.join(fixture.home, ".cache", "autotune", `nanochat-data-${fixture.identity}`);
+    await chmod(snapshot, 0o700);
+
+    const result = await runPythonProcess([EXAMPLES.nanochatCache, "verify"], { HOME: fixture.home });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect((await stat(snapshot)).mode & 0o777).toBe(0o500);
+  });
+
+  it("removes a snapshot when post-publication hardening fails", async () => {
+    const script = [
+      "import tempfile",
+      "from pathlib import Path",
+      "import nanochat_cache as cache",
+      "with tempfile.TemporaryDirectory() as root:",
+      "    temporary = Path(root) / 'temporary'",
+      "    snapshot = Path(root) / 'snapshot'",
+      "    temporary.mkdir(mode=0o700)",
+      "    data_dir = temporary / 'data'",
+      "    data_dir.mkdir(mode=0o500)",
+      "    def fail_hardening(descriptor, mode):",
+      "        raise PermissionError('forced hardening failure')",
+      "    cache.os.fchmod = fail_hardening",
+      "    real_path_chmod = cache.Path.chmod",
+      "    def fail_path_chmod(path, mode):",
+      "        raise PermissionError('forced path chmod failure')",
+      "    cache.Path.chmod = fail_path_chmod",
+      "    real_remove = cache.shutil.rmtree",
+      "    def fail_remove(path, *args, **kwargs):",
+      "        raise PermissionError('forced removal failure')",
+      "    cache.shutil.rmtree = fail_remove",
+      "    try:",
+      "        cache.publish_data_snapshot(temporary, snapshot)",
+      "    except PermissionError:",
+      "        pass",
+      "    else:",
+      "        raise AssertionError('expected hardening failure')",
+      "    cache.Path.chmod = real_path_chmod",
+      "    cache.shutil.rmtree = real_remove",
+      "    assert not snapshot.exists()"
+    ].join("\n");
+
+    const result = await runPythonProcess(["-c", script], {
+      PYTHONPATH: path.resolve("examples", "nanochat")
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it("marks canonical harness OOM penalties as failed trials", async () => {
     const fixture = await createFakeAutoresearch();
     await writeFile(fixture.python, ["#!/usr/bin/env bash", "echo 'CUDA out of memory' >&2", "exit 1"].join("\n"), "utf8");

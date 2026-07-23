@@ -238,6 +238,51 @@ def copy_snapshot_file(source: Path, destination: Path, expected_size: int, expe
         os.close(source_descriptor)
 
 
+def publish_data_snapshot(temporary: Path, snapshot: Path) -> bool:
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory_descriptor = os.open(temporary, directory_flags)
+    try:
+        try:
+            os.replace(temporary, snapshot)
+        except OSError as exc:
+            if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
+                return False
+            raise
+        try:
+            os.fchmod(directory_descriptor, 0o500)
+        except OSError:
+            published_metadata = os.fstat(directory_descriptor)
+            current_metadata = snapshot.lstat()
+            if (current_metadata.st_dev, current_metadata.st_ino) == (
+                published_metadata.st_dev,
+                published_metadata.st_ino,
+            ):
+                os.replace(snapshot, temporary)
+                try:
+                    temporary.chmod(0o700)
+                except OSError:
+                    pass
+                data_dir = temporary / "data"
+                if data_dir.exists() and stat.S_ISDIR(data_dir.lstat().st_mode):
+                    try:
+                        data_dir.chmod(0o700)
+                    except OSError:
+                        pass
+                try:
+                    shutil.rmtree(temporary)
+                except OSError:
+                    pass
+            raise
+        return True
+    finally:
+        os.close(directory_descriptor)
+
+
 def prepare_data_snapshot(dataset: dict) -> Path:
     snapshot = data_snapshot_path(dataset)
     parent = snapshot.parent
@@ -269,6 +314,13 @@ def prepare_data_snapshot(dataset: dict) -> Path:
     try:
         fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
         if snapshot.exists():
+            snapshot_metadata = snapshot.lstat()
+            if (
+                stat.S_ISDIR(snapshot_metadata.st_mode)
+                and stat.S_IMODE(snapshot_metadata.st_mode) == 0o700
+                and is_owned_and_nonwritable_by_others(snapshot_metadata)
+            ):
+                snapshot.chmod(0o500)
             return verified_data_snapshot(dataset, rehash_data=True)
         temporary = Path(tempfile.mkdtemp(prefix=f".{snapshot.name}.", suffix=".tmp", dir=parent))
         try:
@@ -284,21 +336,23 @@ def prepare_data_snapshot(dataset: dict) -> Path:
             write_manifest(temporary / SNAPSHOT_MANIFEST_NAME, snapshot_manifest(dataset))
             (temporary / SNAPSHOT_MANIFEST_NAME).chmod(0o400)
             data_dir.chmod(0o500)
-            temporary.chmod(0o500)
-            published = False
-            try:
-                os.replace(temporary, snapshot)
-                published = True
-            except OSError as exc:
-                if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
-                    raise
+            published = publish_data_snapshot(temporary, snapshot)
         finally:
             if temporary.exists():
-                temporary.chmod(0o700)
+                try:
+                    temporary.chmod(0o700)
+                except OSError:
+                    pass
                 data_dir = temporary / "data"
                 if data_dir.exists():
-                    data_dir.chmod(0o700)
-                shutil.rmtree(temporary)
+                    try:
+                        data_dir.chmod(0o700)
+                    except OSError:
+                        pass
+                try:
+                    shutil.rmtree(temporary)
+                except OSError:
+                    pass
         return verified_data_snapshot(dataset, rehash_data=not published)
     finally:
         fcntl.flock(lock_descriptor, fcntl.LOCK_UN)

@@ -7,14 +7,12 @@ SECONDS=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT="$SCRIPT_DIR/benchmark.py"
+PROCESS_SUPERVISOR="$SCRIPT_DIR/supervise_process.py"
 AUTOTUNE_CLI="${AUTOTUNE_CLI:-$ROOT_DIR/dist/cli.js}"
 
 OBJECTIVES=(sphere ellipsoid rosenbrock rastrigin)
 ACTIVE_PIDS=()
 ACTIVE_NAMES=()
-ACTIVE_GROUPS=()
-ACTIVE_IDENTITIES=()
-ACTIVE_DESCENDANTS=()
 COMMAND=()
 
 TOTAL_TRIALS="${TOTAL_TRIALS:-100}"
@@ -73,7 +71,7 @@ validate_configuration() {
 
 prepare_cli() {
   [[ -f "$SCRIPT" ]] || fail "missing benchmark: $SCRIPT"
-  process_identity "$$" >/dev/null || fail "process identity tracking is unavailable"
+  [[ -f "$PROCESS_SUPERVISOR" ]] || fail "missing process supervisor: $PROCESS_SUPERVISOR"
   for objective in "${OBJECTIVES[@]}"; do
     [[ -f "$SCRIPT_DIR/${objective}_search_space.yaml" ]] || fail "missing search space for $objective"
   done
@@ -150,144 +148,18 @@ make_command() {
   esac
 }
 
-descendants_of() {
-  local parent="$1"
-  local child
-  command -v pgrep >/dev/null 2>&1 || return 0
-  while IFS= read -r child; do
-    [[ "$child" =~ ^[0-9]+$ ]] || continue
-    descendants_of "$child"
-    printf '%s\n' "$child"
-  done < <(pgrep -P "$parent" 2>/dev/null || true)
-}
-
-process_identity() {
-  local pid="$1"
-  local stat
-  local started
-  local -a fields
-  if [[ -r "/proc/$pid/stat" ]]; then
-    IFS= read -r stat < "/proc/$pid/stat" || return 1
-    read -r -a fields <<< "${stat##*) }"
-    ((${#fields[@]} >= 20)) || return 1
-    printf '%s:%s\n' "$pid" "${fields[19]}"
-    return 0
-  fi
-
-  started="$(ps -o lstart= -p "$pid" 2>/dev/null)" || return 1
-  [[ -n "$started" ]] || return 1
-  printf '%s:%s\n' "$pid" "$started"
-}
-
-identity_matches() {
-  local pid="$1"
-  local expected="$2"
-  local actual
-  actual="$(process_identity "$pid")" || return 1
-  [[ "$actual" == "$expected" ]]
-}
-
-descendant_identities_of() {
-  local parent="$1"
-  local descendant
-  local identity
-  while IFS= read -r descendant; do
-    [[ -n "$descendant" ]] || continue
-    identity="$(process_identity "$descendant")" || continue
-    printf '%s\n' "$identity"
-  done <<< "$(descendants_of "$parent")"
-}
-
-experiment_processes_alive() {
-  local index="$1"
-  local pid="${ACTIVE_PIDS[$index]}"
-  local identity
-  local descendant_pid
-  if identity_matches "$pid" "${ACTIVE_IDENTITIES[$index]}"; then
-    return 0
-  fi
-  while IFS= read -r identity; do
-    [[ -n "$identity" ]] || continue
-    descendant_pid="${identity%%:*}"
-    if identity_matches "$descendant_pid" "$identity"; then
-      return 0
-    fi
-  done <<< "${ACTIVE_DESCENDANTS[$index]}"
-  return 1
-}
-
-active_processes_alive() {
-  local index
-  for ((index = 0; index < ${#ACTIVE_PIDS[@]}; index += 1)); do
-    if [[ "${ACTIVE_PIDS[$index]}" != "0" ]] && experiment_processes_alive "$index"; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-force_kill_after_grace() {
-  local index
-  local pid
-  local group
-  local identity
-  local descendant_pid
-  local deadline=$((SECONDS + 10#$TERMINATION_GRACE_SECONDS))
-
-  while active_processes_alive && ((SECONDS < deadline)); do
-    sleep 0.1
-  done
-  active_processes_alive || return 0
-
-  for ((index = 0; index < ${#ACTIVE_PIDS[@]}; index += 1)); do
-    pid="${ACTIVE_PIDS[$index]}"
-    group="${ACTIVE_GROUPS[$index]}"
-    [[ "$pid" == "0" ]] && continue
-    if [[ "$group" == "1" ]] && identity_matches "$pid" "${ACTIVE_IDENTITIES[$index]}"; then
-      kill -KILL -- "-$pid" 2>/dev/null || true
-    elif [[ "$group" == "0" ]] && identity_matches "$pid" "${ACTIVE_IDENTITIES[$index]}"; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    while IFS= read -r identity; do
-      [[ -n "$identity" ]] || continue
-      descendant_pid="${identity%%:*}"
-      identity_matches "$descendant_pid" "$identity" || continue
-      kill -KILL "$descendant_pid" 2>/dev/null || true
-    done <<< "${ACTIVE_DESCENDANTS[$index]}"
-  done
-}
-
 terminate_active() {
   local pid
-  local identity
-  local descendant_pid
-  local watchdog_pid
+  ((${#ACTIVE_PIDS[@]} > 0)) || return 0
   local -a pids=("${ACTIVE_PIDS[@]}")
-  ((${#pids[@]} > 0)) || return 0
 
-  local index
-  for ((index = 0; index < ${#pids[@]}; index += 1)); do
-    pid="${pids[$index]}"
+  for pid in "${pids[@]}"; do
     [[ "$pid" == "0" ]] && continue
-    ACTIVE_DESCENDANTS[$index]="$(descendant_identities_of "$pid")"
-    if [[ "${ACTIVE_GROUPS[$index]}" == "1" ]] && identity_matches "$pid" "${ACTIVE_IDENTITIES[$index]}"; then
-      kill -TERM -- "-$pid" 2>/dev/null || true
-    elif [[ "${ACTIVE_GROUPS[$index]}" == "0" ]] && identity_matches "$pid" "${ACTIVE_IDENTITIES[$index]}"; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-    while IFS= read -r identity; do
-      [[ -n "$identity" ]] || continue
-      descendant_pid="${identity%%:*}"
-      identity_matches "$descendant_pid" "$identity" || continue
-      kill -TERM "$descendant_pid" 2>/dev/null || true
-    done <<< "${ACTIVE_DESCENDANTS[$index]}"
+    kill -TERM "$pid" 2>/dev/null || true
   done
-  force_kill_after_grace &
-  watchdog_pid=$!
   for pid in "${pids[@]}"; do
     [[ "$pid" == "0" ]] || wait "$pid" 2>/dev/null || true
   done
-  wait "$watchdog_pid" 2>/dev/null || true
 }
 
 on_exit() {
@@ -306,16 +178,11 @@ run_phase() {
   local objective
   local work_dir
   local index
-  local active_index
   local launched_pid
-  local launched_identity
   local failures=0
 
   ACTIVE_PIDS=()
   ACTIVE_NAMES=()
-  ACTIVE_GROUPS=()
-  ACTIVE_IDENTITIES=()
-  ACTIVE_DESCENDANTS=()
   echo
   echo "==> seed $((seed + 1))/$SEED_COUNT: $variant ($sampler, $total_trials new trials per objective)"
   if [[ "$trials" != "$total_trials" ]]; then
@@ -325,29 +192,20 @@ run_phase() {
     work_dir="$OUT_ROOT/$objective/$variant/seed_$seed"
     mkdir -p -- "$work_dir"
     make_command "$objective" "$variant" "$trials" "$sampler" "$seed"
-    if command -v setsid >/dev/null 2>&1; then
-      PATH="$ROOT_DIR/.venv/bin:$PATH" setsid "${COMMAND[@]}" >"$work_dir/run.log" 2>&1 &
-      ACTIVE_GROUPS+=(1)
-    else
-      PATH="$ROOT_DIR/.venv/bin:$PATH" "${COMMAND[@]}" >"$work_dir/run.log" 2>&1 &
-      ACTIVE_GROUPS+=(0)
-    fi
+    PATH="$ROOT_DIR/.venv/bin:$PATH" python3 "$PROCESS_SUPERVISOR" \
+      --grace-seconds "$TERMINATION_GRACE_SECONDS" -- \
+      "${COMMAND[@]}" >"$work_dir/run.log" 2>&1 &
     launched_pid=$!
     ACTIVE_PIDS+=("$launched_pid")
-    ACTIVE_IDENTITIES+=("")
-    active_index=$((${#ACTIVE_PIDS[@]} - 1))
-    if launched_identity="$(process_identity "$launched_pid")"; then
-      ACTIVE_IDENTITIES[$active_index]="$launched_identity"
-    else
-      wait "$launched_pid" 2>/dev/null || true
-      ACTIVE_PIDS[$active_index]=0
-      fail "could not track $objective/$variant/seed_$seed process identity"
-    fi
     ACTIVE_NAMES+=("$objective/$variant/seed_$seed")
     echo "    started $objective (pid $launched_pid, log $work_dir/run.log)"
   done
 
   for ((index = 0; index < ${#ACTIVE_PIDS[@]}; index += 1)); do
+    if [[ "${ACTIVE_PIDS[$index]}" == "0" ]]; then
+      echo "    completed ${ACTIVE_NAMES[$index]}"
+      continue
+    fi
     if wait "${ACTIVE_PIDS[$index]}"; then
       echo "    completed ${ACTIVE_NAMES[$index]}"
     else

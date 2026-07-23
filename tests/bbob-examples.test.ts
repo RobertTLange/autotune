@@ -6,6 +6,7 @@ import path from "node:path";
 const BBOB_DIR = path.join("examples", "bbob");
 const BENCHMARK = path.join(BBOB_DIR, "benchmark.py");
 const EXPERIMENTS = path.join(BBOB_DIR, "run_experiments.sh");
+const PROCESS_SUPERVISOR = path.join(BBOB_DIR, "supervise_process.py");
 const OBJECTIVES = ["sphere", "ellipsoid", "rosenbrock", "rastrigin"] as const;
 
 describe("BBOB examples", () => {
@@ -48,7 +49,7 @@ describe("BBOB examples", () => {
 
   it("runs four variants across all objectives for each seed", async () => {
     const fixture = await createLauncherFixture();
-    const result = await runCommand("bash", [EXPERIMENTS], fixture.env);
+    const result = await runCommand("bash", [EXPERIMENTS], fixture.env, 25_000);
 
     expect(result.code).toBe(0);
     for (const seed of [0, 1]) {
@@ -90,7 +91,7 @@ describe("BBOB examples", () => {
     expect(result.stdout).toContain("budget: 2 + 1 x 2 = 4");
     expect(result.stdout).toContain("seed 1/2");
     expect(result.stdout).toContain("seed 2/2");
-  });
+  }, 30_000);
 
   it("defaults to ten seeds and 100 evaluations per experiment", async () => {
     const launcher = await readFile(EXPERIMENTS, "utf8");
@@ -107,7 +108,80 @@ describe("BBOB examples", () => {
     const result = await runCommand("bash", [EXPERIMENTS], fixture.env);
 
     expect(result.code).not.toBe(0);
-  });
+  }, 15_000);
+
+  it("reaps process-group descendants after the command exits", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-"));
+    const descendantPidFile = path.join(dir, "descendant.pid");
+    const command = [
+      "bash -c 'trap \"\" TERM; exec sleep 60' &",
+      "child=$!",
+      "printf '%s\\n' \"$child\" > \"$DESCENDANT_PID_FILE\""
+    ].join("\n");
+
+    const result = await runCommand("python3", [
+      PROCESS_SUPERVISOR,
+      "--grace-seconds", "1",
+      "--",
+      "bash", "-c", command
+    ], { DESCENDANT_PID_FILE: descendantPidFile }, 8_000);
+
+    expect(result.code, result.stderr).toBe(0);
+    const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+    await expectProcessStopped(descendantPid);
+  }, 10_000);
+
+  it("force-kills a TERM-resistant process-group leader", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-term-"));
+    const processPidFile = path.join(dir, "processes.pid");
+    const command = [
+      "trap '' TERM",
+      "bash -c 'trap \"\" TERM; exec sleep 60' &",
+      "descendant=$!",
+      "printf '%s %s\\n' \"$$\" \"$descendant\" > \"$PROCESS_PID_FILE\"",
+      "while true; do sleep 1; done"
+    ].join("\n");
+    const supervisor = spawn("python3", [
+      PROCESS_SUPERVISOR,
+      "--grace-seconds", "1",
+      "--",
+      "bash", "-c", command
+    ], {
+      env: { ...process.env, PROCESS_PID_FILE: processPidFile },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const completion = collectChild(supervisor);
+    await waitForFile(processPidFile);
+    const [leader, descendant] = (await readFile(processPidFile, "utf8")).trim().split(" ").map(Number);
+
+    supervisor.kill("SIGTERM");
+    const result = await completion;
+
+    expect(result.code, result.stderr).toBe(143);
+    await expectProcessStopped(leader);
+    await expectProcessStopped(descendant);
+  }, 10_000);
+
+  it.skipIf(process.platform !== "linux")("reaps descendants that escape into a new session", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-supervisor-setsid-"));
+    const descendantPidFile = path.join(dir, "descendant.pid");
+    const command = [
+      "setsid bash -c 'trap \"\" TERM; exec sleep 60' &",
+      "descendant=$!",
+      "printf '%s\\n' \"$descendant\" > \"$DESCENDANT_PID_FILE\""
+    ].join("\n");
+
+    const result = await runCommand("python3", [
+      PROCESS_SUPERVISOR,
+      "--grace-seconds", "1",
+      "--",
+      "bash", "-c", command
+    ], { DESCENDANT_PID_FILE: descendantPidFile }, 8_000);
+
+    expect(result.code, result.stderr).toBe(0);
+    const descendantPid = Number((await readFile(descendantPidFile, "utf8")).trim());
+    await expectProcessStopped(descendantPid);
+  }, 10_000);
 
   it("rejects hostile trial counts before shell arithmetic", async () => {
     const fixture = await createLauncherFixture();
@@ -140,7 +214,11 @@ describe("BBOB examples", () => {
     const [pid, leaderGroup, descendantGroup] = (await readFile(fixture.childPidFile, "utf8")).trim().split(" ");
     const descendantPid = Number(pid);
 
-    expect(descendantGroup).not.toBe(leaderGroup);
+    if (fixture.hasSetsid) {
+      expect(descendantGroup).not.toBe(leaderGroup);
+    } else {
+      expect(descendantGroup).toBe(leaderGroup);
+    }
 
     child.kill("SIGTERM");
     const result = await completion;
@@ -153,24 +231,48 @@ describe("BBOB examples", () => {
 function runCommand(
   command: string,
   args: string[],
-  env: Record<string, string>
+  env: Record<string, string>,
+  timeoutMs = 12_000
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      forceKill = setTimeout(() => child.kill("SIGKILL"), 5_000);
+    }, timeoutMs);
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => { resolve({ code, stdout, stderr }); });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (forceKill !== undefined) clearTimeout(forceKill);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (forceKill !== undefined) clearTimeout(forceKill);
+      if (timedOut) {
+        reject(new Error(`${command} timed out after ${timeoutMs}ms`));
+      } else {
+        resolve({ code, stdout, stderr });
+      }
+    });
   });
 }
 
-async function createLauncherFixture(options: { failVariant?: string; longRunningName?: string } = {}): Promise<{
+async function createLauncherFixture(options: {
+  failVariant?: string;
+  longRunningName?: string;
+} = {}): Promise<{
   childPidFile: string;
   env: Record<string, string>;
+  hasSetsid: boolean;
   outputDir: string;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), "autotune-bbob-launcher-"));
@@ -185,9 +287,9 @@ async function createLauncherFixture(options: { failVariant?: string; longRunnin
   await writeFile(fakeNode, fakeNodeScript(), "utf8");
   await writeFile(fakeCli, "// fake\n", "utf8");
   await chmod(fakeNode, 0o755);
-
   return {
     childPidFile,
+    hasSetsid: spawnSync("bash", ["-c", "command -v setsid"], { encoding: "utf8" }).status === 0,
     outputDir,
     env: {
       PATH: `${binDir}:${process.env.PATH ?? ""}`,
@@ -234,16 +336,20 @@ function fakeNodeScript(): string {
     "[[ \"$count\" -eq 4 ]] || exit 97",
     "printf '%s\\n' \"${original[@]}\" > \"$work_dir/argv.txt\"",
     "if [[ \"${LONG_RUNNING_NAME:-}\" == \"$objective/$variant/$seed\" ]]; then",
-    "  setsid bash -c 'trap \"\" TERM; exec sleep 60' &",
+    "  if command -v setsid >/dev/null 2>&1; then",
+    "    setsid bash -c 'trap \"\" TERM; exec sleep 60' &",
+    "  else",
+    "    bash -c 'trap \"\" TERM; exec sleep 60' &",
+    "  fi",
     "  child=$!",
     "  leader_group=$(ps -o pgid= -p $$ | tr -d ' ')",
     "  child_group=",
     "  for _ in {1..200}; do",
     "    child_group=$(ps -o pgid= -p \"$child\" | tr -d ' ')",
-    "    if [[ -n \"$child_group\" && \"$child_group\" != \"$leader_group\" ]]; then break; fi",
+    "    if [[ -n \"$child_group\" ]]; then break; fi",
     "    sleep 0.01",
     "  done",
-    "  [[ -n \"$child_group\" && \"$child_group\" != \"$leader_group\" ]] || exit 98",
+    "  [[ -n \"$child_group\" ]] || exit 98",
     "  printf '%s %s %s\\n' \"$child\" \"$leader_group\" \"$child_group\" > \"$CHILD_PID_FILE\"",
     "  trap 'exit 0' TERM",
     "  wait \"$child\"",
@@ -287,7 +393,7 @@ function collectChild(child: ReturnType<typeof spawn>): Promise<{ code: number |
 }
 
 async function waitForFile(filePath: string): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await readFile(filePath, "utf8");
       return;
