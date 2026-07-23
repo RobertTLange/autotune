@@ -40,14 +40,42 @@ Autotune operates in clear phases:
 
 The original script is left untouched.
 
+## Requirements
+
+- Node.js 22 or newer.
+- Python 3 with Optuna 4.x.
+- [Headless](https://www.npmjs.com/package/@roberttlange/headless) configured for the agent you want to use.
+
 ## Install
 
+Install the CLI and its runtime prerequisites:
+
 ```bash
-python3 -m pip install optuna
-npm install
-npm run build
-node dist/cli.js --help
+npm install -g @roberttlange/autotune
+npm install -g @roberttlange/headless@0.4.0
+python3 -m pip install 'optuna>=4.8,<5'
+autotune doctor --agent codex
 ```
+
+Run without a global Autotune installation:
+
+```bash
+npx @roberttlange/autotune --help
+```
+
+### Agent Skill
+
+The optional Autotune agent skill is maintained in this repository rather than bundled in the npm package. Install it globally for Codex from GitHub:
+
+```bash
+npx skills add RobertTLange/autotune --skill autotune --agent codex --global
+```
+
+## Data and Privacy
+
+Headless runs with the target script directory as its working directory, so the configured agent can inspect the target source and adjacent repository files. Source code, prompts, guidance, and trial summaries may be sent to the configured model provider. Prompts, search spaces, generated runners, and results are stored locally in the run artifact directory.
+
+Use Autotune only with repositories and model providers you trust. Remove credentials, private datasets, and other sensitive material from the target directory and guidance before starting a run.
 
 ## Core Usage
 
@@ -125,7 +153,7 @@ autotune resume --storage sqlite:///study.db --trials N
 Use `doctor` to verify prerequisites before a run:
 
 ```bash
-PATH=$PWD/.venv/bin:$PATH node dist/cli.js doctor examples/mnist/mnist_cnn.py --agent codex
+autotune doctor examples/mnist/mnist_cnn.py --agent codex
 ```
 
 Use built-in help for full flag details:
@@ -219,10 +247,18 @@ See [`examples/README.md`](examples/README.md) for runnable examples, benchmark 
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run lint
 npm test
 npm run build
 ```
 
-The test suite uses fake `python3` and `headless` binaries for fast deterministic workflow coverage.
+The test suite uses fake `python3` and `headless` binaries for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.
+
+## Support
+
+Report bugs and request features through [GitHub Issues](https://github.com/RobertTLange/autotune/issues). Include `autotune --version`, the failing command, and relevant terminal output. Do not include credentials or private training data.
+
+## License
+
+Autotune is available under the [MIT License](LICENSE).

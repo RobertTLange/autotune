@@ -13,6 +13,21 @@ autotune_metric=<value>
 
 If the script lacks CLI flags or metric output, autotune may ask the agent to generate a modified copy; the original script is left untouched.
 
+## Prerequisites
+
+Check that the CLI and runtime are available before starting:
+
+```bash
+autotune --version
+autotune doctor --agent codex
+```
+
+If the CLI is missing, ask before installing the npm package globally:
+
+```bash
+npm install -g @roberttlange/autotune
+```
+
 ## When to Use
 
 Use this skill when asked to tune script hyperparameters, run an autotune example, explain autotune CLI usage, inspect autotune results, or prepare a command for Python/C++/compiled training scripts.

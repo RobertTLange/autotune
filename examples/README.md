@@ -10,6 +10,10 @@ Each task has its own subdirectory. Start with BBOB for a fast local smoke test,
 - `cifar10_speedrun/cifar10_speedrun.py`: Autotune-native CIFAR-10 speedrun benchmark.
 - `nanochat/nanochat_benchmark.py`: HPO wrapper around the pinned autoresearch evaluator.
 
+The `.sbatch` launchers target Linux Slurm nodes with GNU coreutils and Bash 5.1 or newer. The CLI, direct examples, and local BBOB launcher are also tested on macOS.
+
+The BBOB launcher supervises each experiment process group. On Linux it also adopts and cleans descendants that create a new session. On macOS, experiment commands must not daemonize or detach into a separate session.
+
 ## BBOB
 
 The BBOB-style objectives are deterministic, five-dimensional, and require only Python when evaluated directly. Run Rosenbrock:
