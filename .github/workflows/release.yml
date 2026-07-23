@@ -1,0 +1,203 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test release commit
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Build release artifact
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+      - name: Install pinned npm
+        run: npm install --global npm@11.16.0
+      - name: Validate release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node --input-type=commonjs -p "require('./package.json').version")"
+          package_name="$(node --input-type=commonjs -p "require('./package.json').name")"
+          test "$GITHUB_REF_NAME" = "v$package_version"
+          test "$(git cat-file -t "$GITHUB_REF_NAME")" = "tag"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+          grep -Fq "## [$package_version] - " CHANGELOG.md
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm audit --omit=dev
+      - name: Pack and smoke-test artifact
+        id: artifact
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/release-artifact"
+          smoke_dir="$RUNNER_TEMP/release-smoke"
+          mkdir -p "$artifact_dir"
+          pack_json="$(npm pack --ignore-scripts --json --pack-destination "$artifact_dir")"
+          filename="$(node --input-type=commonjs -e '
+            const result = JSON.parse(process.argv[1]);
+            if (!Array.isArray(result) || result.length !== 1) process.exit(1);
+            process.stdout.write(result[0].filename);
+          ' "$pack_json")"
+          integrity="$(node --input-type=commonjs -e '
+            const result = JSON.parse(process.argv[1]);
+            if (!Array.isArray(result) || result.length !== 1) process.exit(1);
+            process.stdout.write(result[0].integrity);
+          ' "$pack_json")"
+          artifact="$artifact_dir/$filename"
+          test -f "$artifact"
+          npm install --prefix "$smoke_dir" --ignore-scripts "$artifact"
+          test "$("$smoke_dir/node_modules/.bin/autotune" --version)" = "$PACKAGE_VERSION"
+          "$smoke_dir/node_modules/.bin/autotune" --help >/dev/null
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const [path, name, version, filename, integrity, tag, commit] = process.argv.slice(1);
+            fs.writeFileSync(path, `${JSON.stringify({ name, version, filename, integrity, tag, commit })}\n`);
+          ' "$artifact_dir/release-metadata.json" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$filename" "$integrity" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+      - name: Upload release artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-${{ steps.metadata.outputs.version }}
+          path: ${{ runner.temp }}/release-artifact
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  publish:
+    name: Publish to npm
+    needs: package
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+      - name: Verify npm supports trusted publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=commonjs -e '
+            const [major, minor] = process.argv[1].split(".").map(Number);
+            if (major < 11 || (major === 11 && minor < 5)) process.exit(1);
+          ' "$(npm --version)"
+      - name: Download release artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-${{ needs.package.outputs.version }}
+          path: ${{ runner.temp }}/release-artifact
+      - name: Verify release artifact
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/release-artifact"
+          metadata="$artifact_dir/release-metadata.json"
+          node --input-type=commonjs -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const [metadataPath, expectedTag, expectedCommit] = process.argv.slice(1);
+            const value = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
+            const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+            const filenamePattern = /^[0-9A-Za-z._-]+\.tgz$/;
+            if (value.name !== "@roberttlange/autotune") process.exit(1);
+            if (value.version.match(versionPattern)?.[0] !== value.version) process.exit(1);
+            if (value.tag !== expectedTag || value.commit !== expectedCommit) process.exit(1);
+            if (value.tag !== `v${value.version}`) process.exit(1);
+            if (value.filename.match(filenamePattern)?.[0] !== value.filename) process.exit(1);
+            if (path.basename(value.filename) !== value.filename) process.exit(1);
+          ' "$metadata" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          package_name="$(node --input-type=commonjs -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).name' "$metadata")"
+          package_version="$(node --input-type=commonjs -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version' "$metadata")"
+          filename="$(node --input-type=commonjs -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).filename' "$metadata")"
+          expected_integrity="$(node --input-type=commonjs -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).integrity' "$metadata")"
+          artifact="$artifact_dir/$filename"
+          test -f "$artifact"
+          actual_integrity="sha512-$(openssl dgst -sha512 -binary "$artifact" | openssl base64 -A)"
+          test "$actual_integrity" = "$expected_integrity"
+          tar -xOf "$artifact" package/package.json | node --input-type=commonjs -e '
+            let source = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", chunk => { source += chunk; });
+            process.stdin.on("end", () => {
+              const value = JSON.parse(source);
+              if (value.name !== process.argv[1] || value.version !== process.argv[2]) process.exit(1);
+            });
+          ' "$package_name" "$package_version"
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "integrity=$expected_integrity" >> "$GITHUB_OUTPUT"
+      - name: Publish package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_NAME: ${{ steps.metadata.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+          PACKAGE_TARBALL: ${{ steps.metadata.outputs.artifact }}
+          PACKAGE_INTEGRITY: ${{ steps.metadata.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          registry_integrity="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.integrity 2>/dev/null || true)"
+          if [[ -n "$registry_integrity" && "$registry_integrity" != "$PACKAGE_INTEGRITY" ]]; then
+            echo "Registry version exists with different integrity" >&2
+            exit 1
+          fi
+          if [[ -z "$registry_integrity" ]]; then
+            npm publish "$PACKAGE_TARBALL" --access public --provenance --ignore-scripts
+          fi
+          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version)" = "$PACKAGE_VERSION"
+          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.integrity)" = "$PACKAGE_INTEGRITY"
+          test "$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" dist.attestations.provenance.predicateType)" = "https://slsa.dev/provenance/v1"
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release if missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$tag" --generate-notes
