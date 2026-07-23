@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     fileParallelism: false,
     globals: true,
-    exclude: ["node_modules/**", "dist/**"],
+    exclude: ["node_modules/**", "dist/**", "examples/**/autotune/**"],
     coverage: {
       provider: "v8",
       reporter: ["text"],

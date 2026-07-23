@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -109,26 +109,41 @@ describe.skipIf(process.platform !== "linux")("CIFAR-10 speedrun Slurm launcher"
     expect(flagValue(commandFor(commands, "01_optuna_baseline"), "--trials")).toBe("20");
   });
 
-  it("defaults durable results to private XDG state storage", async () => {
+  it("defaults results under the CIFAR-10 example directory", async () => {
     const fixture = await createLauncherFixture();
-    const home = fixture.env.HOME as string;
-    const localHome = path.join(home, ".local");
-    const dataHome = path.join(home, ".local", "share");
-    await mkdir(dataHome, { recursive: true });
-    await chmod(home, 0o700);
-    await chmod(localHome, 0o700);
-    await chmod(dataHome, 0o775);
-    const env: NodeJS.ProcessEnv = { ...fixture.env };
+    const rootDir = path.join(path.dirname(fixture.outRoot), "repo");
+    const exampleDir = path.join(rootDir, "examples", "cifar10_speedrun");
+    await mkdir(exampleDir, { recursive: true });
+    await chmod(rootDir, 0o775);
+    await chmod(path.join(rootDir, "examples"), 0o775);
+    await chmod(exampleDir, 0o775);
+    await writeFile(path.join(rootDir, "package.json"), "{}", "utf8");
+    await copyFile(MANIFEST_TOOL, path.join(exampleDir, "manage_cifar10_run.py"));
+    const env: NodeJS.ProcessEnv = { ...fixture.env, ROOT_DIR: rootDir };
     delete env.OUT_ROOT;
 
     const result = await runLauncher(env);
 
     expect(result.code, `${result.stderr}\n${result.stdout}`).toBe(0);
-    const defaultRoot = path.join(home, ".local", "state", "autotune", "cifar10_speedrun_ablations", "test");
+    const defaultRoot = path.join(exampleDir, "autotune", "cifar10_speedrun_ablations", "test");
+    expect((await stat(path.join(exampleDir, "autotune"))).mode & 0o077).toBe(0);
     expect((await stat(defaultRoot)).mode & 0o077).toBe(0);
     const commands = await readCommands(fixture.nodeLog);
     expect(flagValue(commandFor(commands, "01_optuna_baseline"), "--work-dir"))
       .toBe(path.join(defaultRoot, "01_optuna_baseline"));
+
+    const explicitRoot = path.join(exampleDir, "autotune", "cifar10_speedrun_ablations", "explicit");
+    const explicit = await runLauncher({ ...env, OUT_ROOT: explicitRoot });
+    expect(explicit.code).toBe(2);
+    expect(explicit.stderr).toContain("unsafe writable parent");
+
+    const explicitCache = await runLauncher({
+      ...env,
+      OUT_ROOT: fixture.outRoot,
+      AUTOTUNE_RUNTIME_CACHE_DIR: path.join(exampleDir, "explicit-cache")
+    });
+    expect(explicitCache.code).toBe(2);
+    expect(explicitCache.stderr).toContain("unsafe writable parent");
   });
 
   it("rejects unequal budgets unless explicitly allowed", async () => {

@@ -125,16 +125,17 @@ sbatch --export=ALL examples/cifar10_speedrun/run_cifar10_speedrun_ablations.sba
 
 The two-day preset requests four GPUs on one node and launches all four discovery arms concurrently, one GPU per arm: seeded TPE, search-space resets without transfer, resets with completed-trial transfer, and Centaur. Each arm gets 500 new trials. The reset arms use an initial 125 trials followed by three 125-trial refinement rounds. Centaur uses a 10-trial CMA-ES warmup, LLM proposal probability `0.3`, and scheduler seed `42`. Every trial retains the full 100-run speedrun score. The 45-hour software budget caps cumulative completed-trial runtime; setup, agent calls, and orchestration remain subject to the 48-hour Slurm limit. The launcher does not run a separate finalist-validation phase.
 
-The launcher rebuilds, locks, and validates `train.pt` and `test.pt` once before starting the GPU steps, analyzes one shared search space, and gives each arm its own SQLite study, metrics directory, private log, temporary directory, and compiler caches. Its launcher-only data default is `~/.cache/autotune/cifar10`. It atomically claims a fresh private output root under `~/.local/share/autotune/cifar10_speedrun_ablations/` and publishes `discovery_complete.json` only after the exact four-arm result topology and every expected trial count are verified. If one arm fails or stops early, the other Slurm steps are cancelled.
+The launcher rebuilds, locks, and validates `train.pt` and `test.pt` once before starting the GPU steps, analyzes one shared search space, and gives each arm its own SQLite study, metrics directory, private log, temporary directory, and compiler caches. Its launcher-only data default is `~/.cache/autotune/cifar10`. Like the nanochat launcher, it atomically claims a fresh private output root under `examples/cifar10_speedrun/autotune/cifar10_speedrun_ablations/` and publishes `discovery_complete.json` only after the exact four-arm result topology and every expected trial count are verified. If one arm fails or stops early, the other Slurm steps are cancelled. When moving a historical run, preserve its original location with a symlink because generated runner metadata contains absolute paths.
 
 For job `<job-id>`, monitor the allocation and all arm logs with:
 
 ```bash
-tail -F "slurm-autotune-cifar10-speedrun-<job-id>.out" \
-  "$HOME/.local/share/autotune/cifar10_speedrun_ablations/<job-id>"/*/run.log
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+tail -F "$ROOT_DIR/slurm-autotune-cifar10-speedrun-<job-id>.out" \
+  "$ROOT_DIR/examples/cifar10_speedrun/autotune/cifar10_speedrun_ablations/<job-id>"/*/run.log
 ```
 
-Budget controls are `BASELINE_TRIALS` (falling back to legacy `SINGLE_SHOT_TRIALS`), `REFINE_INITIAL_TRIALS`, `REFINE_ROUNDS`, `REFINE_TRIALS`, `CENTAUR_TRIALS`, `TIME_BUDGET_SECONDS`, and `TIMEOUT_SECONDS`. Unequal totals require `ALLOW_UNEQUAL_TRIALS=1`. Search controls are `SAMPLER`, `SAMPLER_SEED`, `PRUNER`, `N_JOBS` (fixed to `1`), `CENTAUR_LLM_PROBABILITY`, `CENTAUR_WARMUP_TRIALS`, and `CENTAUR_SEED`. Operational controls include `RUN_GROUP`, `OUT_ROOT`, `AUTOTUNE_RUNTIME_CACHE_DIR`, `AUTOTUNE_PYTHON`, and `CANCEL_GRACE_SECONDS`.
+Budget controls are `BASELINE_TRIALS` (falling back to legacy `SINGLE_SHOT_TRIALS`), `REFINE_INITIAL_TRIALS`, `REFINE_ROUNDS`, `REFINE_TRIALS`, `CENTAUR_TRIALS`, `TIME_BUDGET_SECONDS`, and `TIMEOUT_SECONDS`. Unequal totals require `ALLOW_UNEQUAL_TRIALS=1`. Search controls are `SAMPLER`, `SAMPLER_SEED`, `PRUNER`, `N_JOBS` (fixed to `1`), `CENTAUR_LLM_PROBABILITY`, `CENTAUR_WARMUP_TRIALS`, and `CENTAUR_SEED`. Operational controls include `RUN_GROUP`, `OUT_ROOT`, `AUTOTUNE_RUNTIME_CACHE_DIR`, `AUTOTUNE_PYTHON`, and `CANCEL_GRACE_SECONDS`. Use `RUN_GROUP` to choose a custom name beneath the default task-local root; explicit `OUT_ROOT` and cache overrides retain full private-parent validation.
 
 ## Nanochat Benchmark
 

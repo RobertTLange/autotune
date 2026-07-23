@@ -55,9 +55,10 @@ validate_decimal_integer() {
 
 validate_private_parent_chain() {
     local target="$1"
+    local trusted_boundary="${2:-}"
     local current mode owner permissions
     current="$(dirname "$target")"
-    while [[ "$current" != "/" ]]; do
+    while [[ "$current" != "/" && "$current" != "$trusted_boundary" ]]; do
         mode="$(stat -c %a "$current")"
         owner="$(stat -c %u "$current")"
         permissions=$((8#$mode))
@@ -135,8 +136,19 @@ if [[ ! "$RUN_GROUP" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "RUN_GROUP may contain only letters, numbers, dots, underscores, and hyphens" >&2
     exit 2
 fi
-OUT_ROOT="${OUT_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/autotune/cifar10_speedrun_ablations/$RUN_GROUP}"
-CACHE_ROOT="${AUTOTUNE_RUNTIME_CACHE_DIR:-$OUT_ROOT/runtime_cache}"
+DEFAULT_OUTPUT_BASE="$EXAMPLE_DIR/autotune"
+OUT_ROOT_USES_EXAMPLE_DEFAULT=0
+if [[ -z "${OUT_ROOT:-}" ]]; then
+    OUT_ROOT="$DEFAULT_OUTPUT_BASE/cifar10_speedrun_ablations/$RUN_GROUP"
+    OUT_ROOT_USES_EXAMPLE_DEFAULT=1
+fi
+CACHE_ROOT_USES_EXAMPLE_DEFAULT=0
+if [[ -z "${AUTOTUNE_RUNTIME_CACHE_DIR:-}" ]]; then
+    CACHE_ROOT="$OUT_ROOT/runtime_cache"
+    CACHE_ROOT_USES_EXAMPLE_DEFAULT="$OUT_ROOT_USES_EXAMPLE_DEFAULT"
+else
+    CACHE_ROOT="$AUTOTUNE_RUNTIME_CACHE_DIR"
+fi
 INITIAL_CONFIG="$OUT_ROOT/search_space.initial.yaml"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -177,14 +189,35 @@ if [[ "$OUT_ROOT" == *[?#%]* ]]; then
     exit 2
 fi
 DISCOVERY_MANIFEST="$OUT_ROOT/discovery_complete.json"
+if [[ "$OUT_ROOT_USES_EXAMPLE_DEFAULT" == "1" ]]; then
+    if [[ -L "$DEFAULT_OUTPUT_BASE" ]]; then
+        echo "Default output base must not be a symlink: $DEFAULT_OUTPUT_BASE" >&2
+        exit 2
+    fi
+    mkdir -p -m 700 "$DEFAULT_OUTPUT_BASE"
+    DEFAULT_OUTPUT_BASE="$(realpath -m "$DEFAULT_OUTPUT_BASE")"
+    DEFAULT_OUTPUT_MODE="$(stat -c %a "$DEFAULT_OUTPUT_BASE")"
+    if [[ "$(stat -c %u "$DEFAULT_OUTPUT_BASE")" != "$(id -u)" || $((8#$DEFAULT_OUTPUT_MODE & 0077)) -ne 0 ]]; then
+        echo "Default output base must be an owned private directory: $DEFAULT_OUTPUT_BASE" >&2
+        exit 2
+    fi
+fi
 mkdir -p "$(dirname "$OUT_ROOT")"
-validate_private_parent_chain "$OUT_ROOT"
+OUT_ROOT_TRUSTED_BOUNDARY=""
+if [[ "$OUT_ROOT_USES_EXAMPLE_DEFAULT" == "1" && "$OUT_ROOT" == "$DEFAULT_OUTPUT_BASE"/* ]]; then
+    OUT_ROOT_TRUSTED_BOUNDARY="$DEFAULT_OUTPUT_BASE"
+fi
+validate_private_parent_chain "$OUT_ROOT" "$OUT_ROOT_TRUSTED_BOUNDARY"
 if ! mkdir -m 700 "$OUT_ROOT"; then
     echo "Run root already exists; choose a new RUN_GROUP or OUT_ROOT: $OUT_ROOT" >&2
     exit 2
 fi
 mkdir -p -m 700 "$CACHE_ROOT"
-validate_private_parent_chain "$CACHE_ROOT"
+CACHE_ROOT_TRUSTED_BOUNDARY=""
+if [[ "$CACHE_ROOT_USES_EXAMPLE_DEFAULT" == "1" && "$CACHE_ROOT" == "$DEFAULT_OUTPUT_BASE"/* ]]; then
+    CACHE_ROOT_TRUSTED_BOUNDARY="$DEFAULT_OUTPUT_BASE"
+fi
+validate_private_parent_chain "$CACHE_ROOT" "$CACHE_ROOT_TRUSTED_BOUNDARY"
 if [[ ! -d "$CACHE_ROOT" || "$(stat -c %u "$CACHE_ROOT")" != "$(id -u)" ]]; then
     echo "Runtime cache must be an owned directory: $CACHE_ROOT" >&2
     exit 2
