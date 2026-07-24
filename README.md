@@ -40,12 +40,6 @@ Autotune operates in clear phases:
 
 The original script is left untouched.
 
-## Requirements
-
-- Node.js 22 or newer.
-- Python 3 with Optuna 4.x.
-- [Headless](https://www.npmjs.com/package/@roberttlange/headless) configured for the agent you want to use.
-
 ## Install
 
 Install the CLI and its runtime prerequisites:
@@ -70,12 +64,6 @@ The optional Autotune agent skill is maintained in this repository rather than b
 ```bash
 npx skills add RobertTLange/autotune --skill autotune --agent codex --global
 ```
-
-## Data and Privacy
-
-Headless runs with the target script directory as its working directory, so the configured agent can inspect the target source and adjacent repository files. Source code, prompts, guidance, and trial summaries may be sent to the configured model provider. Prompts, search spaces, generated runners, and results are stored locally in the run artifact directory.
-
-Use Autotune only with repositories and model providers you trust. Remove credentials, private datasets, and other sensitive material from the target directory and guidance before starting a run.
 
 ## Core Usage
 
@@ -189,20 +177,6 @@ Skip analysis with a known search space:
 autotune run train.py --trials 20 --config search_space.yaml --yes
 ```
 
-## Centaur Sampler
-
-[Centaur](https://arxiv.org/abs/2603.24647) combines CMA-ES with occasional LLM-proposed trials.
-
-Install its dependencies and select it explicitly:
-
-```bash
-python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
-npm install -g '@roberttlange/headless@0.4.0'
-autotune run train.py --trials 50 --sampler centaur --agent codex
-```
-
-Centaur requires at least two numeric parameters, `--n-jobs 1`, and `--refine-rounds 0`. Persistent runs require trusted, file-backed SQLite storage. Proposal agents run through Headless in read-only mode with an allowlisted environment; only use trusted repositories and configurations. See the [PID controller example](examples/README.md#pid-controller) for a complete setup.
-
 ## Agentic Refinement
 
 Run multiple refinement rounds:
@@ -254,13 +228,3 @@ npm run build
 ```
 
 The test suite uses fake `python3` and `headless` binaries for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.
-
-Maintainers: see [RELEASING.md](RELEASING.md) for the version, tag, npm provenance, and trusted-publisher workflow.
-
-## Support
-
-Report bugs and request features through [GitHub Issues](https://github.com/RobertTLange/autotune/issues). Include `autotune --version`, the failing command, and relevant terminal output. Do not include credentials or private training data.
-
-## License
-
-Autotune is available under the [MIT License](LICENSE).
