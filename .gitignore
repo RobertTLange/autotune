@@ -11,3 +11,4 @@ coverage/
 .env
 __pycache__/
 *.py[cod]
+results/
