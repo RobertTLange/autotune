@@ -164,6 +164,36 @@ describe("prompt agent guidance contract", () => {
 });
 
 describe("prompt budget contract", () => {
+  it("applies the active-parameter cap to analysis, revision, and refinement", () => {
+    const analysis = renderAnalyzePrompt({ invocation, maxParameters: 2 });
+    const revision = renderReviseSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      feedback: "use fewer variables",
+      maxParameters: 2
+    });
+    const refinement = renderRefineSearchSpacePrompt({
+      invocation,
+      searchSpace,
+      round: 1,
+      maxParameters: 2,
+      trialSummary: {
+        direction: "maximize",
+        n_trials: 1,
+        best_trial: undefined,
+        top_trials: [],
+        parameter_ranges: []
+      }
+    });
+
+    for (const prompt of [analysis, revision, refinement]) {
+      expect(prompt).toContain("maximum_active_parameters: 2");
+      expect(prompt).toContain("must contain at most 2 active parameters");
+      expect(prompt).toContain("fixed_parameters do not count");
+      expect(prompt).toContain("highest-impact");
+    }
+  });
+
   it("includes trial budget and timeout during analysis", () => {
     const prompt = renderAnalyzePrompt({
       invocation,

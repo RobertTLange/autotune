@@ -318,6 +318,187 @@ describe("runAutotune", () => {
     expect(await readFile(argLog, "utf8")).toContain('"--model","claude-opus-4-6","--reasoning-effort","xhigh"');
   });
 
+  it("corrects an over-limit analyze-only search space once", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-limit-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const output = path.join(dir, "space.yaml");
+    const argLog = path.join(dir, "headless-args.jsonl");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakeHeadless(path.join(binDir, "headless"), { overLimitInitially: true });
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
+
+    await analyzeOnly(script, {
+      agent: "claude",
+      json: false,
+      output,
+      workDir,
+      maxParameters: 1
+    });
+
+    expect((await readSearchSpace(output)).parameters.map((parameter) => parameter.name)).toEqual(["x"]);
+    expect((await readFile(argLog, "utf8")).trim().split("\n")).toHaveLength(2);
+    expect(await readFile(path.join(workDir, "analyze_prompt.md"), "utf8")).toContain("maximum_active_parameters: 1");
+    expect(await readFile(path.join(workDir, "revise_prompt.md"), "utf8")).toContain("2 active parameters");
+  });
+
+  it("corrects an over-limit initial run search space once", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-run-limit-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const argLog = path.join(dir, "headless-args.jsonl");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"), { overLimitInitially: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
+
+    await runAutotune(script, {
+      trials: 1,
+      nJobs: 1,
+      agent: "claude",
+      json: true,
+      yes: true,
+      workDir,
+      maxParameters: 1
+    });
+
+    expect((await readSearchSpace(path.join(workDir, "search_space.yaml"))).parameters).toHaveLength(1);
+    expect((await readFile(argLog, "utf8")).trim().split("\n")).toHaveLength(2);
+  });
+
+  it("corrects an over-limit refinement search space once", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-limit-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const argLog = path.join(dir, "headless-args.jsonl");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"), { overLimitRefinement: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
+
+    await runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      nJobs: 1,
+      agent: "claude",
+      json: true,
+      yes: true,
+      workDir,
+      maxParameters: 1
+    });
+
+    expect((await readSearchSpace(path.join(workDir, "search_space.round_1.yaml"))).parameters).toHaveLength(1);
+    expect((await readFile(argLog, "utf8")).trim().split("\n")).toHaveLength(3);
+  });
+
+  it("fails after one correction when an agent remains over the parameter limit", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-limit-failure-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    const argLog = path.join(dir, "headless-args.jsonl");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakeHeadless(path.join(binDir, "headless"), {
+      overLimitInitially: true,
+      overLimitCorrection: true
+    });
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+    process.env.AUTOTUNE_HEADLESS_ARG_LOG = argLog;
+
+    await expect(analyzeOnly(script, {
+      agent: "claude",
+      json: false,
+      workDir,
+      maxParameters: 1
+    })).rejects.toThrow(/2 active parameters.*--max-parameters 1/i);
+    expect((await readFile(argLog, "utf8")).trim().split("\n")).toHaveLength(2);
+  });
+
+  it("rejects an over-limit configured search space without calling Headless", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-config-limit-"));
+    const script = path.join(dir, "train.py");
+    const config = path.join(dir, "space.yaml");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters: [
+        { name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 },
+        { name: "y", cli_flag: "--y", type: "float", low: 0, high: 1 }
+      ],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize"
+    });
+
+    await expect(runAutotune(script, {
+      trials: 1,
+      nJobs: 1,
+      agent: "claude",
+      json: false,
+      yes: true,
+      config,
+      maxParameters: 1
+    })).rejects.toThrow(/2 active parameters.*--max-parameters 1/i);
+  });
+
+  it("rejects a maximum below Centaur's minimum dimension", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-limit-"));
+    const script = path.join(dir, "train.py");
+    const config = path.join(dir, "space.yaml");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize",
+      optuna: { sampler: "centaur", centaur: { llm_probability: 0.3, warmup_trials: 10, seed: 0 } }
+    });
+
+    await expect(runAutotune(script, {
+      trials: 1,
+      nJobs: 1,
+      agent: "claude",
+      json: false,
+      yes: true,
+      config,
+      maxParameters: 1
+    })).rejects.toThrow(/--max-parameters must be at least 2 with Centaur/i);
+  });
+
+  it("revalidates the Centaur minimum after refinement", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-centaur-limit-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeHeadless(path.join(binDir, "headless"), { refinementCentaur: true });
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await expect(runAutotune(script, {
+      trials: 1,
+      refineRounds: 1,
+      refineTrials: 1,
+      refineMode: "auto",
+      nJobs: 1,
+      agent: "claude",
+      json: true,
+      yes: true,
+      workDir,
+      maxParameters: 1
+    })).rejects.toThrow(/--max-parameters must be at least 2 with Centaur/i);
+  });
+
   it("includes agent guidance in analyze-only prompts", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-guidance-"));
     const binDir = path.join(dir, "bin");
@@ -1426,7 +1607,16 @@ function resultWithDuration(durationSeconds: number) {
   };
 }
 
-async function writeFakeHeadless(filePath: string, options: { refinedFixed?: boolean; addedParamCurrentValue?: boolean; narrowedCurrentValue?: boolean; proposesCentaur?: boolean } = {}): Promise<void> {
+async function writeFakeHeadless(filePath: string, options: {
+  refinedFixed?: boolean;
+  addedParamCurrentValue?: boolean;
+  narrowedCurrentValue?: boolean;
+  proposesCentaur?: boolean;
+  overLimitInitially?: boolean;
+  overLimitCorrection?: boolean;
+  overLimitRefinement?: boolean;
+  refinementCentaur?: boolean;
+} = {}): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(
     filePath,
@@ -1447,7 +1637,9 @@ if (process.argv.join(' ').includes('modified_prompt')) {
 }
 if (process.argv.join(' ').includes('refine_prompt')) {
   console.log(JSON.stringify({
-    parameters: ${options.addedParamCurrentValue
+    parameters: ${options.overLimitRefinement
+      ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }, { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1 }]"
+      : options.addedParamCurrentValue
       ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75 }, { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1, current_value: 0.25 }]"
       : options.narrowedCurrentValue
         ? "[{ name: 'x', cli_flag: '--x', type: 'float', low: 0.25, high: 0.75, current_value: 0.5 }]"
@@ -1456,12 +1648,27 @@ if (process.argv.join(' ').includes('refine_prompt')) {
     has_arg_parsing: true,
     needs_wrapper: false,
     direction: 'maximize',
+    ${options.refinementCentaur ? "optuna: { sampler: 'centaur' }," : ""}
     reasoning: 'narrow x around completed best trials'
   }));
   process.exit(0);
 }
 console.log(JSON.stringify({
-  parameters: [{ name: 'x', cli_flag: '--x', type: 'float', low: process.argv.join(' ').includes('revise_prompt') ? -1 : 0, high: process.argv.join(' ').includes('revise_prompt') ? 2 : 1 }],
+  parameters: ${
+    options.overLimitInitially || options.overLimitCorrection
+      ? `(process.argv.join(' ').includes('revise_prompt')
+        ? (${Boolean(options.overLimitCorrection)}
+          ? [
+              { name: 'x', cli_flag: '--x', type: 'float', low: -1, high: 2 },
+              { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1 }
+            ]
+          : [{ name: 'x', cli_flag: '--x', type: 'float', low: -1, high: 2 }])
+        : [
+            { name: 'x', cli_flag: '--x', type: 'float', low: 0, high: 1 },
+            { name: 'y', cli_flag: '--y', type: 'float', low: 0, high: 1 }
+          ])`
+      : `[{ name: 'x', cli_flag: '--x', type: 'float', low: process.argv.join(' ').includes('revise_prompt') ? -1 : 0, high: process.argv.join(' ').includes('revise_prompt') ? 2 : 1 }]`
+  },
   has_arg_parsing: true,
   needs_wrapper: false,
   direction: 'maximize',

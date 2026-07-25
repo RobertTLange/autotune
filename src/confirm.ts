@@ -13,9 +13,11 @@ export async function confirmSearchSpace(input: {
   yes: boolean;
   ask?: Ask;
   revise?: (searchSpace: SearchSpace, feedback: string) => Promise<SearchSpace>;
+  validate?: (searchSpace: SearchSpace) => void;
 }): Promise<SearchSpace> {
   const request = input;
   let current = request.searchSpace;
+  request.validate?.(current);
   await writeSearchSpace(request.filePath, current);
   if (request.yes) {
     return current;
@@ -35,6 +37,7 @@ export async function confirmSearchSpace(input: {
       if (answer === "edit") {
         await openEditor(request.filePath);
         current = await readSearchSpace(request.filePath);
+        request.validate?.(current);
         continue;
       }
       if (answer === "n" || answer === "no") {
@@ -50,6 +53,7 @@ export async function confirmSearchSpace(input: {
       }
       writeStatus("Revising search space from feedback...");
       current = await request.revise(current, feedback);
+      request.validate?.(current);
       await writeSearchSpace(request.filePath, current);
     }
   } finally {

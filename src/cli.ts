@@ -38,6 +38,7 @@ export function createProgram(): Command {
   .option("--model <name>", "headless model override")
   .option("--agent-guidance <text>", "extra guidance for search-space generation and refinement")
   .option("--agent-guidance-file <file>", "file with extra guidance for search-space generation and refinement")
+  .option("--max-parameters <n>", "maximum active parameters in the search space", parsePositiveInt)
   .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--command <command>", "override script invocation command")
@@ -65,6 +66,7 @@ export function createProgram(): Command {
   .option("--model <name>", "headless model override")
   .option("--agent-guidance <text>", "extra guidance for search-space generation")
   .option("--agent-guidance-file <file>", "file with extra guidance for search-space generation")
+  .option("--max-parameters <n>", "maximum active parameters in the search space", parsePositiveInt)
   .addOption(new Option("--reasoning-effort <level>", "headless reasoning effort").choices(["low", "medium", "high", "xhigh"]))
   .addOption(new Option("--effort <level>", "alias for --reasoning-effort").choices(["low", "medium", "high", "xhigh"]))
   .option("--json", "print JSON search space", false)
@@ -82,8 +84,13 @@ export function createProgram(): Command {
     command?: string;
     agentGuidance?: string;
     agentGuidanceFile?: string;
+    maxParameters?: number;
   }) => {
-    await analyzeOnly(script, { ...raw, reasoningEffort: normalizeReasoningEffort(raw), agentGuidance: normalizeAgentGuidance(raw) });
+    await analyzeOnly(script, {
+      ...raw,
+      reasoningEffort: normalizeReasoningEffort(raw),
+      agentGuidance: normalizeAgentGuidance(raw)
+    });
   });
 
   program
@@ -178,6 +185,7 @@ export function normalizeRunOptions(raw: Record<string, unknown>, command: Comma
     agent: String(raw.agent),
     model: typeof raw.model === "string" ? raw.model : undefined,
     agentGuidance: normalizeAgentGuidance(raw),
+    maxParameters: typeof raw.maxParameters === "number" ? raw.maxParameters : undefined,
     reasoningEffort: normalizeReasoningEffort(raw),
     command: typeof raw.command === "string" ? raw.command : undefined,
     buildCommand: typeof raw.buildCommand === "string" ? raw.buildCommand : undefined,

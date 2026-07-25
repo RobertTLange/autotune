@@ -1,7 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { confirmSearchSpace, printSearchSpace } from "../src/confirm.js";
+import { validateSearchSpaceParameterLimit } from "../src/search-space.js";
 
 describe("printSearchSpace", () => {
   it("prints numeric and categorical parameters", () => {
@@ -42,6 +43,66 @@ describe("printSearchSpace", () => {
 });
 
 describe("confirmSearchSpace", () => {
+  it("validates a search space before accepting it", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-confirm-validation-"));
+    const validate = vi.fn(() => {
+      throw new Error("too many active parameters");
+    });
+
+    await expect(confirmSearchSpace({
+      searchSpace: {
+        parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+        has_arg_parsing: true,
+        needs_wrapper: false,
+        direction: "maximize"
+      },
+      filePath: path.join(dir, "search_space.yaml"),
+      yes: true,
+      validate
+    })).rejects.toThrow(/too many active parameters/i);
+    expect(validate).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an edited search space that exceeds the active-parameter limit", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-confirm-edit-limit-"));
+    const filePath = path.join(dir, "search_space.yaml");
+    const editor = path.join(dir, "editor");
+    const originalEditor = process.env.EDITOR;
+    await writeFile(
+      editor,
+      `#!/usr/bin/env node
+require("node:fs").writeFileSync(process.argv[2], ${JSON.stringify(`
+parameters:
+  - { name: x, cli_flag: --x, type: float, low: 0, high: 1 }
+  - { name: y, cli_flag: --y, type: float, low: 0, high: 1 }
+has_arg_parsing: true
+needs_wrapper: false
+direction: maximize
+`)});
+`,
+      "utf8"
+    );
+    await chmod(editor, 0o755);
+    process.env.EDITOR = editor;
+
+    try {
+      await expect(confirmSearchSpace({
+        searchSpace: {
+          parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+          has_arg_parsing: true,
+          needs_wrapper: false,
+          direction: "maximize"
+        },
+        filePath,
+        yes: false,
+        ask: async () => "edit",
+        validate: (candidate) => validateSearchSpaceParameterLimit(candidate, 1)
+      })).rejects.toThrow(/2 active parameters.*--max-parameters 1/i);
+    } finally {
+      process.env.EDITOR = originalEditor;
+    }
+  });
+
   it("revises the proposal from feedback, then accepts the revised space", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-confirm-"));
     const filePath = path.join(dir, "search_space.yaml");
