@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
 export interface CommandResult {
@@ -25,6 +27,7 @@ export async function runCommand(
     let settled = false;
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let hardStopTimer: NodeJS.Timeout | undefined;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
@@ -43,6 +46,15 @@ export async function runCommand(
             killChildTree(child.pid, "SIGTERM");
             killTimer = setTimeout(() => {
               killChildTree(child.pid, "SIGKILL");
+              hardStopTimer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                cleanupSignals();
+                child.stdout.destroy();
+                child.stderr.destroy();
+                child.unref();
+                reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
+              }, DEFAULT_KILL_GRACE_MS);
             }, DEFAULT_KILL_GRACE_MS);
           }, options.timeoutMs);
 
@@ -78,6 +90,9 @@ export async function runCommand(
       }
       if (killTimer) {
         clearTimeout(killTimer);
+      }
+      if (hardStopTimer) {
+        clearTimeout(hardStopTimer);
       }
       cleanupSignals();
       if (timedOut) {
@@ -121,13 +136,59 @@ function killChildTree(pid: number | undefined, signal: NodeJS.Signals): void {
   }
   try {
     if (process.platform === "win32") {
-      process.kill(pid, signal);
+      const systemRoot = resolveWindowsSystemRoot();
+      const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
+      const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
+        env: { SystemRoot: systemRoot, windir: systemRoot },
+        stdio: "ignore",
+        windowsHide: true
+      });
+      killer.on("error", () => {
+        try {
+          process.kill(pid, signal);
+        } catch {
+          // The process may already have exited.
+        }
+      });
+      killer.on("close", (code) => {
+        if (code === 0) return;
+        try {
+          process.kill(pid, signal);
+        } catch {
+          // The process may already have exited.
+        }
+      });
+      killer.unref();
     } else {
       process.kill(-pid, signal);
     }
   } catch {
     // Process may have exited between timeout and kill.
   }
+}
+
+export function resolveWindowsSystemRoot(
+  fileExists: (filePath: string) => boolean = existsSync,
+  configured: string | undefined = process.env.SystemRoot
+): string {
+  const standard = "C:\\Windows";
+  if (fileExists(path.win32.join(standard, "System32", "taskkill.exe"))) {
+    return standard;
+  }
+  if (configured && path.win32.isAbsolute(configured)) {
+    const normalized = path.win32.resolve(configured);
+    const parsed = path.win32.parse(normalized);
+    const taskkill = path.win32.join(normalized, "System32", "taskkill.exe");
+    if (
+      /^[A-Za-z]:\\$/.test(parsed.root) &&
+      path.win32.dirname(normalized).toLowerCase() === parsed.root.toLowerCase() &&
+      ["windows", "winnt"].includes(path.win32.basename(normalized).toLowerCase()) &&
+      fileExists(taskkill)
+    ) {
+      return normalized;
+    }
+  }
+  return standard;
 }
 
 function appendBounded(current: string, chunk: string, maxBytes: number): string {

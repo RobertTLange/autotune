@@ -1,8 +1,19 @@
-import { FALLBACK_HEADLESS_PACKAGE, extractHeadlessJson, extractHeadlessObject } from "../src/headless.js";
+import { FALLBACK_HEADLESS_PACKAGE, extractHeadlessJson, extractHeadlessObject, runHeadless } from "../src/headless.js";
 
 describe("headless fallback package", () => {
   it("uses a pinned npx package spec", () => {
     expect(FALLBACK_HEADLESS_PACKAGE).toMatch(/^@roberttlange\/headless@\d+\.\d+\.\d+$/);
+  });
+
+  it("rejects an empty explicit executable without falling back", async () => {
+    const previous = process.env.AUTOTUNE_HEADLESS_BIN;
+    process.env.AUTOTUNE_HEADLESS_BIN = "";
+    try {
+      await expect(runHeadless([], { cwd: process.cwd() })).rejects.toThrow(/must not be empty/i);
+    } finally {
+      if (previous === undefined) delete process.env.AUTOTUNE_HEADLESS_BIN;
+      else process.env.AUTOTUNE_HEADLESS_BIN = previous;
+    }
   });
 });
 

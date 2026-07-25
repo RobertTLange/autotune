@@ -1,6 +1,7 @@
 import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
 import { runCommand } from "./process.js";
+import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
 
 const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
 const HEADLESS_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -42,13 +43,24 @@ export function extractHeadlessObject(output: string): Record<string, unknown> {
 }
 
 export async function runHeadless(args: string[], options: { cwd: string; bin?: string }): Promise<string> {
-  const bin = options.bin ?? process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
+  const environmentConfigured = process.env.AUTOTUNE_HEADLESS_BIN !== undefined;
+  const explicitlyConfigured = options.bin !== undefined || environmentConfigured;
+  const configured = options.bin ?? process.env.AUTOTUNE_HEADLESS_BIN;
+  if (explicitlyConfigured && !configured?.trim()) {
+    throw new Error("configured headless executable must not be empty");
+  }
+  if (!explicitlyConfigured) {
+    const installed = await findExecutableOnPath("headless");
+    if (!installed || isWindowsBatchShim(installed)) {
+      const npx = await resolveNpxCommand();
+      return spawnCapture(npx.command, [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, ...args], options.cwd);
+    }
+    return spawnCapture(installed, args, options.cwd);
+  }
+  const bin = configured as string;
   try {
     return await spawnCapture(bin, args, options.cwd);
   } catch (error) {
-    if (!options.bin && !process.env.AUTOTUNE_HEADLESS_BIN && isMissingExecutable(error)) {
-      return spawnCapture("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, ...args], options.cwd);
-    }
     throw error;
   }
 }

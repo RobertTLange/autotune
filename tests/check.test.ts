@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { checkPrerequisites } from "../src/check.js";
@@ -6,6 +6,7 @@ import { checkPrerequisites } from "../src/check.js";
 describe("checkPrerequisites", () => {
   const originalPath = process.env.PATH;
   const originalHeadless = process.env.AUTOTUNE_HEADLESS_BIN;
+  const originalNpmExecPath = process.env.npm_execpath;
 
   afterEach(() => {
     process.env.PATH = originalPath;
@@ -13,6 +14,11 @@ describe("checkPrerequisites", () => {
       delete process.env.AUTOTUNE_HEADLESS_BIN;
     } else {
       process.env.AUTOTUNE_HEADLESS_BIN = originalHeadless;
+    }
+    if (originalNpmExecPath === undefined) {
+      delete process.env.npm_execpath;
+    } else {
+      process.env.npm_execpath = originalNpmExecPath;
     }
   });
 
@@ -64,9 +70,15 @@ describe("checkPrerequisites", () => {
     ).resolves.toMatchObject({ optuna: "4.8.0", cmaes: "0.12.0" });
   });
 
-  it("requires an installed headless executable for Centaur", async () => {
+  it("uses the npx Headless fallback for Centaur", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
     await writeCompatiblePython(path.join(dir, "python3"));
+    const npmBin = path.join(dir, "npm", "bin");
+    const npxCli = path.join(npmBin, "npx-cli.js");
+    await mkdir(npmBin, { recursive: true });
+    await writeFile(npxCli, "console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');\n", "utf8");
+    await chmod(npxCli, 0o755);
+    process.env.npm_execpath = path.join(npmBin, "npm-cli.js");
     process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
     delete process.env.AUTOTUNE_HEADLESS_BIN;
 
@@ -74,7 +86,20 @@ describe("checkPrerequisites", () => {
       invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
       agent: "claude",
       centaur: true
-    })).rejects.toThrow(/Centaur requires an installed headless executable/i);
+    })).resolves.toMatchObject({ headless: expect.stringContaining("npx") });
+  });
+
+  it("rejects an empty explicit Headless override", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-empty-headless-"));
+    await writeCompatiblePython(path.join(dir, "python3"));
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = "";
+
+    await expect(checkPrerequisites({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      agent: "claude",
+      centaur: true
+    })).rejects.toThrow(/configured headless executable must not be empty/i);
   });
 
   it("rejects unavailable Centaur proposal agents", async () => {

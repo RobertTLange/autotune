@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { renderOptunaRunner, writeOptunaRunner } from "../src/generate.js";
+import { FALLBACK_HEADLESS_PACKAGE } from "../src/headless.js";
 
 const searchSpace = {
   parameters: [{ name: "x", cli_flag: "--x", type: "float", low: -5, high: 5 }],
@@ -198,6 +199,8 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("importlib.util.spec_from_file_location(name, module_path)");
     expect(code).toContain('if name == "centaur":');
     expect(code).toContain("return CentaurSampler(");
+    expect(code).toContain(`\\"headless_fallback_package\\":\\"${FALLBACK_HEADLESS_PACKAGE}\\"`);
+    expect(code).toContain('headless_fallback_package=CONFIG["headless_fallback_package"]');
     expect(code).toContain('work_dir=Path(__file__).resolve().parent');
     expect(code).toContain('objective_context=CONFIG.get("objective_context")');
     expect(code.indexOf("params = {parameter")).toBeLessThan(code.indexOf("started_at = time.monotonic()"));
@@ -240,7 +243,8 @@ describe("renderOptunaRunner", () => {
     const runtime = await readFile(companion, "utf8");
     expect(runtime).toContain('"--allow"');
     expect(runtime).toContain('"read-only"');
-    expect(runtime).not.toContain('"npx"');
+    expect(runtime).toContain('return [*_resolve_npx_command(), "-y", fallback_package], True');
+    expect(runtime).not.toContain("shell=True");
     await expect(access(path.join(dir, "regular", "autotune_centaur_runtime.py"))).rejects.toThrow();
     await expect(access(path.join(dir, "regular", "autotune_centaur_support.py"))).rejects.toThrow();
   });

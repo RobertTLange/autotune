@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
 import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export interface SeedTrial {
@@ -44,6 +45,7 @@ export function renderOptunaRunner(input: {
     timeout,
     time_budget_seconds: input.timeBudgetSeconds,
     objective_context: input.searchSpace.reasoning,
+    headless_fallback_package: FALLBACK_HEADLESS_PACKAGE,
     centaur: input.searchSpace.optuna?.sampler === "centaur"
       ? {
           ...input.searchSpace.optuna.centaur,
@@ -391,6 +393,7 @@ def make_sampler(name, study_name=None, direction=None, storage=None):
             agent=config["agent"],
             model=config.get("model"),
             reasoning_effort=config.get("reasoning_effort"),
+            headless_fallback_package=CONFIG["headless_fallback_package"],
         )
     if name == "grid":
         search_space = {}

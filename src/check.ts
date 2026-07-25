@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { runCommand } from "./process.js";
 import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
+import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
 import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
 import type { Invocation } from "./types.js";
 
@@ -83,42 +84,52 @@ export async function checkOptuna(): Promise<string> {
 }
 
 export async function checkHeadless(agent: string): Promise<string> {
-  const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
-  let stdout = "";
-  let stderr = "";
-  try {
-    ({ stdout, stderr } = await runCommand(bin, ["--check"]));
-  } catch (error) {
-    if (bin === "headless" && isMissingExecutable(error)) {
-      ({ stdout, stderr } = await runCommand("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, "--check"]));
-    } else {
-      throw error;
-    }
-  }
-  const output = `${stdout}\n${stderr}`;
+  const { label, output } = await runHeadlessCheck();
   if (!headlessListsAgent(output, agent)) {
-    return `${bin} (agent ${agent} not listed by --check)`;
+    return `${label} (agent ${agent} not listed by --check)`;
   }
-  return `${bin} (${agent})`;
+  return `${label} (${agent})`;
 }
 
 async function checkCentaurHeadless(agent: string): Promise<string> {
-  const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
-  let output: string;
-  try {
-    const { stdout, stderr } = await runCommand(bin, ["--check"]);
-    output = `${stdout}\n${stderr}`;
-  } catch (error) {
-    if (isMissingExecutable(error)) {
-      throw new Error("Centaur requires an installed headless executable on PATH or AUTOTUNE_HEADLESS_BIN");
-    }
-    throw error;
-  }
+  const { label, output } = await runHeadlessCheck();
   if (!headlessAgentAvailable(output, agent)) {
     throw new Error(`Centaur proposal agent ${agent} is not available according to headless --check`);
   }
-  return `${bin} (${agent})`;
+  return `${label} (${agent})`;
 }
+
+async function runHeadlessCheck(): Promise<{ label: string; output: string }> {
+  const configured = process.env.AUTOTUNE_HEADLESS_BIN;
+  if (configured !== undefined && !configured.trim()) {
+    throw new Error("configured headless executable must not be empty");
+  }
+  if (configured !== undefined) {
+    const bin = configured;
+    const { stdout, stderr } = await runCommand(bin, ["--check"], HEADLESS_CHECK_OPTIONS);
+    return { label: bin, output: `${stdout}\n${stderr}` };
+  }
+  const installed = await findExecutableOnPath("headless");
+  if (installed && !isWindowsBatchShim(installed)) {
+    const { stdout, stderr } = await runCommand(installed, ["--check"], HEADLESS_CHECK_OPTIONS);
+    return { label: installed, output: `${stdout}\n${stderr}` };
+  }
+  const npx = await resolveNpxCommand();
+  const { stdout, stderr } = await runCommand(
+    npx.command,
+    [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, "--check"],
+    HEADLESS_CHECK_OPTIONS
+  );
+  return {
+    label: `npx -y ${FALLBACK_HEADLESS_PACKAGE}`,
+    output: `${stdout}\n${stderr}`
+  };
+}
+
+const HEADLESS_CHECK_OPTIONS = {
+  timeoutMs: 2 * 60 * 1000,
+  maxOutputBytes: 1024 * 1024
+};
 
 function headlessAgentAvailable(output: string, agent: string): boolean {
   const normalizedAgent = agent.trim().toLowerCase();
@@ -131,10 +142,6 @@ function headlessAgentAvailable(output: string, agent: string): boolean {
 function headlessListsAgent(output: string, agent: string): boolean {
   const available = output.toLowerCase().split(/[^a-z0-9_-]+/);
   return available.includes(agent.trim().toLowerCase());
-}
-
-function isMissingExecutable(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 export async function checkRuntime(invocation: Invocation): Promise<string> {

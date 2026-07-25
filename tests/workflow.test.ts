@@ -165,7 +165,7 @@ describe("runAutotune", () => {
     ).rejects.toThrow(/sampler seed.*n-jobs.*1/i);
   });
 
-  it("requires headless for accepted Centaur configs even with --yes", async () => {
+  it("rejects a missing explicit Headless override for accepted Centaur configs", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-headless-"));
     const binDir = path.join(dir, "bin");
     const workDir = path.join(dir, ".autotune");
@@ -185,7 +185,7 @@ describe("runAutotune", () => {
         yes: true,
         config: await writeCentaurSearchSpace(dir)
       })
-    ).rejects.toThrow(/Centaur requires an installed headless executable/i);
+    ).rejects.toThrow(/missing-headless|ENOENT/i);
   });
 
   it("rejects parallel Centaur execution", async () => {

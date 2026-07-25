@@ -1,6 +1,7 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { FALLBACK_HEADLESS_PACKAGE } from "../src/headless.js";
 import type { SearchSpace } from "../src/types.js";
 import {
   blockingTrainSource,
@@ -32,12 +33,33 @@ const centaurSpace = {
 } as const;
 
 describe("Centaur generated runtime", () => {
+  it("bounds Headless timeouts even when a grandchild inherits output pipes", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const child = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)']); time.sleep(10)";
+    const script = `import os
+import sys
+from pathlib import Path
+import autotune_centaur_support as support
+support.HEADLESS_TIMEOUT_SECONDS = 0.05
+try:
+    support.bounded_process([sys.executable, "-c", ${JSON.stringify(child)}], cwd=Path.cwd(), env=os.environ)
+except RuntimeError as error:
+    assert "timed out" in str(error)
+else:
+    raise AssertionError("expected timeout")
+`;
+    await expect(runPython(python, ["-c", script], {
+      PYTHONPATH: path.resolve("templates")
+    })).resolves.toBe("");
+  }, 20_000);
+
   it("scopes multiprovider credentials to an explicit exact provider", async () => {
     const python = await centaurPython();
     if (!python) return;
     const script = `import json
 import os
-from autotune_centaur_support import headless_environment
+from autotune_centaur_support import headless_environment, npm_environment
 
 def capture(agent, model):
     try:
@@ -68,6 +90,7 @@ print(json.dumps({
     "azure_pi": capture("pi", "azure-openai-responses/gpt-5"),
     "azure_custom": capture("opencode", "azure-openai-responses/gpt-5"),
     "config_only": capture("opencode", None),
+    "npm": npm_environment({"PATH": "safe"}),
 }))`;
 
     const output = await runPython(python, ["-c", script], {
@@ -82,7 +105,9 @@ print(json.dumps({
       AZURE_RESOURCE_NAME: "opencode-resource",
       AWS_ACCESS_KEY_ID: "must-not-reach-custom-provider",
       OPENAI_API_KEY: "openai-secret",
-      OPENROUTER_API_KEY: "openrouter-secret"
+      OPENROUTER_API_KEY: "openrouter-secret",
+      HTTPS_PROXY: "https://proxy.example",
+      NPM_CONFIG_REGISTRY: "https://registry.example"
     });
     const environments = JSON.parse(output);
 
@@ -104,6 +129,12 @@ print(json.dumps({
     expect(environments.azure_pi.AZURE_OPENAI_API_KEY).toBe("azure-secret");
     expect(environments.azure_custom.AZURE_OPENAI_API_KEY).toBeUndefined();
     expect(environments.config_only.error).toContain("provider-qualified model");
+    expect(environments.npm).toMatchObject({
+      PATH: "safe",
+      HTTPS_PROXY: "https://proxy.example",
+      NPM_CONFIG_REGISTRY: "https://registry.example"
+    });
+    expect(environments.npm.OPENAI_API_KEY).toBeUndefined();
   }, 20_000);
 
   it("rejects ambiguous multiprovider credentials before optimization", async () => {
@@ -182,6 +213,36 @@ print(json.dumps({
     const prompt = await readFile(path.join(artifactDir, "trial-000000-attempt-1.prompt.md"), "utf8");
     expect(prompt.match(/<\/UNTRUSTED_OPTIMIZATION_DATA>/g)).toHaveLength(1);
     expect(prompt).toContain("\\u003c/UNTRUSTED_OPTIMIZATION_DATA\\u003e");
+  }, 20_000);
+
+  it("runs Headless through the pinned npx fallback", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
+    const argumentsPath = path.join(dir, "npx-arguments.json");
+    const npmBin = path.join(dir, "npm", "bin");
+    const npx = path.join(npmBin, "npx-cli.js");
+    await mkdir(npmBin, { recursive: true });
+    await writeFile(npx, `
+import fs from "node:fs";
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(args));
+if (args[0] !== "-y" || args[1] !== ${JSON.stringify(FALLBACK_HEADLESS_PACKAGE)} || args[2] !== "codex") process.exit(7);
+console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
+`, "utf8");
+    const runner = await writeRunner(dir, centaurSpace, "centaur_npx", python);
+    const results = path.join(dir, "results.json");
+
+    await runPython(python, runnerArgs(runner, results, "centaur_npx", 1), {
+      PATH: `${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+      npm_execpath: path.join(npmBin, "npm-cli.js")
+    });
+
+    const parsed = JSON.parse(await readFile(results, "utf8"));
+    expect(parsed.all_trials[0].params).toEqual({ x: 0.25, y: 1.5, optimizer: "adam" });
+    expect(JSON.parse(await readFile(argumentsPath, "utf8"))).toEqual(
+      expect.arrayContaining(["-y", FALLBACK_HEADLESS_PACKAGE, "codex"])
+    );
   }, 20_000);
 
   it("resolves a relative configured Headless executable before changing directories", async () => {

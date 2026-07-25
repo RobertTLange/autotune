@@ -26,6 +26,7 @@ from autotune_centaur_support import (
     headless_environment,
     integer_hash,
     native,
+    npm_environment,
     nonempty,
     nonnegative_int,
     prepare_artifact_root,
@@ -61,6 +62,7 @@ class CentaurSampler(BaseSampler):
         agent: str,
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        headless_fallback_package: str,
         objective_context: Any = None,
     ) -> None:
         self._study_lock: Optional[int] = None
@@ -80,7 +82,12 @@ class CentaurSampler(BaseSampler):
         self._headless_env = headless_environment(self._agent, self._model)
         configured_headless = os.environ.get("AUTOTUNE_HEADLESS_BIN")
         self._headless_configured = configured_headless is not None
-        self._headless_executable = configured_headless or "headless"
+        self._headless_command: List[str] = []
+        self._headless_fallback_package = nonempty(
+            "headless fallback package", headless_fallback_package
+        )
+        if self._headless_fallback_package.startswith("-"):
+            raise ValueError("headless fallback package must not start with '-'")
         self._objective_context = objective_context
         self._distributions = build_distributions(self._parameters)
         self._numeric = {
@@ -103,15 +110,18 @@ class CentaurSampler(BaseSampler):
             self._artifact_root = artifact_root
             if self._probability > 0:
                 try:
-                    self._headless_executable = _resolve_executable(
-                        self._headless_executable
+                    self._headless_command, uses_npx = _resolve_headless_command(
+                        configured_headless,
+                        self._headless_fallback_package,
                     )
+                    if uses_npx:
+                        self._headless_env = npm_environment(self._headless_env)
                 except FileNotFoundError:
                     if self._headless_configured:
                         raise RuntimeError(
                             "configured headless executable was not found"
                         )
-                    raise RuntimeError("headless executable was not found")
+                    raise RuntimeError("neither headless nor npx was found")
         except Exception:
             if artifact_root is not None:
                 try:
@@ -382,7 +392,7 @@ class CentaurSampler(BaseSampler):
             common.extend(["--model", self._model])
         if self._reasoning_effort:
             common.extend(["--reasoning-effort", self._reasoning_effort])
-        argv = [self._headless_executable, *common]
+        argv = [*self._headless_command, *common]
         try:
             return bounded_process(
                 argv,
@@ -392,7 +402,7 @@ class CentaurSampler(BaseSampler):
         except FileNotFoundError:
             if self._headless_configured:
                 raise RuntimeError("configured headless executable was not found")
-            raise RuntimeError("headless executable was not found")
+            raise RuntimeError("neither headless nor npx was found")
 
     def _artifact_path(self, trial: int, attempt: int, suffix: str) -> Path:
         return self._artifact_root / f"trial-{trial:06d}-attempt-{attempt}.{suffix}"
@@ -410,6 +420,42 @@ def _resolve_executable(configured: str) -> str:
     if resolved is None:
         raise FileNotFoundError(configured)
     return str(Path(resolved).resolve())
+
+
+def _resolve_headless_command(
+    configured: Optional[str], fallback_package: str
+) -> Tuple[List[str], bool]:
+    if configured is not None:
+        return [_resolve_executable(configured)], False
+    try:
+        headless = _resolve_executable("headless")
+        if os.name == "nt" and Path(headless).suffix.lower() in (".cmd", ".bat"):
+            raise FileNotFoundError(headless)
+        return [headless], False
+    except FileNotFoundError:
+        return [*_resolve_npx_command(), "-y", fallback_package], True
+
+
+def _resolve_npx_command() -> List[str]:
+    node = _resolve_executable("node")
+    npm_execpath = os.environ.get("npm_execpath")
+    candidates = []
+    if npm_execpath:
+        candidates.append(Path(npm_execpath).resolve().with_name("npx-cli.js"))
+    node_directory = Path(node).parent
+    candidates.extend(
+        [
+            node_directory / "node_modules" / "npm" / "bin" / "npx-cli.js",
+            node_directory.parent / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js",
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return [node, str(candidate.resolve())]
+    npx = _resolve_executable("npx")
+    if os.name == "nt" and Path(npx).suffix.lower() in (".cmd", ".bat"):
+        raise RuntimeError("npx-cli.js was not found beside this Node.js/npm installation")
+    return [npx]
 
 
 def _extract_cma_state(

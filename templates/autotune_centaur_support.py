@@ -37,6 +37,14 @@ HEADLESS_BASE_ENV_ALLOWLIST = set(
     "PATH HOME USER LOGNAME SHELL TMPDIR TMP TEMP LANG LC_ALL TERM NO_COLOR "
     "FORCE_COLOR CI XDG_CONFIG_HOME XDG_CACHE_HOME HEADLESS_CONFIG".split()
 )
+NPM_ENV_ALLOWLIST = set(
+    "SystemRoot ComSpec PATHEXT USERPROFILE APPDATA LOCALAPPDATA PROGRAMDATA "
+    "HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy "
+    "NODE_EXTRA_CA_CERTS NPM_CONFIG_REGISTRY NPM_CONFIG_PROXY NPM_CONFIG_HTTPS_PROXY "
+    "NPM_CONFIG_NOPROXY NPM_CONFIG_CAFILE NPM_CONFIG_CACHE NPM_CONFIG_STRICT_SSL "
+    "npm_config_registry npm_config_proxy npm_config_https_proxy npm_config_noproxy "
+    "npm_config_cafile npm_config_cache npm_config_strict_ssl".split()
+)
 HEADLESS_AGENT_ENV_ALLOWLIST = {
     "claude": {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"},
     "codex": {"CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"},
@@ -92,6 +100,14 @@ def headless_environment(agent: str, model: Optional[str]) -> Dict[str, str]:
     names.update(HEADLESS_PROVIDER_ENV_ALLOWLIST.get(provider, set()))
     names.update(_explicit_headless_env_names())
     return {name: os.environ[name] for name in names if name in os.environ}
+
+
+def npm_environment(base: Mapping[str, str]) -> Dict[str, str]:
+    environment = dict(base)
+    environment.update(
+        {name: os.environ[name] for name in NPM_ENV_ALLOWLIST if name in os.environ}
+    )
+    return environment
 
 
 def _headless_provider(agent: str, model: Optional[str]) -> str:
@@ -322,20 +338,14 @@ def bounded_process(
     try:
         returncode = process.wait(timeout=HEADLESS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _terminate_process_tree(process)
         process.wait()
         raise RuntimeError("headless proposal timed out")
     finally:
         for thread in threads:
             thread.join(timeout=1)
         if any(thread.is_alive() for thread in threads):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            _terminate_process_tree(process)
             if process.stdout:
                 process.stdout.close()
             if process.stderr:
@@ -345,6 +355,50 @@ def bounded_process(
     if returncode != 0:
         raise RuntimeError(f"headless proposal exited with status {returncode}")
     return stdout.value
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if os.name == "nt":
+        system_root = _windows_system_root()
+        taskkill = system_root / "System32" / "taskkill.exe"
+        try:
+            completed = subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                env={"SystemRoot": str(system_root), "windir": str(system_root)},
+            )
+            if completed.returncode != 0 and process.poll() is None:
+                process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _windows_system_root() -> Path:
+    standard = Path("C:/Windows")
+    if (standard / "System32" / "taskkill.exe").is_file():
+        return standard
+    configured = os.environ.get("SystemRoot")
+    if configured:
+        candidate = Path(configured)
+        taskkill = candidate / "System32" / "taskkill.exe"
+        if (
+            candidate.is_absolute()
+            and re.fullmatch(r"[A-Za-z]:", candidate.drive)
+            and candidate.parent == Path(candidate.anchor)
+            and candidate.name.lower() in ("windows", "winnt")
+            and taskkill.is_file()
+        ):
+            return candidate.resolve()
+    return standard
 
 
 def prepare_artifact_root(work_dir: Path, study_name: str) -> Path:
