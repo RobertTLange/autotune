@@ -39,6 +39,17 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
 
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
+  const configuredSearchSpace = options.config
+    ? await loadConfiguredSearchSpace(options.config)
+    : undefined;
+  if (configuredSearchSpace) {
+    validateSearchSpaceParameterLimit(configuredSearchSpace, options.maxParameters);
+  }
+  const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
+  if (effectiveSampler === "centaur" && options.maxParameters !== undefined && options.maxParameters < 2) {
+    throw new Error("--max-parameters must be at least 2 with Centaur");
+  }
+
   const artifactLayout = resolveRunArtifactLayout(scriptPath, options.workDir);
   const workDir = artifactLayout.workDir;
   await mkdir(workDir, { recursive: true });
@@ -56,13 +67,9 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const outputResultsPath = options.output ? path.resolve(options.output) : undefined;
   const studyName = options.studyName ?? defaultStudyName(scriptPath);
   const roundManifests: RoundManifest[] = [];
-  const configuredSearchSpace = options.config
-    ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
+  const preparedConfiguredSearchSpace = configuredSearchSpace
+    ? await prepareSearchSpaceForRun(configuredSearchSpace, options, scriptPath)
     : undefined;
-  const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
-  if (effectiveSampler === "centaur" && options.maxParameters !== undefined && options.maxParameters < 2) {
-    throw new Error("--max-parameters must be at least 2 with Centaur");
-  }
   if (effectiveSampler === "centaur" && options.samplerSeed !== undefined) {
     throw new Error("Centaur uses --centaur-seed instead of --sampler-seed");
   }
@@ -75,7 +82,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     agent: options.agent,
     model: options.model,
     centaur: effectiveSampler === "centaur",
-    skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
+    skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: preparedConfiguredSearchSpace, options, refineRounds })
   });
   writeStatus(
     `python ${prerequisites.python}${prerequisites.managedPython ? " (managed control environment)" : ""}`,
@@ -88,7 +95,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   writeStatus(`headless ${prerequisites.headless}`, "success");
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
-  const searchSpace = configuredSearchSpace ?? await prepareSearchSpaceForRun(
+  const searchSpace = preparedConfiguredSearchSpace ?? await prepareSearchSpaceForRun(
     await correctAgentParameterLimit({
       candidate: await runAnalysisPhase({
         invocation,

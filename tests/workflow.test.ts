@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "../src/workflow.js";
@@ -440,10 +440,13 @@ describe("runAutotune", () => {
     expect((await readFile(argLog, "utf8")).trim().split("\n")).toHaveLength(2);
   });
 
-  it("rejects an over-limit configured search space without calling Headless", async () => {
+  it("rejects an over-limit configured search space before build or Headless", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-config-limit-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
     const script = path.join(dir, "train.py");
     const config = path.join(dir, "space.yaml");
+    const buildLog = path.join(dir, "build.log");
     await writeFile(script, "print('autotune_metric=1')\n", "utf8");
     await writeSearchSpace(config, {
       parameters: [
@@ -454,6 +457,8 @@ describe("runAutotune", () => {
       needs_wrapper: false,
       direction: "maximize"
     });
+    await writeFakeBuilder(path.join(binDir, "fake-build"), buildLog);
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
 
     await expect(runAutotune(script, {
       trials: 1,
@@ -462,8 +467,12 @@ describe("runAutotune", () => {
       json: false,
       yes: true,
       config,
+      buildCommand: "fake-build {script} {work-dir}/train-bin",
+      workDir,
       maxParameters: 1
     })).rejects.toThrow(/2 active parameters.*--max-parameters 1/i);
+    await expect(readFile(buildLog, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(workDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects a maximum below Centaur's minimum dimension", async () => {
@@ -1041,19 +1050,24 @@ describe("runAutotune", () => {
     });
   });
 
-  it("runs a build command once before checking and using the runtime command", async () => {
+  it("runs a build command once for a valid configured search space", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune build command-"));
     const binDir = path.join(dir, "bin");
     const workDir = path.join(dir, ".autotune");
     const script = path.join(dir, "train.cpp");
+    const config = path.join(dir, "space.yaml");
     const runtime = path.join(workDir, "train-bin");
     const buildLog = path.join(dir, "build.log");
     await writeFile(script, "int main() { /* autotune_metric */ return 0; }\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize"
+    });
     await writeFakePython(path.join(binDir, "python3"));
-    await writeFakeHeadless(path.join(binDir, "headless"));
     await writeFakeBuilder(path.join(binDir, "fake-build"), buildLog);
     process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
 
     await runAutotune(script, {
       trials: 2,
@@ -1065,6 +1079,8 @@ describe("runAutotune", () => {
       agent: "claude",
       command: "{work-dir}/train-bin",
       buildCommand: "fake-build {script} {work-dir}/train-bin",
+      config,
+      maxParameters: 1,
       json: true,
       yes: true
     });
