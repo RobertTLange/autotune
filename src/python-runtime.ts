@@ -628,7 +628,6 @@ async function collectAbandonedInvalidationGuard(guard: string): Promise<void> {
       await rename(stale, guard).catch(() => undefined);
       return;
     }
-    await rm(stale, { recursive: true, force: true });
   } catch {
     // A live invalidator or another collector remains authoritative.
   }
