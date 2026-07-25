@@ -1,5 +1,5 @@
-import { access, chmod, mkdir, mkdtemp, readFile, realpath, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { ensurePythonRuntime } from "../src/python-runtime.js";
 
@@ -116,7 +116,155 @@ describe("ensurePythonRuntime", () => {
 
     expect(recovered).toMatchObject({ optunaVersion: "4.8.0", managed: true });
     expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(2);
+    expect((await readdir(runtimeDirectory)).some(
+      (name) => name.startsWith(".runtime.json.invalidating.retired-")
+    )).toBe(true);
     await expect(access(abandonedEnvironment)).rejects.toThrow();
+  });
+
+  it("fails safely for a stale foreign invalidation guard", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const options = {
+      includeCmaes: false,
+      bootstrapPython: fixture.python,
+      cacheDir: fixture.cache,
+      env: { ...process.env, PATH: fixture.path, FAKE_RUNTIME_LOG: fixture.log }
+    };
+    const first = await ensurePythonRuntime(options);
+    const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+    const guard = path.join(runtimeDirectory, ".runtime.json.invalidating");
+    const guardToken = "1".repeat(32);
+    await writeFile(path.join(runtimeDirectory, "runtime.json"), "{truncated", "utf8");
+    await mkdir(guard, { mode: 0o700 });
+    await writeFile(path.join(guard, "owner.json"), JSON.stringify({
+      pid: 1,
+      hostname: "stale-foreign-host.invalid",
+      token: guardToken
+    }), "utf8");
+    const old = new Date(Date.now() - 2 * 60 * 1000);
+    await utimes(guard, old, old);
+    const recovery = ensurePythonRuntime(options);
+    let deadline: NodeJS.Timeout | undefined;
+
+    try {
+      await expect(Promise.race([
+        recovery,
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => reject(new Error("stale invalidation guard did not fail")), 4_000);
+        })
+      ])).rejects.toThrow(/stale invalidation guard/);
+
+      expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(1);
+      await expect(access(guard)).resolves.toBeUndefined();
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      await rm(guard, { recursive: true, force: true });
+      await recovery.catch(() => undefined);
+    }
+  });
+
+  it.each([-999_999, 2_147_483_648])(
+    "fails safely for a stale invalidation guard with malformed PID %s",
+    async (pid) => {
+      const fixture = await createFixture({ withUv: true });
+      const options = {
+        includeCmaes: false,
+        bootstrapPython: fixture.python,
+        cacheDir: fixture.cache,
+        env: { ...process.env, PATH: fixture.path, FAKE_RUNTIME_LOG: fixture.log }
+      };
+      const first = await ensurePythonRuntime(options);
+      const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+      const guard = path.join(runtimeDirectory, ".runtime.json.invalidating");
+      await writeFile(path.join(runtimeDirectory, "runtime.json"), "{truncated", "utf8");
+      await mkdir(guard, { mode: 0o700 });
+      await writeFile(path.join(guard, "owner.json"), JSON.stringify({
+        pid,
+        hostname: hostname(),
+        token: "3".repeat(32)
+      }), "utf8");
+      const old = new Date(Date.now() - 2 * 60 * 1000);
+      await utimes(guard, old, old);
+
+      try {
+        await expect(ensurePythonRuntime(options)).rejects.toThrow(/stale invalidation guard/);
+        expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(1);
+        await expect(access(guard)).resolves.toBeUndefined();
+      } finally {
+        await rm(guard, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("waits for a fresh invalidation guard without provisioning", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const options = {
+      includeCmaes: false,
+      bootstrapPython: fixture.python,
+      cacheDir: fixture.cache,
+      env: { ...process.env, PATH: fixture.path, FAKE_RUNTIME_LOG: fixture.log }
+    };
+    const first = await ensurePythonRuntime(options);
+    const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+    const guard = path.join(runtimeDirectory, ".runtime.json.invalidating");
+    await writeFile(path.join(runtimeDirectory, "runtime.json"), "{truncated", "utf8");
+    await mkdir(guard, { mode: 0o700 });
+    await writeFile(path.join(guard, "owner.json"), JSON.stringify({
+      pid: 1,
+      hostname: "live-foreign-host.invalid",
+      token: "2".repeat(32)
+    }), "utf8");
+    const recovery = ensurePythonRuntime(options);
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(1);
+      await rm(guard, { recursive: true, force: true });
+
+      await expect(recovery).resolves.toMatchObject({ optunaVersion: "4.8.0", managed: true });
+      expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(2);
+    } finally {
+      await rm(guard, { recursive: true, force: true });
+      await recovery.catch(() => undefined);
+    }
+  });
+
+  it("uses a unique guard generation for repeated invalidations in one claim", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const releasePip = path.join(path.dirname(fixture.cache), "release-pip");
+    const baseOptions = {
+      includeCmaes: false,
+      bootstrapPython: fixture.python,
+      cacheDir: fixture.cache,
+      env: { ...process.env, PATH: fixture.path, FAKE_RUNTIME_LOG: fixture.log }
+    };
+    const first = await ensurePythonRuntime(baseOptions);
+    const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+    const ready = path.join(runtimeDirectory, "runtime.json");
+    const guard = path.join(runtimeDirectory, ".runtime.json.invalidating");
+    await writeFile(ready, "{first-corrupt-generation", "utf8");
+    const recovery = ensurePythonRuntime({
+      ...baseOptions,
+      env: { ...baseOptions.env, FAKE_WAIT_UV_PIP_FOR: releasePip }
+    });
+
+    try {
+      await waitForLogCount(fixture.log, (args) => args[0] === "pip", 2);
+      await writeFile(ready, "{second-corrupt-generation", "utf8");
+      await writeFile(releasePip, "release", "utf8");
+
+      await expect(recovery).resolves.toMatchObject({ optunaVersion: "4.8.0", managed: true });
+      const retired = (await readdir(runtimeDirectory)).filter(
+        (name) => name.startsWith(".runtime.json.invalidating.retired-")
+      );
+      expect(retired).toHaveLength(2);
+      await expect(access(guard)).rejects.toThrow();
+      expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(3);
+    } finally {
+      await writeFile(releasePip, "release", "utf8");
+      await rm(guard, { recursive: true, force: true });
+      await recovery.catch(() => undefined);
+    }
   });
 
   it.skipIf(process.platform === "win32")("rejects a cache writable by other users", async () => {
@@ -261,6 +409,18 @@ async function waitForLogEntry(filePath: string, predicate: (args: string[]) => 
   throw new Error(`timed out waiting for command in ${filePath}`);
 }
 
+async function waitForLogCount(
+  filePath: string,
+  predicate: (args: string[]) => boolean,
+  expected: number
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await readLog(filePath)).filter(predicate).length >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${expected} commands in ${filePath}`);
+}
+
 async function writeExecutable(filePath: string, source: string): Promise<void> {
   await writeFile(filePath, source, "utf8");
   await chmod(filePath, 0o755);
@@ -327,7 +487,7 @@ process.exit(1);
 
 function fakeUvSource(): string {
   return `#!${process.execPath}
-import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 if (process.env.FAKE_RUNTIME_LOG) appendFileSync(process.env.FAKE_RUNTIME_LOG, JSON.stringify(args) + "\\n");
@@ -347,7 +507,12 @@ if (args[0] === "venv") {
     process.exit(0);
   }
 }
-if (args[0] === "pip") process.exit(0);
+if (args[0] === "pip") {
+  while (process.env.FAKE_WAIT_UV_PIP_FOR && !existsSync(process.env.FAKE_WAIT_UV_PIP_FOR)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  process.exit(0);
+}
 process.exit(1);
 `;
 }

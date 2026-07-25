@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { link, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +35,19 @@ interface CachedRuntimeObservation {
   source?: string;
 }
 
+interface ReadyFileRecovery {
+  runtime?: PythonRuntime;
+  retry?: boolean;
+}
+
+interface InvalidationGuardOwner {
+  pid?: number;
+  hostname?: string;
+  token?: string;
+}
+
+type InvalidationGuardStatus = "active" | "retired" | "stale";
+
 export interface PythonInterpreter {
   python: string;
   pythonVersion: string;
@@ -62,6 +75,7 @@ const PROBE_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const READY_FILE = "runtime.json";
 const READY_INVALIDATION_FILE = `.${READY_FILE}.invalidating`;
+const INVALIDATION_GUARD_EXPIRY_MS = 60_000;
 const CLAIM_TOKEN = /^[a-f0-9]{32}$/;
 const PYPI_INDEX = "https://pypi.org/simple";
 
@@ -145,15 +159,18 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
         return observed.runtime;
       }
 
-      const recovered = await removeInvalidReadyFile({
+      const recovery = await removeInvalidReadyFile({
         runtimeDir,
         pythonVersion: identity.version,
         includeCmaes: options.includeCmaes,
         env: toolEnv,
-        observedSource: observed.source,
-        token: claim.token
+        observedSource: observed.source
       });
-      if (recovered) return recovered;
+      if (recovery.runtime) return recovery.runtime;
+      if (recovery.retry) {
+        await delay();
+        continue;
+      }
       await cleanupAbandonedRuntimeEntries({
         runtimeDir,
         claimsDir,
@@ -548,25 +565,31 @@ async function removeInvalidReadyFile(input: {
   includeCmaes: boolean;
   env: NodeJS.ProcessEnv;
   observedSource?: string;
-  token: string;
-}): Promise<PythonRuntime | undefined> {
-  if (input.observedSource === undefined) return undefined;
+}): Promise<ReadyFileRecovery> {
+  if (input.observedSource === undefined) return {};
   const ready = path.join(input.runtimeDir, READY_FILE);
   const guard = path.join(input.runtimeDir, READY_INVALIDATION_FILE);
-  if (!await acquireInvalidationGuard(guard, input.token)) {
-    await collectAbandonedInvalidationGuard(guard);
-    return undefined;
+  const guardToken = await acquireInvalidationGuard(guard);
+  if (!guardToken) {
+    const status = await inspectInvalidationGuard(guard);
+    if (status === "stale") {
+      throw new Error(
+        `managed Python cache has a stale invalidation guard at ${guard}; `
+        + "remove it after confirming no Autotune process is using this cache"
+      );
+    }
+    return { retry: true };
   }
   try {
     const snapshot = path.join(guard, READY_FILE);
     try {
       await link(ready, snapshot);
     } catch (error) {
-      if (errorCode(error) === "ENOENT") return undefined;
+      if (errorCode(error) === "ENOENT") return {};
       throw error;
     }
     const metadata = await lstat(snapshot);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) return undefined;
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return {};
     const source = await readFile(snapshot, "utf8");
     const runtime = await validateCachedRuntimeSource(
       source,
@@ -575,18 +598,19 @@ async function removeInvalidReadyFile(input: {
       input.includeCmaes,
       input.env
     );
-    if (runtime) return runtime;
+    if (runtime) return { runtime };
     const ownsGuard = await readFile(path.join(guard, "owner.json"), "utf8")
-      .then((owner) => (JSON.parse(owner) as { token?: string }).token === input.token)
+      .then((owner) => (JSON.parse(owner) as { token?: string }).token === guardToken)
       .catch(() => false);
     if (ownsGuard && source === input.observedSource) await rm(ready, { force: true });
-    return undefined;
+    return {};
   } finally {
-    await releaseInvalidationGuard(guard, input.token);
+    await releaseInvalidationGuard(guard, guardToken);
   }
 }
 
-async function acquireInvalidationGuard(guard: string, token: string): Promise<boolean> {
+async function acquireInvalidationGuard(guard: string): Promise<string | undefined> {
+  const token = randomBytes(16).toString("hex");
   const prepared = `${guard}.prepare-${token}`;
   try {
     await mkdir(prepared, { mode: 0o700 });
@@ -597,9 +621,9 @@ async function acquireInvalidationGuard(guard: string, token: string): Promise<b
     }), { encoding: "utf8", mode: 0o600 });
     try {
       await rename(prepared, guard);
-      return true;
+      return token;
     } catch (error) {
-      if (await lstat(guard).then(() => true).catch(() => false)) return false;
+      if (await lstat(guard).then(() => true).catch(() => false)) return undefined;
       throw error;
     }
   } finally {
@@ -607,49 +631,83 @@ async function acquireInvalidationGuard(guard: string, token: string): Promise<b
   }
 }
 
-async function collectAbandonedInvalidationGuard(guard: string): Promise<void> {
+async function inspectInvalidationGuard(guard: string): Promise<InvalidationGuardStatus> {
   try {
-    const owner = await readFile(path.join(guard, "owner.json"), "utf8")
-      .then((source) => JSON.parse(source) as { pid?: number; hostname?: string; token?: string })
-      .catch(() => undefined);
-    if (
-      owner?.hostname !== os.hostname()
-      || !Number.isInteger(owner.pid)
-      || processIsAlive(owner.pid as number)
-      || typeof owner?.token !== "string"
-      || !CLAIM_TOKEN.test(owner.token)
-    ) return;
-    const stale = `${guard}.stale-${owner.token}`;
-    await rename(guard, stale);
-    const movedToken = await readFile(path.join(stale, "owner.json"), "utf8")
-      .then((source) => (JSON.parse(source) as { token?: string }).token)
-      .catch(() => undefined);
-    if (movedToken !== owner.token) {
-      await rename(stale, guard).catch(() => undefined);
-      return;
-    }
+    const [metadata, ownerSource] = await Promise.all([
+      lstat(guard),
+      readFile(path.join(guard, "owner.json"), "utf8").catch(() => undefined)
+    ]);
+    const owner = parseInvalidationGuardOwner(ownerSource);
+    const localOwnerIsDead = owner?.hostname === os.hostname()
+      && typeof owner.pid === "number"
+      && Number.isInteger(owner.pid)
+      && owner.pid >= 1
+      && processIsDefinitelyDead(owner.pid)
+      && typeof owner.token === "string"
+      && CLAIM_TOKEN.test(owner.token);
+    const expired = Date.now() - metadata.mtimeMs > INVALIDATION_GUARD_EXPIRY_MS;
+    if (!localOwnerIsDead) return expired ? "stale" : "active";
+
+    const generation = invalidationGuardGeneration(metadata, ownerSource);
+    await retireInvalidationGuard(guard, generation, metadata, ownerSource);
+    return "retired";
   } catch {
-    // A live invalidator or another collector remains authoritative.
+    // A live invalidator, release, or another collector remains authoritative.
+    return "active";
+  }
+}
+
+function invalidationGuardGeneration(
+  metadata: { birthtimeMs: number; ctimeMs: number; dev: number; ino: number },
+  ownerSource: string | undefined
+): string {
+  return createHash("sha256")
+    .update(`${metadata.dev}:${metadata.ino}:${metadata.birthtimeMs}:${metadata.ctimeMs}:`)
+    .update(ownerSource ?? "")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function parseInvalidationGuardOwner(source: string | undefined): InvalidationGuardOwner | undefined {
+  if (!source) return undefined;
+  try {
+    return JSON.parse(source) as InvalidationGuardOwner;
+  } catch {
+    return undefined;
   }
 }
 
 async function releaseInvalidationGuard(guard: string, token: string): Promise<void> {
   try {
-    const ownerToken = await readFile(path.join(guard, "owner.json"), "utf8")
-      .then((source) => (JSON.parse(source) as { token?: string }).token);
-    if (ownerToken !== token) return;
-    const released = `${guard}.released-${token}`;
-    await rename(guard, released);
-    const movedToken = await readFile(path.join(released, "owner.json"), "utf8")
-      .then((source) => (JSON.parse(source) as { token?: string }).token)
-      .catch(() => undefined);
-    if (movedToken !== token) {
-      await rename(released, guard).catch(() => undefined);
-      return;
-    }
-    await rm(released, { recursive: true, force: true });
+    const [metadata, ownerSource] = await Promise.all([
+      lstat(guard),
+      readFile(path.join(guard, "owner.json"), "utf8")
+    ]);
+    if (parseInvalidationGuardOwner(ownerSource)?.token !== token) return;
+    await retireInvalidationGuard(guard, token, metadata, ownerSource);
   } catch {
     // Guard release is best-effort; a different generation remains authoritative.
+  }
+}
+
+async function retireInvalidationGuard(
+  guard: string,
+  generation: string,
+  observed: { dev: number; ino: number },
+  observedOwnerSource: string | undefined
+): Promise<void> {
+  const retired = `${guard}.retired-${generation}`;
+  await rename(guard, retired);
+  const [moved, movedOwnerSource] = await Promise.all([
+    lstat(retired),
+    readFile(path.join(retired, "owner.json"), "utf8").catch(() => undefined)
+  ]);
+  if (
+    moved.dev !== observed.dev
+    || moved.ino !== observed.ino
+    || movedOwnerSource !== observedOwnerSource
+  ) {
+    await rename(retired, guard).catch(() => undefined);
   }
 }
 
@@ -671,11 +729,11 @@ function errorCode(error: unknown): string | undefined {
     : undefined;
 }
 
-function processIsAlive(pid: number): boolean {
+function processIsDefinitelyDead(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
+    return false;
   } catch (error) {
-    return errorCode(error) === "EPERM";
+    return errorCode(error) === "ESRCH";
   }
 }
