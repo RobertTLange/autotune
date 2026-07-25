@@ -270,6 +270,7 @@ export async function analyzeOnly(script: string, options: {
     {}
   );
   validateSearchSpaceParameterLimit(searchSpace, options.maxParameters);
+  validateCentaurSearchSpace(searchSpace, options.maxParameters);
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }

@@ -294,6 +294,22 @@ describe("runAutotune", () => {
     ).rejects.toThrow(/Centaur requires explicit --sampler centaur or a Centaur config/i);
   });
 
+  it("rejects analyze-only Centaur output below the maximum-parameter minimum", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-centaur-limit-"));
+    const binDir = path.join(dir, "bin");
+    const script = path.join(dir, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    await writeFakeHeadless(path.join(binDir, "headless"), { proposesCentaur: true });
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
+
+    await expect(analyzeOnly(script, {
+      agent: "claude",
+      json: false,
+      workDir: path.join(dir, ".autotune"),
+      maxParameters: 1
+    })).rejects.toThrow(/--max-parameters must be at least 2 with Centaur/i);
+  });
+
   it("runs analyze-only and writes search-space output", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-analyze-"));
     const binDir = path.join(dir, "bin");
