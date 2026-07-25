@@ -55,8 +55,9 @@ export interface CapturedOutput {
   ended: boolean;
 }
 
-interface ProcessIdentity {
+export interface ProcessIdentity {
   uid: number;
+  pgid: number;
   generation: string;
 }
 
@@ -324,7 +325,7 @@ function linuxProcessHoldsCapture(
   return false;
 }
 
-function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | undefined {
+export function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | undefined {
   if (performance.now() >= deadline) return undefined;
   if (process.platform === "linux") {
     try {
@@ -332,9 +333,10 @@ function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | u
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const statFields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
       const uid = Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]);
+      const pgid = Number(statFields[2]);
       const startTime = statFields[19];
-      if (!Number.isInteger(uid) || !startTime) return undefined;
-      return { uid, generation: startTime };
+      if (!Number.isInteger(uid) || !Number.isInteger(pgid) || !startTime) return undefined;
+      return { uid, pgid, generation: startTime };
     } catch {
       return undefined;
     }
@@ -343,7 +345,7 @@ function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | u
   if (!command) return undefined;
   const result = spawnSync(
     command,
-    ["-o", "pid=,uid=,lstart=,pgid=,comm=", "-p", String(pid)],
+    ["-o", "pid=,uid=,pgid=,lstart=,comm=", "-p", String(pid)],
     {
       encoding: "utf8",
       env: { PATH: path.dirname(command), LC_ALL: "C" },
@@ -355,12 +357,16 @@ function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | u
   );
   if (result.error || result.status !== 0) return undefined;
   const line = result.stdout.trim();
-  const [pidText, uidText] = line.split(/\s+/, 2);
-  if (Number(pidText) !== pid || !Number.isInteger(Number(uidText))) return undefined;
-  return { uid: Number(uidText), generation: line };
+  const [pidText, uidText, pgidText] = line.split(/\s+/, 3);
+  if (
+    Number(pidText) !== pid
+    || !Number.isInteger(Number(uidText))
+    || !Number.isInteger(Number(pgidText))
+  ) return undefined;
+  return { uid: Number(uidText), pgid: Number(pgidText), generation: line };
 }
 
-function sameProcessIdentity(
+export function sameProcessIdentity(
   expected: ProcessIdentity,
   actual: ProcessIdentity | undefined
 ): boolean {

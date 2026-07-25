@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { ensurePythonRuntime } from "./python-runtime.js";
 import { killWindowsProcessTree } from "./process.js";
@@ -11,6 +12,8 @@ import {
   createOutputCapture,
   drainCapturedOutput,
   MAX_CAPTURE_BYTES,
+  readProcessIdentity,
+  sameProcessIdentity,
   signalOutputHolders,
   type OutputCapture
 } from "./runner-output.js";
@@ -274,11 +277,17 @@ function signalDetachedDescendants(parentPid: number | undefined): void {
     return;
   }
   for (const childPid of descendantProcessIds(parentPid)) {
-    signalChildTree(childPid, "SIGKILL");
+    const deadline = performance.now() + PROCESS_SNAPSHOT_TIMEOUT_MS;
+    const identity = readProcessIdentity(childPid, deadline);
+    const currentUid = process.getuid?.();
+    if (!identity || currentUid === undefined || identity.uid !== currentUid) continue;
+    const revalidated = readProcessIdentity(childPid, deadline);
+    if (!sameProcessIdentity(identity, revalidated)) continue;
     try {
+      if (identity.pgid === childPid) process.kill(-childPid, "SIGKILL");
       process.kill(childPid, "SIGKILL");
     } catch {
-      // Descendant may already have exited with its process group.
+      // Revalidated descendant may exit during signal delivery.
     }
   }
 }

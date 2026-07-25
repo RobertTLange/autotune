@@ -1,9 +1,18 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
+import { readProcessIdentity, sameProcessIdentity } from "../src/runner-output.js";
 import { runPythonRunner } from "../src/runner.js";
 
 describe("runPythonRunner", () => {
+  it.skipIf(process.platform === "win32")("reads stable process generations for signal fencing", () => {
+    const first = readProcessIdentity(process.pid, performance.now() + 500);
+    const second = readProcessIdentity(process.pid, performance.now() + 500);
+    expect(first).toMatchObject({ uid: process.getuid?.(), pgid: expect.any(Number) });
+    expect(first && sameProcessIdentity(first, second)).toBe(true);
+  });
+
   it("passes runner args without shell interpolation", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-"));
     const runner = path.join(dir, "runner.py");
