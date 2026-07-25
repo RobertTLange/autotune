@@ -10,9 +10,9 @@ import {
 import {
   descendantsFromPosixSnapshot,
   parsePosixProcessSnapshot,
-  runPythonRunner,
   signalWindowsRunnerTree
-} from "../src/runner.js";
+} from "../src/runner-processes.js";
+import { runPythonRunner } from "../src/runner.js";
 
 describe("runPythonRunner", () => {
   it.skipIf(process.platform === "win32")("reads stable process generations for signal fencing", () => {
