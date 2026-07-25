@@ -35,8 +35,11 @@ const CLAIM_EXPIRY_MS = 15_000;
 const ORPHAN_ENVIRONMENT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CLEANUP_ENTRIES_PER_PASS = 16;
 const OWNER_FILE = "owner.json";
+const ACTIVE_CLAIM_NAME = ".active";
 const CLAIM_NAME = /^[a-f0-9]{32}$/;
 const STAGING_NAME = /^\.([a-f0-9]{32})\.staging$/;
+const ACTIVE_STALE_NAME = /^\.active\.stale\.[a-f0-9]{32}$/;
+const ACTIVE_PREPARE_NAME = /^\.active\.prepare\.[a-f0-9]{32}$/;
 const ENVIRONMENT_NAME = /^env-([a-f0-9]{32})$/;
 
 export async function ensureOwnedPrivateDirectory(directory: string): Promise<string> {
@@ -109,6 +112,19 @@ export async function claimOwnsQueue(
   if (claim.lost) {
     return false;
   }
+  const now = Date.now();
+  const lease = await readProvisioningLease(claimsDir);
+  if (lease) {
+    const live = lease.marker && await claimIsActive(claimsDir, lease.marker.token, now);
+    if (live) {
+      return lease.marker?.token === claim.token;
+    }
+    if (!lease.marker && now - lease.mtimeMs <= CLAIM_EXPIRY_MS) {
+      return false;
+    }
+    await quarantineStaleProvisioningLease(claimsDir, lease.marker?.token);
+    return false;
+  }
   const active: ProvisioningMarker[] = [];
   for (const entry of await readdir(claimsDir, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(entry.name)) {
@@ -130,7 +146,10 @@ export async function claimOwnsQueue(
     }
   }
   active.sort((left, right) => left.startedAt - right.startedAt || left.token.localeCompare(right.token));
-  return active[0]?.token === claim.token;
+  if (active[0]?.token !== claim.token) {
+    return false;
+  }
+  return acquireProvisioningLease(claimsDir, claim);
 }
 
 export async function releaseProvisioningClaim(claim: ProvisioningClaim): Promise<void> {
@@ -147,17 +166,30 @@ export async function cleanupAbandonedRuntimeEntries(input: {
 }): Promise<void> {
   const now = input.now ?? Date.now();
   const activeToken = input.activeToken && CLAIM_NAME.test(input.activeToken) ? input.activeToken : undefined;
+  const lease = await readProvisioningLease(input.claimsDir);
+  if (
+    lease
+    && lease.marker?.token !== activeToken
+    && (!lease.marker || !await claimIsActive(input.claimsDir, lease.marker.token, now))
+    && (lease.marker || now - lease.mtimeMs > CLAIM_EXPIRY_MS)
+  ) {
+    await quarantineStaleProvisioningLease(input.claimsDir, lease.marker?.token);
+  }
   let remaining = MAX_CLEANUP_ENTRIES_PER_PASS;
 
   const claims = streamCandidateEntries(
     input.claimsDir,
-    (entry) => CLAIM_NAME.test(entry.name) || STAGING_NAME.test(entry.name)
+    (entry) => CLAIM_NAME.test(entry.name)
+      || STAGING_NAME.test(entry.name)
+      || ACTIVE_STALE_NAME.test(entry.name)
+      || ACTIVE_PREPARE_NAME.test(entry.name)
   );
   for await (const entry of claims) {
     if (remaining === 0) break;
     const claimToken = CLAIM_NAME.test(entry.name) ? entry.name : undefined;
     const stagingToken = STAGING_NAME.exec(entry.name)?.[1];
-    if (!entry.isDirectory() || (!claimToken && !stagingToken)) continue;
+    const staleLease = ACTIVE_STALE_NAME.test(entry.name) || ACTIVE_PREPARE_NAME.test(entry.name);
+    if (!entry.isDirectory() || (!claimToken && !stagingToken && !staleLease)) continue;
     if (claimToken === activeToken) continue;
     const directory = path.join(input.claimsDir, entry.name);
     try {
@@ -216,6 +248,74 @@ export async function cleanupAbandonedRuntimeEntries(input: {
       // Cleanup is best-effort; provisioning remains authoritative.
     }
   }
+}
+
+async function acquireProvisioningLease(
+  claimsDir: string,
+  claim: ProvisioningClaim
+): Promise<boolean> {
+  const directory = path.join(claimsDir, ACTIVE_CLAIM_NAME);
+  const prepared = path.join(claimsDir, `.active.prepare.${claim.token}`);
+  try {
+    await mkdir(prepared, { mode: 0o700 });
+    await writePrivateJsonAtomic(path.join(prepared, OWNER_FILE), {
+      pid: claim.pid,
+      hostname: claim.hostname,
+      startedAt: claim.startedAt,
+      token: claim.token
+    }, claim.token);
+    try {
+      await rename(prepared, directory);
+      return true;
+    } catch (error) {
+      if (await lstat(directory).then(() => true).catch(() => false)) return false;
+      throw error;
+    }
+  } catch (error) {
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  } finally {
+    await rm(prepared, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function readProvisioningLease(
+  claimsDir: string
+): Promise<{ marker?: ProvisioningMarker; mtimeMs: number } | undefined> {
+  const directory = path.join(claimsDir, ACTIVE_CLAIM_NAME);
+  try {
+    const metadata = await lstat(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return { mtimeMs: metadata.mtimeMs };
+    const marker = await readFile(path.join(directory, OWNER_FILE), "utf8")
+      .then(parseProvisioningMarker)
+      .catch(() => undefined);
+    return { marker, mtimeMs: metadata.mtimeMs };
+  } catch {
+    return undefined;
+  }
+}
+
+async function quarantineStaleProvisioningLease(
+  claimsDir: string,
+  observedToken: string | undefined
+): Promise<void> {
+  const active = path.join(claimsDir, ACTIVE_CLAIM_NAME);
+  const quarantine = path.join(claimsDir, `.active.stale.${randomBytes(16).toString("hex")}`);
+  try {
+    await rename(active, quarantine);
+  } catch {
+    return;
+  }
+  const marker = await readFile(path.join(quarantine, OWNER_FILE), "utf8")
+    .then(parseProvisioningMarker)
+    .catch(() => undefined);
+  const changed = marker?.token !== observedToken;
+  const revived = marker && await claimIsActive(claimsDir, marker.token, Date.now());
+  if (changed || revived) {
+    await rename(quarantine, active).catch(() => undefined);
+    return;
+  }
+  await rm(quarantine, { recursive: true, force: true }).catch(() => undefined);
 }
 
 export async function writePrivateJsonAtomic(
@@ -350,4 +450,10 @@ function processIsAlive(pid: number): boolean {
 function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
