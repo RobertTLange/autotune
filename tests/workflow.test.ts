@@ -258,6 +258,7 @@ describe("runAutotune", () => {
     await writeFakePython(path.join(binDir, "python3"));
     await writeFakeHeadless(path.join(binDir, "headless"));
     process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+    process.env.AUTOTUNE_HEADLESS_BIN = path.join(binDir, "headless");
 
     await expect(runAutotune(script, {
       trials: 2,
