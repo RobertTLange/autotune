@@ -218,6 +218,7 @@ print(json.dumps({
   it("runs Headless through the pinned npx fallback", async () => {
     const python = await centaurPython();
     if (!python) return;
+    expect(path.isAbsolute(python)).toBe(true);
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
     const argumentsPath = path.join(dir, "npx-arguments.json");
     const npmBin = path.join(dir, "npm", "bin");
