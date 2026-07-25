@@ -240,7 +240,7 @@ function outputHolderProcessIds(capture: OutputCapture, deadline: number): numbe
 
 function runLsof(command: string, pid: number | undefined, deadline: number) {
   const selector = pid ? ["-p", String(pid)] : ["-u", String(process.getuid?.())];
-  return spawnSync(command, ["-n", "-P", "-F", "pDin", "-a", ...selector, "-d", "1,2"], {
+  return spawnSync(command, ["-n", "-P", "-F", "pDin", "-a", ...selector, "-d", "0-1023"], {
     encoding: "utf8",
     env: { PATH: path.dirname(command), LC_ALL: "C" },
     killSignal: "SIGKILL",

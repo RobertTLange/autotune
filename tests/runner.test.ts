@@ -349,7 +349,7 @@ describe("runPythonRunner", () => {
     }
   }, 15_000);
 
-  it.skipIf(process.platform === "win32")("kills a reparented trial that retains output handles", async () => {
+  it.skipIf(process.platform === "win32")("kills a reparented trial with duplicated output handles", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-reparented-cancel-"));
     const runner = path.join(dir, "legacy.py");
     const marker = path.join(dir, "trial.pid");
@@ -358,7 +358,7 @@ describe("runPythonRunner", () => {
       "import subprocess",
       "import sys",
       "from pathlib import Path",
-      "trial = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)",
+      "trial = subprocess.Popen([sys.executable, '-c', 'import os,time; os.dup(1); os.close(1); os.close(2); time.sleep(60)'], start_new_session=True)",
       `Path(${JSON.stringify(marker)}).write_text(str(trial.pid))`
     ].join("; ");
     await writeFile(
