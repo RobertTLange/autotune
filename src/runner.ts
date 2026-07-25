@@ -1,11 +1,19 @@
 import { spawn, spawnSync } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import process from "node:process";
 import { ensurePythonRuntime } from "./python-runtime.js";
 import { killWindowsProcessTree } from "./process.js";
 
 export const TARGET_PYTHON_ENV = "AUTOTUNE_TARGET_PYTHON_ENV";
 export const NODE_EXECUTABLE_ENV = "AUTOTUNE_NODE_EXECUTABLE";
+
+const RUNNER_KILL_GRACE_MS = 2_000;
+const RUNNER_HARD_STOP_GRACE_MS = 1_000;
+const PROCESS_SNAPSHOT_TIMEOUT_MS = 500;
+const PROCESS_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+const MAX_DESCENDANT_PROCESSES = 4_096;
 
 export async function runPythonRunner(input: {
   runnerPath: string;
@@ -57,18 +65,46 @@ export async function runPythonRunner(input: {
       env: supportsTargetEnvironment ? controllerEnvironment(callerEnv) : callerEnv,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    let settled = false;
     let forwardedSignal: NodeJS.Signals | undefined;
     let escalationTimer: NodeJS.Timeout | undefined;
+    let hardStopTimer: NodeJS.Timeout | undefined;
+    const finish = (error: Error | undefined, detachChild = false) => {
+      if (settled) return;
+      settled = true;
+      cleanupSignals();
+      if (detachChild) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+      }
+      if (error) reject(error);
+      else resolve(stdout);
+    };
+    const interruptedError = () => {
+      const signal = forwardedSignal as NodeJS.Signals;
+      process.exitCode = 128 + (signal === "SIGINT" ? 2 : 15);
+      return new Error(`python runner interrupted by ${signal}`);
+    };
+    const forceStop = () => {
+      signalChildTree(child.pid, "SIGKILL");
+      if (hardStopTimer) return;
+      hardStopTimer = setTimeout(
+        () => finish(interruptedError(), true),
+        RUNNER_HARD_STOP_GRACE_MS
+      );
+      hardStopTimer.unref();
+    };
     const forwardSignal = (signal: NodeJS.Signals) => {
       if (forwardedSignal) {
-        signalChildTree(child.pid, "SIGKILL");
+        forceStop();
         return;
       }
       forwardedSignal = signal;
+      escalationTimer = setTimeout(forceStop, RUNNER_KILL_GRACE_MS);
+      escalationTimer.unref();
       signalDetachedDescendants(child.pid);
       signalChildTree(child.pid, signal);
-      escalationTimer = setTimeout(() => signalChildTree(child.pid, "SIGKILL"), 2_000);
-      escalationTimer.unref();
     };
     const onSigint = () => forwardSignal("SIGINT");
     const onSigterm = () => forwardSignal("SIGTERM");
@@ -79,6 +115,9 @@ export async function runPythonRunner(input: {
       process.off("SIGTERM", onSigterm);
       if (escalationTimer) {
         clearTimeout(escalationTimer);
+      }
+      if (hardStopTimer) {
+        clearTimeout(hardStopTimer);
       }
     };
     let stdout = "";
@@ -94,20 +133,17 @@ export async function runPythonRunner(input: {
       process.stderr.write(chunk);
     });
     child.on("error", (error) => {
-      cleanupSignals();
-      reject(error);
+      finish(forwardedSignal ? interruptedError() : error);
     });
     child.on("close", (code) => {
-      cleanupSignals();
       if (forwardedSignal) {
-        process.exitCode = 128 + (forwardedSignal === "SIGINT" ? 2 : 15);
-        reject(new Error(`python runner interrupted by ${forwardedSignal}`));
+        finish(interruptedError());
         return;
       }
       if (code === 0) {
-        resolve(stdout);
+        finish(undefined);
       } else {
-        reject(new Error(`python runner exited with ${code}: ${(stderr || stdout).trim()}`));
+        finish(new Error(`python runner exited with ${code}: ${(stderr || stdout).trim()}`));
       }
     });
   });
@@ -121,13 +157,7 @@ function signalDetachedDescendants(parentPid: number | undefined): void {
     killWindowsProcessTree(parentPid, "SIGKILL");
     return;
   }
-  const result = spawnSync("/usr/bin/pgrep", ["-P", String(parentPid)], { encoding: "utf8" });
-  for (const value of result.stdout?.split(/\s+/) ?? []) {
-    const childPid = Number(value);
-    if (!Number.isInteger(childPid) || childPid < 1) {
-      continue;
-    }
-    signalDetachedDescendants(childPid);
+  for (const childPid of descendantProcessIds(parentPid)) {
     signalChildTree(childPid, "SIGKILL");
     try {
       process.kill(childPid, "SIGKILL");
@@ -135,6 +165,67 @@ function signalDetachedDescendants(parentPid: number | undefined): void {
       // Descendant may already have exited with its process group.
     }
   }
+}
+
+function descendantProcessIds(parentPid: number): number[] {
+  const command = resolvePosixPsCommand();
+  if (!command) return [];
+  const snapshot = readProcessSnapshot(command);
+  if (!snapshot) return [];
+  const childrenByParent = new Map<number, number[]>();
+  for (const line of snapshot.split("\n")) {
+    const [pidText, parentText] = line.trim().split(/\s+/, 2);
+    const pid = Number(pidText);
+    const parent = Number(parentText);
+    if (!Number.isInteger(pid) || pid < 1 || !Number.isInteger(parent) || parent < 0) continue;
+    const children = childrenByParent.get(parent) ?? [];
+    children.push(pid);
+    childrenByParent.set(parent, children);
+  }
+
+  const descendants: number[] = [];
+  const pending = [...(childrenByParent.get(parentPid) ?? [])];
+  const seen = new Set<number>();
+  while (pending.length > 0 && descendants.length < MAX_DESCENDANT_PROCESSES) {
+    const pid = pending.pop() as number;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    descendants.push(pid);
+    pending.push(...(childrenByParent.get(pid) ?? []));
+  }
+  return descendants.reverse();
+}
+
+function readProcessSnapshot(command: string): string | undefined {
+  const argumentVariants = [
+    ["-axo", "pid=,ppid="],
+    ["-o", "pid,ppid"]
+  ];
+  for (const args of argumentVariants) {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      env: { PATH: path.dirname(command), LC_ALL: "C" },
+      killSignal: "SIGKILL",
+      maxBuffer: PROCESS_SNAPSHOT_MAX_BYTES,
+      timeout: PROCESS_SNAPSHOT_TIMEOUT_MS,
+      windowsHide: true
+    });
+    if (!result.error && result.status === 0) return result.stdout;
+  }
+  return undefined;
+}
+
+function resolvePosixPsCommand(): string | undefined {
+  const candidates = ["/bin/ps", "/usr/bin/ps", "/run/current-system/sw/bin/ps"];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep scanning fixed operating-system locations.
+    }
+  }
+  return undefined;
 }
 
 function signalChildTree(pid: number | undefined, signal: NodeJS.Signals): void {

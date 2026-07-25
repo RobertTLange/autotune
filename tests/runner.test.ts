@@ -198,6 +198,61 @@ describe("runPythonRunner", () => {
       }
     }
   }, 15_000);
+
+  it.skipIf(process.platform === "win32")("bounds cancellation when a reparented trial retains output pipes", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-reparented-cancel-"));
+    const runner = path.join(dir, "legacy.py");
+    const marker = path.join(dir, "trial.pid");
+    const helperDone = path.join(dir, "helper.done");
+    const detachedTrial = [
+      "import subprocess",
+      "import sys",
+      "from pathlib import Path",
+      "trial = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)",
+      `Path(${JSON.stringify(marker)}).write_text(str(trial.pid))`
+    ].join("; ");
+    await writeFile(
+      runner,
+      [
+        "import subprocess",
+        "import sys",
+        "import time",
+        "from pathlib import Path",
+        `helper = subprocess.Popen([sys.executable, '-c', ${JSON.stringify(detachedTrial)}], start_new_session=True)`,
+        "helper.wait()",
+        `Path(${JSON.stringify(helperDone)}).touch()`,
+        "time.sleep(60)"
+      ].join("\n"),
+      "utf8"
+    );
+    const previousExitCode = process.exitCode;
+    const priorHandlers = new Set(process.listeners("SIGTERM"));
+    const running = runPythonRunner({
+      python: "python3",
+      runnerPath: runner,
+      trials: 1,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1
+    });
+    const trialPid = Number(await waitForFileText(marker));
+    await waitForFileText(helperDone);
+    expect(processIsAlive(trialPid)).toBe(true);
+    const handler = process.listeners("SIGTERM").find((listener) => !priorHandlers.has(listener));
+    expect(handler).toBeDefined();
+    try {
+      const started = Date.now();
+      (handler as () => void)();
+      await expect(running).rejects.toThrow(/interrupted by SIGTERM/);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      process.exitCode = previousExitCode;
+      if (processIsAlive(trialPid)) {
+        process.kill(-trialPid, "SIGKILL");
+      }
+    }
+  }, 10_000);
 });
 
 async function waitForFileText(filePath: string): Promise<string> {
