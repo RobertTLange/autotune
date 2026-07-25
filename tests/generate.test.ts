@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { renderOptunaRunner, writeOptunaRunner } from "../src/generate.js";
+import { FALLBACK_HEADLESS_PACKAGE } from "../src/headless.js";
 
 const searchSpace = {
   parameters: [{ name: "x", cli_flag: "--x", type: "float", low: -5, high: 5 }],
@@ -35,6 +36,10 @@ describe("renderOptunaRunner", () => {
       resultsPath: "/tmp/results.json"
     });
     expect(code).toContain("subprocess.Popen(");
+    expect(code).toContain('os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))');
+    expect(code).toContain("env={**os.environ, **TARGET_PYTHON_ENV}");
+    expect(code).toContain("except BaseException:");
+    expect(code).toContain("signal.signal(signal.SIGTERM, request_interrupt)");
     expect(code).toContain("class OutputCapture");
     expect(code).toContain("self.pending = self.pending[-self.max_chars:]");
     expect(code).toContain("metric_error");
@@ -63,6 +68,67 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain('"Best"');
     expect(code).toContain("trial.suggest_float");
     expect(code).not.toContain("shell=True");
+  });
+
+  it("renders bounded cross-platform trial cleanup", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('taskkill = system_root / "System32" / "taskkill.exe"');
+    expect(code).toContain('[str(taskkill), "/PID", str(process.pid), "/T", "/F"]');
+    expect(code).toContain(
+      "def kill_process_tree(process):\n    if process.poll() is not None:\n        return"
+    );
+    expect(code).toContain("def join_output_threads(process, threads, pipe_identities):");
+    expect(code).toContain("deadline = time.monotonic() + 1");
+    expect(code).toContain("if stream and not thread.is_alive():");
+    expect(code).toContain("terminate_output_holders(pipe_identities, process.pid)");
+    const centaurCode = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: centaurSearchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json",
+      headless: { agent: "codex" }
+    });
+    expect(centaurCode.indexOf('_load_centaur_module("autotune_process_io")'))
+      .toBeLessThan(centaurCode.indexOf('_load_centaur_module("autotune_centaur_support")'));
+  });
+
+  it("prioritizes recent PIDs in the shipped Python helper", async () => {
+    const script = [
+      "import sys, time",
+      `sys.path.insert(0, ${JSON.stringify(path.resolve("templates"))})`,
+      "from autotune_process_io import _recent_process_pids",
+      "Entry = type('Entry', (), {})",
+      "entries = []",
+      "for pid in range(1, 5001):",
+      "    entry = Entry()",
+      "    entry.name = str(pid)",
+      "    entries.append(entry)",
+      "recent = _recent_process_pids(entries, time.monotonic() + 5, last_pid=5000, pid_max=32768)",
+      "assert len(recent) == 4096",
+      "assert recent[0] == 5000",
+      "assert recent[-1] == 905",
+      "wrapped = _recent_process_pids(entries[-3:] + entries[:3], time.monotonic() + 5, last_pid=3, pid_max=5000)",
+      "assert wrapped == [3, 2, 1, 5000, 4999, 4998]",
+      "fallback = _recent_process_pids(entries, time.monotonic() + 5, last_pid=0, pid_max=0)",
+      "assert fallback[0] == 5000",
+      "assert fallback[-1] == 905"
+    ].join("\n");
+
+    await expect(runPython(["-c", script])).resolves.toBe("");
+  });
+
+  it("imports the Headless timeout used by the Centaur runtime", async () => {
+    const runtime = await readFile("templates/autotune_centaur_runtime.py", "utf8");
+
+    expect(runtime).toMatch(
+      /from autotune_centaur_support import \(\s+HEADLESS_TIMEOUT_SECONDS,/
+    );
   });
 
   it("seeds stochastic Optuna samplers", () => {
@@ -192,8 +258,14 @@ describe("renderOptunaRunner", () => {
     });
 
     expect(code).toContain("from autotune_centaur_runtime import CentaurSampler");
+    expect(code).toContain("importlib.util.spec_from_file_location(name, module_path)");
     expect(code).toContain('if name == "centaur":');
     expect(code).toContain("return CentaurSampler(");
+    expect(code).toContain('\\"node_executable\\":');
+    expect(code).toContain('NODE_EXECUTABLE = os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))');
+    expect(code).toContain("node_executable=NODE_EXECUTABLE");
+    expect(code).toContain(`\\"headless_fallback_package\\":\\"${FALLBACK_HEADLESS_PACKAGE}\\"`);
+    expect(code).toContain('headless_fallback_package=CONFIG["headless_fallback_package"]');
     expect(code).toContain('work_dir=Path(__file__).resolve().parent');
     expect(code).toContain('objective_context=CONFIG.get("objective_context")');
     expect(code.indexOf("params = {parameter")).toBeLessThan(code.indexOf("started_at = time.monotonic()"));
@@ -230,15 +302,21 @@ describe("renderOptunaRunner", () => {
 
     const companion = path.join(dir, "centaur", "autotune_centaur_runtime.py");
     const support = path.join(dir, "centaur", "autotune_centaur_support.py");
+    const headlessLock = path.join(dir, "centaur", "autotune_headless_runtime.lock.json");
     await expect(access(companion)).resolves.toBeUndefined();
     await expect(access(support)).resolves.toBeUndefined();
+    await expect(access(headlessLock)).resolves.toBeUndefined();
     await expect(runPython(["-m", "py_compile", companion, support, centaurRunner])).resolves.toBe("");
     const runtime = await readFile(companion, "utf8");
     expect(runtime).toContain('"--allow"');
     expect(runtime).toContain('"read-only"');
-    expect(runtime).not.toContain('"npx"');
+    expect(runtime).toContain('"ci",');
+    expect(runtime).toContain('"--ignore-scripts",');
+    expect(runtime).toContain("_resolve_npm_command(node)");
+    expect(runtime).not.toContain("shell=True");
     await expect(access(path.join(dir, "regular", "autotune_centaur_runtime.py"))).rejects.toThrow();
     await expect(access(path.join(dir, "regular", "autotune_centaur_support.py"))).rejects.toThrow();
+    await expect(access(path.join(dir, "regular", "autotune_headless_runtime.lock.json"))).rejects.toThrow();
   });
 
   it("replaces output symlinks without overwriting their targets", async () => {
@@ -337,6 +415,44 @@ describe("renderOptunaRunner", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")("terminates active trials when the runner is stopped", async () => {
+    if (!(await pythonHasOptuna())) {
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-signal-runner-"));
+    const train = path.join(dir, "train.py");
+    const runner = path.join(dir, "train_optuna.py");
+    const marker = path.join(dir, "trial.pid");
+    await writeFile(
+      train,
+      `import os,time\nfrom pathlib import Path\nPath(${JSON.stringify(marker)}).write_text(str(os.getpid()))\ntime.sleep(60)\nprint('autotune_metric=1')\n`,
+      "utf8"
+    );
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: path.join(dir, "results.json")
+    });
+    const controller = spawn("python3", [
+      "-I", runner, "--trials", "1", "--direction", "minimize", "--sampler", "random",
+      "--pruner", "none", "--n-jobs", "1"
+    ], { stdio: "ignore" });
+    let trialPid: number | undefined;
+    try {
+      trialPid = Number(await waitForFileText(marker));
+      controller.kill("SIGTERM");
+      await new Promise<void>((resolve) => controller.once("close", () => resolve()));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(processIsAlive(trialPid)).toBe(false);
+    } finally {
+      controller.kill("SIGKILL");
+      if (trialPid && processIsAlive(trialPid)) {
+        process.kill(-trialPid, "SIGKILL");
+      }
+    }
+  }, 15_000);
+
   it("writes an executable runner file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-generate-"));
     const runner = path.join(dir, "train_optuna.py");
@@ -418,4 +534,24 @@ function runPython(args: string[]): Promise<string> {
       reject(new Error(`python3 ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
     });
   });
+}
+
+async function waitForFileText(filePath: string): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return await readFile(filePath, "utf8");
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`timed out waiting for ${filePath}`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

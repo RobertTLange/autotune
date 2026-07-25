@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { SearchSpace } from "../src/types.js";
@@ -32,12 +32,89 @@ const centaurSpace = {
 } as const;
 
 describe("Centaur generated runtime", () => {
+  it("does not signal a process tree after its root was reaped", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const script = `import autotune_centaur_support as support
+
+class ReapedProcess:
+    pid = 4242
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        raise AssertionError("process.kill called for a reaped process")
+
+original_killpg = getattr(support.os, "killpg", None)
+original_run = support.subprocess.run
+setattr(support.os, "killpg", lambda *_args: (_ for _ in ()).throw(
+    AssertionError("killpg called for a reaped process")
+))
+support.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    AssertionError("taskkill called for a reaped process")
+)
+try:
+    support._terminate_process_tree(ReapedProcess())
+finally:
+    support.subprocess.run = original_run
+    if original_killpg is None:
+        delattr(support.os, "killpg")
+    else:
+        support.os.killpg = original_killpg
+`;
+    await expect(runPython(python, ["-c", script], {
+      PYTHONPATH: path.resolve("templates")
+    })).resolves.toBe("");
+  });
+
+  it("bounds Headless timeouts even when a grandchild inherits output pipes", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-output-holder-"));
+    const marker = path.join(dir, "holder.pid");
+    const child = `import subprocess,sys,time; from pathlib import Path; holder=subprocess.Popen([sys.executable, '-c', 'import os,time; output=os.dup(1); os.close(1); os.close(2); time.sleep(10)'], start_new_session=True); Path(${JSON.stringify(marker)}).write_text(str(holder.pid)); time.sleep(10)`;
+    const script = `import os
+import sys
+import time
+from pathlib import Path
+import autotune_centaur_support as support
+started = time.monotonic()
+try:
+    support.bounded_process(
+        [sys.executable, "-c", ${JSON.stringify(child)}],
+        cwd=Path.cwd(),
+        env=os.environ,
+        timeout_seconds=0.05,
+    )
+except RuntimeError as error:
+    assert "timed out" in str(error)
+else:
+    raise AssertionError("expected timeout")
+assert time.monotonic() - started < 3.5
+holder_pid = int(Path(${JSON.stringify(marker)}).read_text())
+for _ in range(20):
+    try:
+        os.kill(holder_pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError("detached output holder survived cleanup")
+`;
+    await expect(runPython(python, ["-c", script], {
+      PYTHONPATH: path.resolve("templates")
+    })).resolves.toBe("");
+  }, 20_000);
+
   it("scopes multiprovider credentials to an explicit exact provider", async () => {
     const python = await centaurPython();
     if (!python) return;
     const script = `import json
 import os
-from autotune_centaur_support import headless_environment
+import sys
+from pathlib import Path
+from autotune_centaur_support import headless_environment, npm_environment
 
 def capture(agent, model):
     try:
@@ -56,6 +133,36 @@ def capture_pi(model, provider):
         else:
             os.environ["PI_CODING_AGENT_PROVIDER"] = previous
 
+def capture_flags(agent, model, flags):
+    keys = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "GOOGLE_GENAI_USE_VERTEXAI"]
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ.pop(key, None)
+    os.environ.update(flags)
+    try:
+        return capture(agent, model)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+def capture_explicit(variable, value):
+    keys = ["AUTOTUNE_HEADLESS_ENV", "AUTOTUNE_CENTAUR_HEADLESS_ENV"]
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ.pop(key, None)
+    os.environ[variable] = value
+    try:
+        return capture("opencode", None)
+    finally:
+        for key, previous_value in previous.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
+
 print(json.dumps({
     "pi": capture_pi("gpt-5", "openrouter"),
     "pi_aws": capture_pi("gpt-5", "aws"),
@@ -68,12 +175,25 @@ print(json.dumps({
     "azure_pi": capture("pi", "azure-openai-responses/gpt-5"),
     "azure_custom": capture("opencode", "azure-openai-responses/gpt-5"),
     "config_only": capture("opencode", None),
+    "claude": capture_flags("claude", None, {}),
+    "claude_aws": capture_flags("claude", None, {"CLAUDE_CODE_USE_BEDROCK": "1"}),
+    "claude_vertex": capture_flags("claude", None, {"CLAUDE_CODE_USE_VERTEX": "1"}),
+    "gemini": capture_flags("gemini", None, {}),
+    "gemini_vertex": capture_flags("gemini", None, {"GOOGLE_GENAI_USE_VERTEXAI": "true"}),
+    "explicit": capture_explicit("AUTOTUNE_HEADLESS_ENV", "CUSTOM_PROVIDER_TOKEN"),
+    "legacy_explicit": capture_explicit("AUTOTUNE_CENTAUR_HEADLESS_ENV", "CUSTOM_PROVIDER_TOKEN"),
+    "injection": capture_explicit("AUTOTUNE_HEADLESS_ENV", "NODE_OPTIONS"),
+    "npm": npm_environment({"PATH": "relative" + os.pathsep + str(Path(sys.executable).parent)}, sys.executable),
 }))`;
 
     const output = await runPython(python, ["-c", script], {
       PYTHONPATH: path.resolve("templates"),
       PI_CODING_AGENT_PROVIDER: "openrouter",
+      CLAUDE_CONFIG_DIR: "/config/claude",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Gateway-Key: secret",
       GEMINI_API_KEY: "gemini-secret",
+      GOOGLE_API_KEY: "google-secret",
       GOOGLE_APPLICATION_CREDENTIALS: "/credentials/vertex.json",
       GOOGLE_CLOUD_PROJECT: "vertex-project",
       AZURE_OPENAI_API_KEY: "azure-secret",
@@ -81,8 +201,15 @@ print(json.dumps({
       AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5=production",
       AZURE_RESOURCE_NAME: "opencode-resource",
       AWS_ACCESS_KEY_ID: "must-not-reach-custom-provider",
+      AWS_CONFIG_FILE: "/config/aws",
+      AWS_SHARED_CREDENTIALS_FILE: "/config/aws-credentials",
       OPENAI_API_KEY: "openai-secret",
-      OPENROUTER_API_KEY: "openrouter-secret"
+      OPENROUTER_API_KEY: "openrouter-secret",
+      CUSTOM_PROVIDER_TOKEN: "custom-secret",
+      XDG_DATA_HOME: "/data/xdg",
+      HTTPS_PROXY: "https://proxy.example",
+      NPM_CONFIG_REGISTRY: "https://registry.example",
+      npm_config_userconfig: "/config/npmrc"
     });
     const environments = JSON.parse(output);
 
@@ -92,6 +219,7 @@ print(json.dumps({
     expect(environments.alias.OPENAI_API_KEY).toBe("openai-secret");
     expect(environments.alias.OPENROUTER_API_KEY).toBeUndefined();
     expect(environments.custom.OPENAI_API_KEY).toBeUndefined();
+    expect(environments.custom.XDG_DATA_HOME).toBe("/data/xdg");
     expect(environments.aws_custom.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(environments.google.GEMINI_API_KEY).toBe("gemini-secret");
     expect(environments.google.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
@@ -104,6 +232,37 @@ print(json.dumps({
     expect(environments.azure_pi.AZURE_OPENAI_API_KEY).toBe("azure-secret");
     expect(environments.azure_custom.AZURE_OPENAI_API_KEY).toBeUndefined();
     expect(environments.config_only.error).toContain("provider-qualified model");
+    expect(environments.claude).toMatchObject({
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Gateway-Key: secret",
+      CLAUDE_CONFIG_DIR: "/config/claude"
+    });
+    expect(environments.claude.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(environments.claude_aws.AWS_ACCESS_KEY_ID).toBe("must-not-reach-custom-provider");
+    expect(environments.claude_aws.AWS_CONFIG_FILE).toBe("/config/aws");
+    expect(environments.claude_aws.AWS_SHARED_CREDENTIALS_FILE).toBe("/config/aws-credentials");
+    expect(environments.claude_aws.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(environments.claude_aws.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(environments.claude_vertex.GOOGLE_APPLICATION_CREDENTIALS).toBe("/credentials/vertex.json");
+    expect(environments.claude_vertex.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(environments.claude_vertex.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(environments.gemini.GEMINI_API_KEY).toBe("gemini-secret");
+    expect(environments.gemini.GOOGLE_CLOUD_PROJECT).toBe("vertex-project");
+    expect(environments.gemini.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(environments.gemini_vertex.GOOGLE_API_KEY).toBe("google-secret");
+    expect(environments.gemini_vertex.GOOGLE_APPLICATION_CREDENTIALS).toBe("/credentials/vertex.json");
+    expect(environments.gemini_vertex.GEMINI_API_KEY).toBeUndefined();
+    expect(environments.explicit.CUSTOM_PROVIDER_TOKEN).toBe("custom-secret");
+    expect(environments.legacy_explicit.CUSTOM_PROVIDER_TOKEN).toBe("custom-secret");
+    expect(environments.injection.error).toContain("credential or config");
+    expect(environments.npm).toMatchObject({
+      HTTPS_PROXY: "https://proxy.example",
+      NPM_CONFIG_REGISTRY: "https://registry.example",
+      npm_config_userconfig: "/config/npmrc"
+    });
+    expect(environments.npm.PATH.split(path.delimiter)).not.toContain("relative");
+    expect(environments.npm.PATH.split(path.delimiter).every(path.isAbsolute)).toBe(true);
+    expect(environments.npm.OPENAI_API_KEY).toBeUndefined();
   }, 20_000);
 
   it("rejects ambiguous multiprovider credentials before optimization", async () => {
@@ -183,6 +342,125 @@ print(json.dumps({
     expect(prompt.match(/<\/UNTRUSTED_OPTIMIZATION_DATA>/g)).toHaveLength(1);
     expect(prompt).toContain("\\u003c/UNTRUSTED_OPTIMIZATION_DATA\\u003e");
   }, 20_000);
+
+  it.skipIf(process.platform === "win32")("rebuilds the locked Headless fallback for each proposal", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    expect(path.isAbsolute(python)).toBe(true);
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
+    const argumentsPath = path.join(dir, "npx-arguments.json");
+    const installMarker = path.join(dir, "npm-install-count.txt");
+    const pathMarker = path.join(dir, "path-headless-ran");
+    const nodeBin = path.join(dir, "runtime", "bin");
+    const npmBin = path.join(dir, "runtime", "lib", "node_modules", "npm", "bin");
+    const forgedNpmBin = path.join(dir, "forged-npm", "bin");
+    const emptyPath = path.join(dir, "empty-path");
+    const node = path.join(nodeBin, "node");
+    const npm = path.join(npmBin, "npm-cli.js");
+    await mkdir(nodeBin, { recursive: true });
+    await mkdir(npmBin, { recursive: true });
+    await mkdir(forgedNpmBin, { recursive: true });
+    await mkdir(emptyPath);
+    await writeFile(path.join(emptyPath, "headless"), `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(pathMarker)}, "ran");
+console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
+`, "utf8");
+    await chmod(path.join(emptyPath, "headless"), 0o755);
+    await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
+    await chmod(node, 0o755);
+    await writeFile(path.join(forgedNpmBin, "npm-cli.js"), "process.exit(99);\n", "utf8");
+    const installedCli = `
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const install = JSON.parse(fs.readFileSync("install.json", "utf8"));
+fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify({
+  args: process.argv.slice(2),
+  path: process.env.PATH,
+  cwd: process.cwd(),
+  packageJson: JSON.parse(fs.readFileSync("package.json", "utf8")),
+  executionKey: process.env.OPENAI_API_KEY,
+  install
+}));
+if (process.platform !== "win32" && spawnSync("sh", ["-c", "node -e 'process.exit(0)'"], { stdio: "ignore" }).status !== 0) process.exit(8);
+console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
+`;
+    await writeFile(npm, `
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(installMarker)}, "i");
+fs.mkdirSync("node_modules/@roberttlange/headless/dist", { recursive: true });
+fs.writeFileSync("node_modules/@roberttlange/headless/dist/cli.js", ${JSON.stringify(installedCli)});
+fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), env: process.env }));
+`, "utf8");
+    const runner = await writeRunner(dir, centaurSpace, "centaur_npx", python);
+    const results = path.join(dir, "results.json");
+
+    await runPython(python, runnerArgs(runner, results, "centaur_npx", 2), {
+      PATH: emptyPath,
+      AUTOTUNE_NODE_EXECUTABLE: node,
+      npm_execpath: path.join(forgedNpmBin, "npm-cli.js"),
+      OPENAI_API_KEY: "selected-key"
+    });
+
+    const parsed = JSON.parse(await readFile(results, "utf8"));
+    expect(parsed.all_trials[0].params).toEqual({ x: 0.25, y: 1.5, optimizer: "adam" });
+    expect(await readFile(installMarker, "utf8")).toBe("ii");
+    const invocation = JSON.parse(await readFile(argumentsPath, "utf8"));
+    expect(invocation.install.args).toEqual(expect.arrayContaining([
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund"
+    ]));
+    expect(invocation.args[0]).toBe("codex");
+    expect(invocation.install.env.OPENAI_API_KEY).toBeUndefined();
+    expect(invocation.executionKey).toBe("selected-key");
+    await expect(access(pathMarker)).rejects.toThrow();
+    expect(path.relative(dir, invocation.cwd).startsWith(`..${path.sep}`)).toBe(true);
+    expect(invocation.packageJson).toMatchObject({
+      private: true,
+      dependencies: { "@roberttlange/headless": "0.4.0" }
+    });
+    await expect(access(invocation.cwd)).rejects.toThrow();
+    const canonicalPath = await Promise.all(
+      invocation.path.split(path.delimiter).map((entry: string) => realpath(entry).catch(() => entry))
+    );
+    expect(canonicalPath).toContain(await realpath(nodeBin));
+  }, 20_000);
+
+  it("rejects a tampered generated Headless runtime lock", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-lock-"));
+    await writeRunner(dir, centaurSpace, "centaur_tampered_lock", python);
+    await writeFile(path.join(dir, "autotune_headless_runtime.lock.json"), "{}\n", "utf8");
+
+    await expect(runPython(python, [
+      "-c",
+      "from autotune_centaur_runtime import _load_headless_runtime_lock; _load_headless_runtime_lock()"
+    ], { PYTHONPATH: dir })).rejects.toThrow(/lock failed its integrity check/i);
+  });
+
+  it.skipIf(process.platform === "win32")("does not trust npm from PATH", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-hostile-npm-"));
+    const node = path.join(dir, "runtime", "bin", "node");
+    const hostileBin = path.join(dir, "hostile-bin");
+    await mkdir(path.dirname(node), { recursive: true });
+    await mkdir(hostileBin);
+    await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
+    await writeFile(path.join(hostileBin, "npm"), "#!/bin/sh\nexit 0\n", "utf8");
+    await chmod(node, 0o755);
+    await chmod(path.join(hostileBin, "npm"), 0o755);
+
+    await expect(runPython(python, [
+      "-c",
+      `from autotune_centaur_runtime import _resolve_headless_command; _resolve_headless_command(None, "@roberttlange/headless@0.4.0", ${JSON.stringify(node)})`
+    ], {
+      PATH: hostileBin,
+      PYTHONPATH: path.resolve("templates")
+    })).rejects.toThrow(/npm-cli\.js was not found beside/i);
+  });
 
   it("resolves a relative configured Headless executable before changing directories", async () => {
     const python = await centaurPython();

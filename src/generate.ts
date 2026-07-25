@@ -1,6 +1,8 @@
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
+import { OUTPUT_HOLDER_HELPERS } from "./python-output-holders.js";
 import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export interface SeedTrial {
@@ -12,6 +14,8 @@ export interface SeedTrial {
 
 const CENTAUR_RUNTIME_URL = new URL("../templates/autotune_centaur_runtime.py", import.meta.url);
 const CENTAUR_SUPPORT_URL = new URL("../templates/autotune_centaur_support.py", import.meta.url);
+const PROCESS_IO_URL = new URL("../templates/autotune_process_io.py", import.meta.url);
+const HEADLESS_RUNTIME_LOCK_URL = new URL("../resources/headless-runtime/package-lock.json", import.meta.url);
 
 export function renderOptunaRunner(input: {
   invocation: Invocation;
@@ -44,6 +48,8 @@ export function renderOptunaRunner(input: {
     timeout,
     time_budget_seconds: input.timeBudgetSeconds,
     objective_context: input.searchSpace.reasoning,
+    node_executable: input.searchSpace.optuna?.sampler === "centaur" ? process.execPath : undefined,
+    headless_fallback_package: FALLBACK_HEADLESS_PACKAGE,
     centaur: input.searchSpace.optuna?.sampler === "centaur"
       ? {
           ...input.searchSpace.optuna.centaur,
@@ -57,10 +63,12 @@ export function renderOptunaRunner(input: {
   return `#!/usr/bin/env python3
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -70,15 +78,37 @@ from pathlib import Path
 
 import optuna
 from optuna.trial import TrialState
-${input.searchSpace.optuna?.sampler === "centaur" ? "from autotune_centaur_runtime import CentaurSampler" : ""}
+${OUTPUT_HOLDER_HELPERS}
+${input.searchSpace.optuna?.sampler === "centaur" ? `
+def _load_centaur_module(name):
+    module_path = Path(__file__).resolve().with_name(name + ".py")
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Unable to load " + name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
+
+_load_centaur_module("autotune_process_io")
+_load_centaur_module("autotune_centaur_support")
+_load_centaur_module("autotune_centaur_runtime")
+from autotune_centaur_runtime import CentaurSampler
+` : ""}
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
+NODE_EXECUTABLE = os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))
+TARGET_PYTHON_ENV = json.loads(os.environ.pop("AUTOTUNE_TARGET_PYTHON_ENV", "{}"))
 CURRENT_TRIAL_TARGET = 0
 BASELINE_FINISHED_COUNT = 0
 SEED_TRIAL_COUNT = 0
 STARTED_TRIAL_COUNT = 0
 PROGRESS_HEADER_PRINTED = False
 PROGRESS_LOCK = threading.Lock()
+ACTIVE_PROCESSES = set()
+ACTIVE_PROCESS_LOCK = threading.Lock()
+INTERRUPTED = threading.Event()
+SPAWNING_PROCESS_COUNT = 0
 OPTIMIZATION_DIRECTION = CONFIG.get("direction", "maximize")
 ANSI_PATTERN = re.compile(r"\\033\\[[0-9;]*m")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -229,43 +259,130 @@ def drain_stream(stream, capture, parse_metrics=False, mirror=False):
 
 
 def kill_process_tree(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        system_root = windows_system_root()
+        taskkill = system_root / "System32" / "taskkill.exe"
+        try:
+            completed = subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                env={"SystemRoot": str(system_root), "windir": str(system_root)},
+            )
+            if completed.returncode != 0 and process.poll() is None:
+                process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+        return
     try:
-        if hasattr(os, "killpg"):
-            os.killpg(process.pid, 9)
-        else:
-            process.kill()
+        os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
 
 
+def windows_system_root():
+    standard = Path("C:/Windows")
+    if (standard / "System32" / "taskkill.exe").is_file():
+        return standard
+    configured = os.environ.get("SystemRoot")
+    if configured:
+        candidate = Path(configured)
+        taskkill = candidate / "System32" / "taskkill.exe"
+        if (
+            candidate.is_absolute()
+            and re.fullmatch(r"[A-Za-z]:", candidate.drive)
+            and candidate.parent == Path(candidate.anchor)
+            and candidate.name.lower() in ("windows", "winnt")
+            and taskkill.is_file()
+        ):
+            return candidate.resolve()
+    return standard
+
+
+def join_output_threads(process, threads, pipe_identities):
+    deadline = time.monotonic() + 1
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+    if any(thread.is_alive() for thread in threads):
+        kill_process_tree(process)
+        terminate_output_holders(pipe_identities, process.pid)
+        deadline = time.monotonic() + 1
+        for thread in threads:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+    for stream, thread in zip((process.stdout, process.stderr), threads):
+        if stream and not thread.is_alive():
+            stream.close()
+
+
+def request_interrupt(signum, frame):
+    INTERRUPTED.set()
+    for process in tuple(ACTIVE_PROCESSES):
+        kill_process_tree(process)
+    if SPAWNING_PROCESS_COUNT == 0:
+        raise KeyboardInterrupt
+
+
+def terminate_active_trials():
+    with ACTIVE_PROCESS_LOCK:
+        processes = list(ACTIVE_PROCESSES)
+    for process in processes:
+        kill_process_tree(process)
+
+
 def run_trial_command(argv):
+    global SPAWNING_PROCESS_COUNT
     max_output_bytes = CONFIG.get("max_output_bytes", 65536)
     stdout_capture = OutputCapture(max_output_bytes)
     stderr_capture = OutputCapture(max_output_bytes)
-    process = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        start_new_session=hasattr(os, "setsid"),
-    )
-    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True))
-    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True))
+    with ACTIVE_PROCESS_LOCK:
+        SPAWNING_PROCESS_COUNT += 1
+    try:
+        process = subprocess.Popen(
+            argv,
+            env={**os.environ, **TARGET_PYTHON_ENV},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            start_new_session=hasattr(os, "setsid"),
+        )
+        pipe_identities = output_pipe_identities(process)
+        with ACTIVE_PROCESS_LOCK:
+            ACTIVE_PROCESSES.add(process)
+    finally:
+        with ACTIVE_PROCESS_LOCK:
+            SPAWNING_PROCESS_COUNT -= 1
+    if INTERRUPTED.is_set():
+        kill_process_tree(process)
+    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True), daemon=True)
+    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
     timed_out = False
     error = None
     try:
         returncode = process.wait(timeout=CONFIG["timeout"])
+        if INTERRUPTED.is_set():
+            raise KeyboardInterrupt
     except subprocess.TimeoutExpired:
         timed_out = True
         error = f"Trial command timed out after {CONFIG['timeout']}s"
         kill_process_tree(process)
         returncode = process.wait()
+    except BaseException:
+        kill_process_tree(process)
+        process.wait()
+        raise
     finally:
-        stdout_thread.join()
-        stderr_thread.join()
+        join_output_threads(process, (stdout_thread, stderr_thread), pipe_identities)
+        with ACTIVE_PROCESS_LOCK:
+            ACTIVE_PROCESSES.discard(process)
     return {
         "returncode": returncode,
         "stdout": stdout_capture.tail,
@@ -335,6 +452,8 @@ def make_sampler(name, study_name=None, direction=None, storage=None):
             agent=config["agent"],
             model=config.get("model"),
             reasoning_effort=config.get("reasoning_effort"),
+            node_executable=NODE_EXECUTABLE,
+            headless_fallback_package=CONFIG["headless_fallback_package"],
         )
     if name == "grid":
         search_space = {}
@@ -575,6 +694,8 @@ def time_budget_exhausted(study):
 
 
 def main():
+    signal.signal(signal.SIGINT, request_interrupt)
+    signal.signal(signal.SIGTERM, request_interrupt)
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, required=True)
     parser.add_argument("--direction", choices=["maximize", "minimize"], required=True)
@@ -612,13 +733,21 @@ def main():
         if time_budget_exhausted(study):
             study.stop()
 
-    if not time_budget_exhausted(study):
-        study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
-    result = write_results(study, args.direction, output_path)
-    print(json.dumps(result))
-    if result["best_trial"] is None:
-        print(f"[{timestamp()}] all trials failed", file=sys.stderr)
-        sys.exit(2)
+    try:
+        if not time_budget_exhausted(study):
+            study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+        if INTERRUPTED.is_set():
+            raise KeyboardInterrupt
+        result = write_results(study, args.direction, output_path)
+        print(json.dumps(result))
+        if result["best_trial"] is None:
+            print(f"[{timestamp()}] all trials failed", file=sys.stderr)
+            sys.exit(2)
+    finally:
+        terminate_active_trials()
+        close_sampler = getattr(study.sampler, "close", None)
+        if callable(close_sampler):
+            close_sampler()
 
 
 if __name__ == "__main__":
@@ -649,8 +778,12 @@ export async function writeOptunaRunner(input: {
     const outputDirectory = path.dirname(input.outputPath);
     const runtimePath = path.join(outputDirectory, "autotune_centaur_runtime.py");
     const supportPath = path.join(outputDirectory, "autotune_centaur_support.py");
+    const processIoPath = path.join(outputDirectory, "autotune_process_io.py");
+    const headlessLockPath = path.join(outputDirectory, "autotune_headless_runtime.lock.json");
     await writeAtomicFile(runtimePath, await readFile(CENTAUR_RUNTIME_URL), 0o600);
     await writeAtomicFile(supportPath, await readFile(CENTAUR_SUPPORT_URL), 0o600);
+    await writeAtomicFile(processIoPath, await readFile(PROCESS_IO_URL), 0o600);
+    await writeAtomicFile(headlessLockPath, await readFile(HEADLESS_RUNTIME_LOCK_URL), 0o600);
   }
 }
 

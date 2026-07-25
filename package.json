@@ -35,6 +35,8 @@
     "examples/README.md",
     "CHANGELOG.md",
     "templates/*.py",
+    "resources/headless-runtime/*.json",
+    "resources/python-runtime.lock",
     "README.md"
   ],
   "scripts": {

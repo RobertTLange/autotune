@@ -1,0 +1,7 @@
+{
+  "name": "@roberttlange/autotune-headless-runtime",
+  "private": true,
+  "dependencies": {
+    "@roberttlange/headless": "0.4.0"
+  }
+}

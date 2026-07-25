@@ -11,6 +11,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import cmaes
 import numpy as np
 import optuna
+from autotune_process_io import _output_pipe_identities, _terminate_output_holders
 from optuna.distributions import (
     BaseDistribution,
     CategoricalDistribution,
@@ -35,16 +37,51 @@ SUPPORTED_OPTUNA = (4, 8)
 SUPPORTED_CMAES = (0, 12)
 HEADLESS_BASE_ENV_ALLOWLIST = set(
     "PATH HOME USER LOGNAME SHELL TMPDIR TMP TEMP LANG LC_ALL TERM NO_COLOR "
-    "FORCE_COLOR CI XDG_CONFIG_HOME XDG_CACHE_HOME HEADLESS_CONFIG".split()
+    "FORCE_COLOR CI XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME HEADLESS_CONFIG".split()
+)
+NPM_ENV_ALLOWLIST = set(
+    "SystemRoot ComSpec PATHEXT USERPROFILE APPDATA LOCALAPPDATA PROGRAMDATA "
+    "HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy "
+    "NODE_EXTRA_CA_CERTS NPM_CONFIG_REGISTRY NPM_CONFIG_PROXY NPM_CONFIG_HTTPS_PROXY "
+    "NPM_CONFIG_NOPROXY NPM_CONFIG_CAFILE NPM_CONFIG_CACHE NPM_CONFIG_STRICT_SSL "
+    "NPM_CONFIG_USERCONFIG NPM_CONFIG_GLOBALCONFIG "
+    "npm_config_registry npm_config_proxy npm_config_https_proxy npm_config_noproxy "
+    "npm_config_cafile npm_config_cache npm_config_strict_ssl "
+    "npm_config_userconfig npm_config_globalconfig".split()
 )
 HEADLESS_AGENT_ENV_ALLOWLIST = {
-    "claude": {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR"},
     "codex": {"CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME"},
     "cursor": {"CURSOR_API_KEY"},
-    "gemini": {"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"},
     "pi": set(
         "PI_CODING_AGENT_API_KEY PI_CODING_AGENT_MODEL PI_CODING_AGENT_MODELS "
         "PI_CODING_AGENT_PROVIDER".split()
+    ),
+}
+CLAUDE_COMMON_ENV_ALLOWLIST = {
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+}
+CLAUDE_PROVIDER_ENV_ALLOWLIST = {
+    "anthropic": set(
+        "ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS "
+        "CLAUDE_CODE_OAUTH_TOKEN".split()
+    ),
+    "aws": set(
+        "CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_SKIP_BEDROCK_AUTH "
+        "ANTHROPIC_BEDROCK_BASE_URL ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION".split()
+    ),
+    "vertex": set(
+        "CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_SKIP_VERTEX_AUTH "
+        "ANTHROPIC_VERTEX_BASE_URL ANTHROPIC_VERTEX_PROJECT_ID CLOUD_ML_REGION".split()
+    ),
+}
+GEMINI_COMMON_ENV_ALLOWLIST = {"GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID"}
+GEMINI_PROVIDER_ENV_ALLOWLIST = {
+    "google": {"GEMINI_API_KEY", "GOOGLE_API_KEY"},
+    "vertex": set(
+        "GOOGLE_API_KEY GOOGLE_APPLICATION_CREDENTIALS GOOGLE_GENAI_USE_VERTEXAI "
+        "GOOGLE_CLOUD_LOCATION".split()
     ),
 }
 HEADLESS_PROVIDER_ENV_ALLOWLIST = {
@@ -52,8 +89,9 @@ HEADLESS_PROVIDER_ENV_ALLOWLIST = {
     "aws": set(
         "AWS_ACCESS_KEY_ID AWS_BEARER_TOKEN_BEDROCK AWS_CONTAINER_AUTHORIZATION_TOKEN "
         "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_FULL_URI "
-        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_DEFAULT_REGION AWS_PROFILE AWS_REGION "
-        "AWS_ROLE_ARN AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_WEB_IDENTITY_TOKEN_FILE".split()
+        "AWS_CONFIG_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_DEFAULT_REGION AWS_PROFILE "
+        "AWS_REGION AWS_ROLE_ARN AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN "
+        "AWS_SHARED_CREDENTIALS_FILE AWS_WEB_IDENTITY_TOKEN_FILE".split()
     ),
     "azure": set(
         "AZURE_OPENAI_API_KEY AZURE_OPENAI_API_VERSION AZURE_OPENAI_BASE_URL "
@@ -81,29 +119,81 @@ HEADLESS_AGENT_PROVIDER_FAMILY = {
     "opencode": {"azure": "azure"},
     "pi": {"aws": "aws", "azure-openai-responses": "azure"},
 }
-EXPLICIT_HEADLESS_ENV = "AUTOTUNE_CENTAUR_HEADLESS_ENV"
+EXPLICIT_HEADLESS_ENV = "AUTOTUNE_HEADLESS_ENV"
+LEGACY_EXPLICIT_HEADLESS_ENV = "AUTOTUNE_CENTAUR_HEADLESS_ENV"
 ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+EXPLICIT_CREDENTIAL_OR_CONFIG = re.compile(
+    r"(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS(?:_FILE)?|"
+    r"CONFIG(?:_DIR|_FILE)?|PROFILE|PROJECT|REGION|LOCATION|ENDPOINT|BASE_URL|"
+    r"URL|DEPLOYMENT|RESOURCE|ACCOUNT(?:_ID)?|TENANT(?:_ID)?|CLIENT_ID|"
+    r"ORG(?:ANIZATION)?|MODEL|AUTH)$"
+)
 
 
 def headless_environment(agent: str, model: Optional[str]) -> Dict[str, str]:
     names = set(HEADLESS_BASE_ENV_ALLOWLIST)
-    names.update(HEADLESS_AGENT_ENV_ALLOWLIST.get(agent.lower(), set()))
-    provider = _headless_provider(agent, model)
+    normalized_agent = agent.strip().lower()
+    explicit_names = _explicit_headless_env_names()
+    names.update(HEADLESS_AGENT_ENV_ALLOWLIST.get(normalized_agent, set()))
+    provider = _headless_provider(agent, model, bool(explicit_names))
     names.update(HEADLESS_PROVIDER_ENV_ALLOWLIST.get(provider, set()))
-    names.update(_explicit_headless_env_names())
+    if normalized_agent == "claude":
+        names.update(CLAUDE_COMMON_ENV_ALLOWLIST)
+        names.update(CLAUDE_PROVIDER_ENV_ALLOWLIST.get(provider, set()))
+    if normalized_agent == "gemini":
+        names.update(GEMINI_COMMON_ENV_ALLOWLIST)
+        names.update(GEMINI_PROVIDER_ENV_ALLOWLIST.get(provider, set()))
+    names.update(explicit_names)
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
-def _headless_provider(agent: str, model: Optional[str]) -> str:
-    normalized_agent = agent.lower()
+def npm_environment(
+    base: Mapping[str, str], node_executable: Optional[str] = None
+) -> Dict[str, str]:
+    environment = dict(base)
+    environment.update(
+        {name: os.environ[name] for name in NPM_ENV_ALLOWLIST if name in os.environ}
+    )
+    if node_executable:
+        path_entries = [str(Path(node_executable).resolve().parent)]
+        path_entries.extend(
+            entry
+            for entry in environment.get("PATH", "").split(os.pathsep)
+            if Path(entry).is_absolute()
+        )
+        if os.name != "nt":
+            path_entries.extend(os.defpath.split(os.pathsep))
+        environment["PATH"] = os.pathsep.join(
+            dict.fromkeys(entry for entry in path_entries if entry)
+        )
+    return environment
+
+
+def _headless_provider(
+    agent: str, model: Optional[str], has_explicit_environment: bool = False
+) -> str:
+    normalized_agent = agent.strip().lower()
+    if normalized_agent == "claude":
+        bedrock = _enabled(os.environ.get("CLAUDE_CODE_USE_BEDROCK"))
+        vertex = _enabled(os.environ.get("CLAUDE_CODE_USE_VERTEX"))
+        if bedrock and vertex:
+            raise ValueError(
+                "CLAUDE_CODE_USE_BEDROCK and CLAUDE_CODE_USE_VERTEX cannot both be enabled"
+            )
+        return "aws" if bedrock else "vertex" if vertex else "anthropic"
+    if normalized_agent == "gemini":
+        return "vertex" if _enabled(os.environ.get("GOOGLE_GENAI_USE_VERTEXAI")) else "google"
     if normalized_agent not in ("opencode", "pi"):
         return ""
     configured_model = model
     if normalized_agent == "pi" and not configured_model:
         configured_model = os.environ.get("PI_CODING_AGENT_MODEL")
     if not configured_model:
+        if has_explicit_environment:
+            return ""
         raise ValueError(
-            f"Centaur agent {normalized_agent} requires an explicit provider-qualified model"
+            f"Centaur agent {normalized_agent} requires a provider-qualified model or "
+            f"{EXPLICIT_HEADLESS_ENV}"
         )
     model_parts = configured_model.split("/", 1)
     if len(model_parts) == 2 and all(model_parts):
@@ -111,26 +201,46 @@ def _headless_provider(agent: str, model: Optional[str]) -> str:
     elif normalized_agent == "pi":
         provider = os.environ.get("PI_CODING_AGENT_PROVIDER", "").lower()
         if not provider:
+            if has_explicit_environment:
+                return ""
             raise ValueError(
                 "Centaur agent pi requires a provider-qualified model or "
-                "PI_CODING_AGENT_PROVIDER"
+                f"PI_CODING_AGENT_PROVIDER or {EXPLICIT_HEADLESS_ENV}"
             )
     else:
+        if has_explicit_environment:
+            return ""
         raise ValueError(
-            "Centaur agent opencode requires an explicit provider-qualified model"
+            "Centaur agent opencode requires a provider-qualified model or "
+            f"{EXPLICIT_HEADLESS_ENV}"
         )
     agent_provider = HEADLESS_AGENT_PROVIDER_FAMILY.get(normalized_agent, {})
     return agent_provider.get(provider, HEADLESS_PROVIDER_FAMILY.get(provider, ""))
 
 
 def _explicit_headless_env_names() -> List[str]:
-    configured = os.environ.get(EXPLICIT_HEADLESS_ENV, "")
-    names = [name.strip() for name in configured.split(",") if name.strip()]
-    if len(names) > 32 or any(not ENVIRONMENT_NAME.fullmatch(name) for name in names):
+    configured = os.environ.get(EXPLICIT_HEADLESS_ENV)
+    legacy = os.environ.get(LEGACY_EXPLICIT_HEADLESS_ENV)
+    if configured is not None and legacy is not None and configured != legacy:
         raise ValueError(
-            f"{EXPLICIT_HEADLESS_ENV} must list at most 32 environment variable names"
+            f"{EXPLICIT_HEADLESS_ENV} and {LEGACY_EXPLICIT_HEADLESS_ENV} conflict"
+        )
+    configured = configured if configured is not None else legacy or ""
+    names = [name.strip() for name in configured.split(",") if name.strip()]
+    if len(names) > 32 or any(
+        not ENVIRONMENT_NAME.fullmatch(name)
+        or not EXPLICIT_CREDENTIAL_OR_CONFIG.search(name)
+        for name in names
+    ):
+        raise ValueError(
+            f"{EXPLICIT_HEADLESS_ENV} must list at most 32 credential or config "
+            "environment variable names"
         )
     return names
+
+
+def _enabled(value: Optional[str]) -> bool:
+    return value is not None and value.strip().lower() not in ("", "0", "false", "no")
 
 
 def build_distributions(
@@ -299,7 +409,11 @@ class _TailCapture:
 
 
 def bounded_process(
-    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout_seconds: float = HEADLESS_TIMEOUT_SECONDS,
 ) -> str:
     process = subprocess.Popen(
         list(argv),
@@ -311,6 +425,7 @@ def bounded_process(
         cwd=cwd,
         env=dict(env),
     )
+    pipe_identities = _output_pipe_identities(process)
     stdout = _TailCapture()
     stderr = _TailCapture()
     threads = [
@@ -320,31 +435,76 @@ def bounded_process(
     for thread in threads:
         thread.start()
     try:
-        returncode = process.wait(timeout=HEADLESS_TIMEOUT_SECONDS)
+        returncode = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _terminate_process_tree(process)
         process.wait()
         raise RuntimeError("headless proposal timed out")
     finally:
-        for thread in threads:
-            thread.join(timeout=1)
+        _join_threads(threads)
         if any(thread.is_alive() for thread in threads):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-            for thread in threads:
-                thread.join(timeout=1)
+            _terminate_process_tree(process)
+            _terminate_output_holders(pipe_identities, process.pid)
+            _join_threads(threads)
+        for stream, thread in zip((process.stdout, process.stderr), threads):
+            if stream and not thread.is_alive():
+                stream.close()
     if returncode != 0:
         raise RuntimeError(f"headless proposal exited with status {returncode}")
     return stdout.value
+
+
+def _join_threads(threads: Sequence[threading.Thread]) -> None:
+    deadline = time.monotonic() + 1
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        system_root = _windows_system_root()
+        taskkill = system_root / "System32" / "taskkill.exe"
+        try:
+            completed = subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                env={"SystemRoot": str(system_root), "windir": str(system_root)},
+            )
+            if completed.returncode != 0 and process.poll() is None:
+                process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _windows_system_root() -> Path:
+    standard = Path("C:/Windows")
+    if (standard / "System32" / "taskkill.exe").is_file():
+        return standard
+    configured = os.environ.get("SystemRoot")
+    if configured:
+        candidate = Path(configured)
+        taskkill = candidate / "System32" / "taskkill.exe"
+        if (
+            candidate.is_absolute()
+            and re.fullmatch(r"[A-Za-z]:", candidate.drive)
+            and candidate.parent == Path(candidate.anchor)
+            and candidate.name.lower() in ("windows", "winnt")
+            and taskkill.is_file()
+        ):
+            return candidate.resolve()
+    return standard
 
 
 def prepare_artifact_root(work_dir: Path, study_name: str) -> Path:

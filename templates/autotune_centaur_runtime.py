@@ -7,9 +7,11 @@ with storage you trust; Optuna itself deserializes the same state on resume.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -18,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import optuna
 from autotune_centaur_support import (
+    HEADLESS_TIMEOUT_SECONDS,
     MAX_PROMPT_BYTES,
     acquire_study_lock,
     bounded_process,
@@ -26,6 +29,7 @@ from autotune_centaur_support import (
     headless_environment,
     integer_hash,
     native,
+    npm_environment,
     nonempty,
     nonnegative_int,
     prepare_artifact_root,
@@ -41,6 +45,16 @@ from optuna._transform import _SearchSpaceTransform
 from optuna.distributions import BaseDistribution, FloatDistribution, IntDistribution
 from optuna.samplers import BaseSampler, CmaEsSampler
 from optuna.trial import FrozenTrial, TrialState
+
+
+HEADLESS_RUNTIME_LOCK_SHA256 = (
+    "b12466c830d5f87d7fd4673dfb1a1b1260cc67e3b97068e87635800be999fa7c"
+)
+HEADLESS_RUNTIME_PACKAGE_JSON = (
+    '{"name":"@roberttlange/autotune-headless-runtime",'
+    '"private":true,"dependencies":{'
+    '"@roberttlange/headless":"0.4.0"}}\n'
+)
 
 
 class CentaurSampler(BaseSampler):
@@ -61,6 +75,8 @@ class CentaurSampler(BaseSampler):
         agent: str,
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        node_executable: str,
+        headless_fallback_package: str,
         objective_context: Any = None,
     ) -> None:
         self._study_lock: Optional[int] = None
@@ -80,7 +96,16 @@ class CentaurSampler(BaseSampler):
         self._headless_env = headless_environment(self._agent, self._model)
         configured_headless = os.environ.get("AUTOTUNE_HEADLESS_BIN")
         self._headless_configured = configured_headless is not None
-        self._headless_executable = configured_headless or "headless"
+        self._headless_command: List[str] = []
+        self._headless_uses_npm = False
+        self._headless_node = ""
+        self._headless_install_env: Dict[str, str] = {}
+        self._headless_lock: Optional[bytes] = None
+        self._headless_fallback_package = nonempty(
+            "headless fallback package", headless_fallback_package
+        )
+        if self._headless_fallback_package.startswith("-"):
+            raise ValueError("headless fallback package must not start with '-'")
         self._objective_context = objective_context
         self._distributions = build_distributions(self._parameters)
         self._numeric = {
@@ -103,15 +128,31 @@ class CentaurSampler(BaseSampler):
             self._artifact_root = artifact_root
             if self._probability > 0:
                 try:
-                    self._headless_executable = _resolve_executable(
-                        self._headless_executable
+                    (
+                        self._headless_command,
+                        uses_npm,
+                        fallback_node,
+                    ) = _resolve_headless_command(
+                        configured_headless,
+                        self._headless_fallback_package,
+                        node_executable,
                     )
+                    if uses_npm:
+                        self._headless_uses_npm = True
+                        self._headless_node = fallback_node
+                        self._headless_install_env = npm_environment(
+                            {}, fallback_node
+                        )
+                        self._headless_env = npm_environment(
+                            self._headless_env, fallback_node
+                        )
+                        self._headless_lock = _load_headless_runtime_lock()
                 except FileNotFoundError:
                     if self._headless_configured:
                         raise RuntimeError(
                             "configured headless executable was not found"
                         )
-                    raise RuntimeError("headless executable was not found")
+                    raise RuntimeError("neither headless nor npm was found")
         except Exception:
             if artifact_root is not None:
                 try:
@@ -382,20 +423,99 @@ class CentaurSampler(BaseSampler):
             common.extend(["--model", self._model])
         if self._reasoning_effort:
             common.extend(["--reasoning-effort", self._reasoning_effort])
-        argv = [self._headless_executable, *common]
+        deadline = time.monotonic() + HEADLESS_TIMEOUT_SECONDS
+        execution_root: Optional[Path] = None
         try:
+            if self._headless_uses_npm:
+                execution_root, resolved_cli = self._prepare_headless_runtime(
+                    deadline
+                )
+                argv = [self._headless_node, str(resolved_cli), *common]
+            else:
+                argv = [*self._headless_command, *common]
+                execution_root = self._artifact_root
             return bounded_process(
                 argv,
-                cwd=self._artifact_root,
+                cwd=execution_root,
                 env=self._headless_env,
+                timeout_seconds=_remaining_timeout(deadline),
             )
         except FileNotFoundError:
             if self._headless_configured:
                 raise RuntimeError("configured headless executable was not found")
-            raise RuntimeError("headless executable was not found")
+            raise RuntimeError("neither headless nor npm was found")
+        finally:
+            if self._headless_uses_npm and execution_root is not None:
+                shutil.rmtree(execution_root, ignore_errors=True)
+
+    def _prepare_headless_runtime(self, deadline: float) -> Tuple[Path, Path]:
+        if self._headless_lock is None:
+            raise RuntimeError("Headless runtime lock was not loaded")
+        runtime_root = Path(tempfile.mkdtemp(prefix="autotune-headless-npm-"))
+        try:
+            os.chmod(runtime_root, 0o700)
+            write_private(
+                runtime_root / "package.json", HEADLESS_RUNTIME_PACKAGE_JSON
+            )
+            lock_target = runtime_root / "package-lock.json"
+            lock_target.write_bytes(self._headless_lock)
+            os.chmod(lock_target, 0o600)
+            bounded_process(
+                [
+                    *self._headless_command,
+                    "ci",
+                    "--ignore-scripts",
+                    "--no-audit",
+                    "--no-fund",
+                ],
+                cwd=runtime_root,
+                env=self._headless_install_env,
+                timeout_seconds=_remaining_timeout(deadline),
+            )
+            headless_cli = (
+                runtime_root
+                / "node_modules"
+                / "@roberttlange"
+                / "headless"
+                / "dist"
+                / "cli.js"
+            )
+            if headless_cli.is_symlink() or not headless_cli.is_file():
+                raise RuntimeError(
+                    "installed Headless fallback entry point was unsafe"
+                )
+            resolved_cli = headless_cli.resolve()
+            modules_root = (runtime_root / "node_modules").resolve()
+            if not resolved_cli.is_relative_to(modules_root):
+                raise RuntimeError(
+                    "installed Headless fallback entry point was unsafe"
+                )
+            return runtime_root, resolved_cli
+        except Exception:
+            shutil.rmtree(runtime_root, ignore_errors=True)
+            raise
 
     def _artifact_path(self, trial: int, attempt: int, suffix: str) -> Path:
         return self._artifact_root / f"trial-{trial:06d}-attempt-{attempt}.{suffix}"
+
+
+def _load_headless_runtime_lock() -> bytes:
+    lock_path = Path(__file__).resolve().with_name(
+        "autotune_headless_runtime.lock.json"
+    )
+    if lock_path.is_symlink() or not lock_path.is_file():
+        raise RuntimeError("Headless runtime lock was missing or unsafe")
+    content = lock_path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != HEADLESS_RUNTIME_LOCK_SHA256:
+        raise RuntimeError("Headless runtime lock failed its integrity check")
+    return content
+
+
+def _remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError("Headless fallback timed out during installation")
+    return remaining
 
 
 def _resolve_executable(configured: str) -> str:
@@ -410,6 +530,39 @@ def _resolve_executable(configured: str) -> str:
     if resolved is None:
         raise FileNotFoundError(configured)
     return str(Path(resolved).resolve())
+
+
+def _resolve_headless_command(
+    configured: Optional[str], fallback_package: str, node_executable: str
+) -> Tuple[List[str], bool, str]:
+    if fallback_package != "@roberttlange/headless@0.4.0":
+        raise ValueError("headless fallback package does not match its runtime lock")
+    if configured is not None:
+        return [_resolve_executable(configured)], False, ""
+    node = _resolve_node_executable(node_executable)
+    return _resolve_npm_command(node), True, node
+
+
+def _resolve_node_executable(node_executable: str) -> str:
+    configured_node = nonempty("Node executable", node_executable)
+    node_path = Path(configured_node)
+    if not node_path.is_absolute() or not node_path.is_file() or (
+        os.name != "nt" and not os.access(node_path, os.X_OK)
+    ):
+        raise FileNotFoundError(configured_node)
+    return str(node_path.resolve())
+
+
+def _resolve_npm_command(node: str) -> List[str]:
+    node_directory = Path(node).parent
+    candidates = [
+        node_directory / "node_modules" / "npm" / "bin" / "npm-cli.js",
+        node_directory.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js",
+    ]
+    for candidate in candidates:
+        if candidate.is_file() and not candidate.is_symlink():
+            return [node, str(candidate.resolve())]
+    raise RuntimeError("npm-cli.js was not found beside this Node.js/npm installation")
 
 
 def _extract_cma_state(

@@ -19,8 +19,11 @@ export async function centaurPython(): Promise<string | undefined> {
     .filter((candidate): candidate is string => Boolean(candidate));
   for (const candidate of candidates) {
     try {
-      await runPython(candidate, ["-c", "import optuna,cmaes; assert optuna.__version__.startswith('4.8.'); assert cmaes.__version__.startswith('0.12.')"]);
-      return candidate;
+      const executable = await runPython(candidate, [
+        "-c",
+        "import optuna,cmaes,sys; assert optuna.__version__.startswith('4.8.'); assert cmaes.__version__.startswith('0.12.'); print(sys.executable)"
+      ]);
+      return executable.trim();
     } catch {
       continue;
     }
@@ -104,7 +107,7 @@ setTimeout(() => console.log(JSON.stringify(${JSON.stringify(proposal)})), ${del
 }
 
 export function runnerArgs(runner: string, results: string, studyName: string, trials: number): string[] {
-  return [runner, "--trials", String(trials), "--direction", "maximize", "--sampler", "centaur", "--pruner", "none", "--n-jobs", "1", "--study-name", studyName, "--output", results];
+  return ["-I", runner, "--trials", String(trials), "--direction", "maximize", "--sampler", "centaur", "--pruner", "none", "--n-jobs", "1", "--study-name", studyName, "--output", results];
 }
 
 export function runPython(

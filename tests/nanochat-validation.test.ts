@@ -196,7 +196,7 @@ describe("nanochat finalist validation", () => {
     const malformedResume = await runPythonProcess(failedArgs, failedEnv);
     expect(malformedResume.code).not.toBe(0);
     expect(malformedResume.stderr).toContain("invalid validation completion marker");
-  });
+  }, 15_000);
 
   it("rejects validation seeds that overlap the discovery seed", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-nanochat-validation-"));

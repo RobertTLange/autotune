@@ -1,8 +1,11 @@
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { runCommand } from "./process.js";
-import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
+import { isCommandInterruptedError, runCommand } from "./process.js";
+import { FALLBACK_HEADLESS_PACKAGE, runHeadlessFallback } from "./headless.js";
+import { resolveNpmCommand } from "./npx.js";
+import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
+import { npxHeadlessEnvironment } from "./headless-environment.js";
 import type { Invocation } from "./types.js";
 
 export interface PrerequisiteReport {
@@ -11,6 +14,8 @@ export interface PrerequisiteReport {
   cmaes?: string;
   headless: string;
   runtime: string;
+  managedPython: boolean;
+  pythonExecutable: string;
 }
 
 export interface DoctorCheck {
@@ -22,29 +27,37 @@ export interface DoctorCheck {
 export async function checkPrerequisites(input: {
   invocation: Invocation;
   agent: string;
+  model?: string;
   centaur?: boolean;
   skipHeadless?: boolean;
 }): Promise<PrerequisiteReport> {
-  const python = await checkPython();
-  const centaurPackages = input.centaur ? await checkCentaurPackages() : undefined;
-  const optuna = centaurPackages?.optuna ?? await checkOptuna();
+  const pythonRuntime = await ensurePythonRuntime({ includeCmaes: true });
   const headless = input.skipHeadless
     ? "skipped"
     : input.centaur
-      ? await checkCentaurHeadless(input.agent)
-      : await checkHeadless(input.agent);
+      ? await checkCentaurHeadless(input.agent, input.model)
+      : await checkHeadless(input.agent, input.model);
   const runtime = await checkRuntime(input.invocation);
-  return { python, optuna, cmaes: centaurPackages?.cmaes, headless, runtime };
+  return {
+    python: pythonRuntime.pythonVersion,
+    optuna: pythonRuntime.optunaVersion,
+    ...(pythonRuntime.cmaesVersion ? { cmaes: pythonRuntime.cmaesVersion } : {}),
+    headless,
+    runtime,
+    managedPython: pythonRuntime.managed,
+    pythonExecutable: pythonRuntime.python
+  };
 }
 
 export async function checkDoctorPrerequisites(input: {
   invocation?: Invocation;
   agent: string;
+  model?: string;
 }): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   checks.push(await runDoctorCheck("python3", checkPython));
   checks.push(await runDoctorCheck("optuna", checkOptuna));
-  checks.push(await runDoctorCheck("headless", () => checkHeadless(input.agent)));
+  checks.push(await runDoctorCheck("headless", () => checkHeadless(input.agent, input.model)));
   checks.push(
     input.invocation
       ? await runDoctorCheck("runtime", () => checkRuntime(input.invocation as Invocation))
@@ -61,96 +74,71 @@ async function runDoctorCheck(name: string, check: () => Promise<string>): Promi
   try {
     return { name, status: "ok", detail: await check() };
   } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     return { name, status: "fail", detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
 export async function checkPython(): Promise<string> {
-  const { stdout } = await runCommand("python3", ["--version"]);
-  const version = stdout.trim().replace(/^Python\s+/, "");
-  const [major = "0", minor = "0"] = version.split(".");
-  if (Number(major) < 3 || (Number(major) === 3 && Number(minor) < 9)) {
-    throw new Error(`python3 >= 3.9 required, found ${version}`);
-  }
-  return version;
+  return (await inspectPythonInterpreter()).pythonVersion;
 }
 
 export async function checkOptuna(): Promise<string> {
-  try {
-    const { stdout } = await runCommand("python3", ["-c", "import optuna; print(optuna.__version__)"]);
-    return stdout.trim();
-  } catch (error) {
-    throw new Error(`Optuna is required: python3 -m pip install optuna (${String(error)})`);
-  }
+  return (await ensurePythonRuntime({ includeCmaes: true })).optunaVersion;
 }
 
-async function checkCentaurPackages(): Promise<{ optuna: string; cmaes: string }> {
-  let stdout: string;
-  try {
-    ({ stdout } = await runCommand("python3", [
-      "-c",
-      "import cmaes, optuna; print(optuna.__version__); print(cmaes.__version__)"
-    ]));
-  } catch (error) {
-    throw new Error(`Centaur requires Optuna and cmaes: python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12' (${String(error)})`);
-  }
-  const [optuna = "", cmaes = ""] = stdout.trim().split(/\r?\n/);
-  if (!isSupportedCentaurOptuna(optuna)) {
-    throw new Error(`Centaur requires Optuna >= 4.8.0 and < 5, found ${optuna || "unknown"}`);
-  }
-  if (!isAtLeastVersion(cmaes, 0, 12)) {
-    throw new Error(`Centaur requires cmaes >= 0.12, found ${cmaes || "unknown"}`);
-  }
-  return { optuna, cmaes };
-}
-
-function isSupportedCentaurOptuna(version: string): boolean {
-  const [major, minor] = version.split(".").map(Number);
-  return major === 4 && Number.isFinite(minor) && minor >= 8;
-}
-
-function isAtLeastVersion(version: string, minimumMajor: number, minimumMinor: number): boolean {
-  const [major, minor] = version.split(".").map(Number);
-  return Number.isFinite(major) && Number.isFinite(minor) && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
-}
-
-export async function checkHeadless(agent: string): Promise<string> {
-  const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
-  let stdout = "";
-  let stderr = "";
-  try {
-    ({ stdout, stderr } = await runCommand(bin, ["--check"]));
-  } catch (error) {
-    if (bin === "headless" && isMissingExecutable(error)) {
-      ({ stdout, stderr } = await runCommand("npx", ["-y", FALLBACK_HEADLESS_PACKAGE, "--check"]));
-    } else {
-      throw error;
-    }
-  }
-  const output = `${stdout}\n${stderr}`;
+export async function checkHeadless(
+  agent: string,
+  model?: string,
+  resolveNpm: typeof resolveNpmCommand = resolveNpmCommand
+): Promise<string> {
+  const { label, output } = await runHeadlessCheck(agent, model, resolveNpm);
   if (!headlessListsAgent(output, agent)) {
-    return `${bin} (agent ${agent} not listed by --check)`;
+    return `${label} (agent ${agent} not listed by --check)`;
   }
-  return `${bin} (${agent})`;
+  return `${label} (${agent})`;
 }
 
-async function checkCentaurHeadless(agent: string): Promise<string> {
-  const bin = process.env.AUTOTUNE_HEADLESS_BIN ?? "headless";
-  let output: string;
-  try {
-    const { stdout, stderr } = await runCommand(bin, ["--check"]);
-    output = `${stdout}\n${stderr}`;
-  } catch (error) {
-    if (isMissingExecutable(error)) {
-      throw new Error("Centaur requires an installed headless executable on PATH or AUTOTUNE_HEADLESS_BIN");
-    }
-    throw error;
-  }
+async function checkCentaurHeadless(agent: string, model?: string): Promise<string> {
+  const { label, output } = await runHeadlessCheck(agent, model);
   if (!headlessAgentAvailable(output, agent)) {
     throw new Error(`Centaur proposal agent ${agent} is not available according to headless --check`);
   }
-  return `${bin} (${agent})`;
+  return `${label} (${agent})`;
 }
+
+async function runHeadlessCheck(
+  agent: string,
+  model: string | undefined,
+  resolveNpm: typeof resolveNpmCommand = resolveNpmCommand
+): Promise<{ label: string; output: string }> {
+  const configured = process.env.AUTOTUNE_HEADLESS_BIN;
+  if (configured !== undefined && !configured.trim()) {
+    throw new Error("configured headless executable must not be empty");
+  }
+  if (configured !== undefined) {
+    const bin = configured;
+    const { stdout, stderr } = await runCommand(bin, ["--check"], HEADLESS_CHECK_OPTIONS);
+    return { label: bin, output: `${stdout}\n${stderr}` };
+  }
+  const environment = npxHeadlessEnvironment({ agent, model });
+  const output = await runHeadlessFallback(
+    ["--check"],
+    environment,
+    resolveNpm,
+    HEADLESS_CHECK_OPTIONS.timeoutMs,
+    HEADLESS_CHECK_OPTIONS.maxOutputBytes
+  );
+  return {
+    label: `npm ci ${FALLBACK_HEADLESS_PACKAGE}`,
+    output
+  };
+}
+
+const HEADLESS_CHECK_OPTIONS = {
+  timeoutMs: 2 * 60 * 1000,
+  maxOutputBytes: 1024 * 1024
+};
 
 function headlessAgentAvailable(output: string, agent: string): boolean {
   const normalizedAgent = agent.trim().toLowerCase();
@@ -163,10 +151,6 @@ function headlessAgentAvailable(output: string, agent: string): boolean {
 function headlessListsAgent(output: string, agent: string): boolean {
   const available = output.toLowerCase().split(/[^a-z0-9_-]+/);
   return available.includes(agent.trim().toLowerCase());
-}
-
-function isMissingExecutable(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 export async function checkRuntime(invocation: Invocation): Promise<string> {
