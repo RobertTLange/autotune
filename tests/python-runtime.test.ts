@@ -1,6 +1,7 @@
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
+import { environmentValue } from "../src/environment.js";
 import { ensurePythonRuntime } from "../src/python-runtime.js";
 
 describe("ensurePythonRuntime", () => {
@@ -324,6 +325,64 @@ describe("ensurePythonRuntime", () => {
     const probes = (await readLog(fixture.log)).filter((args) => args.includes("-c"));
     expect(probes).not.toHaveLength(0);
     expect(probes.every((args) => args.includes("-I"))).toBe(true);
+  });
+
+  it("ignores empty and relative PATH entries before probing from the shared temp directory", async () => {
+    const fixture = await createFixture({ withUv: false });
+    const command = `autotune-python-${path.basename(path.dirname(fixture.bin))}`;
+    const trustedPython = path.join(fixture.bin, command);
+    const hostilePython = path.join(tmpdir(), command);
+    const hostileMarker = path.join(tmpdir(), `${command}.ran`);
+    await writeExecutable(trustedPython, fakePythonSource());
+    await writeExecutable(
+      hostilePython,
+      `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(hostileMarker)}, "ran");\nprocess.exit(99);\n`
+    );
+
+    try {
+      const runtime = await ensurePythonRuntime({
+        includeCmaes: false,
+        bootstrapPython: command,
+        cacheDir: fixture.cache,
+        env: {
+          ...process.env,
+          PATH: `${path.delimiter}.${path.delimiter}${fixture.bin}`,
+          FAKE_SYSTEM_OPTUNA: "1",
+          FAKE_RUNTIME_LOG: fixture.log
+        }
+      });
+
+      expect(await realpath(runtime.python)).toBe(await realpath(trustedPython));
+      await expect(access(hostileMarker)).rejects.toThrow();
+    } finally {
+      await rm(hostilePython, { force: true });
+      await rm(hostileMarker, { force: true });
+    }
+  });
+
+  it("resolves Windows environment keys case-insensitively", () => {
+    const env = { Path: "C:\\trusted", PathExt: ".EXE;.CMD" };
+    expect(environmentValue(env, "PATH", true)).toBe("C:\\trusted");
+    expect(environmentValue(env, "PATHEXT", true)).toBe(".EXE;.CMD");
+  });
+
+  it.skipIf(process.platform === "win32")("skips command-named directories in earlier PATH entries", async () => {
+    const fixture = await createFixture({ withUv: false });
+    const decoyBin = await mkdtemp(path.join(tmpdir(), "autotune-python-decoy-"));
+    await mkdir(path.join(decoyBin, "python3"));
+
+    const runtime = await ensurePythonRuntime({
+      includeCmaes: false,
+      cacheDir: fixture.cache,
+      env: {
+        ...process.env,
+        PATH: `${decoyBin}${path.delimiter}${fixture.bin}`,
+        FAKE_SYSTEM_OPTUNA: "1",
+        FAKE_RUNTIME_LOG: fixture.log
+      }
+    });
+
+    expect(await realpath(runtime.python)).toBe(await realpath(fixture.python));
   });
 
   it("falls back to another Python command when the default is unsupported", async () => {

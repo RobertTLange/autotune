@@ -1,9 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
-import { link, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, link, lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { environmentValue } from "./environment.js";
 import { isCommandInterruptedError, runCommand } from "./process.js";
 import {
   claimOwnsQueue,
@@ -241,7 +243,7 @@ export async function inspectPythonInterpreter(options: {
 } = {}): Promise<PythonInterpreter> {
   const callerEnv = options.env ?? process.env;
   const toolEnv = isolatedToolEnvironment(callerEnv);
-  const candidates = pythonCandidates(options.bootstrapPython, callerEnv);
+  const candidates = await pythonCandidates(options.bootstrapPython, callerEnv);
   const errors: Error[] = [];
   for (const candidate of candidates) {
     try {
@@ -294,7 +296,7 @@ async function resolvePythonRuntimeCandidate(
   toolEnv: NodeJS.ProcessEnv,
   includeCmaes: boolean
 ): Promise<{ identity: PythonIdentity; existing?: PackageVersions }> {
-  const candidates = pythonCandidates(configuredPython, callerEnv);
+  const candidates = await pythonCandidates(configuredPython, callerEnv);
   const errors: Error[] = [];
   let firstSupported: PythonIdentity | undefined;
   for (const candidate of candidates) {
@@ -316,13 +318,47 @@ async function resolvePythonRuntimeCandidate(
   throw pythonCandidateError(candidates, errors);
 }
 
-function pythonCandidates(configuredPython: string | undefined, env: NodeJS.ProcessEnv): string[] {
+async function pythonCandidates(
+  configuredPython: string | undefined,
+  env: NodeJS.ProcessEnv
+): Promise<string[]> {
   const explicit = configuredPython ?? env.AUTOTUNE_PYTHON;
-  return explicit
-    ? [explicit]
-    : process.platform === "win32"
-      ? ["python", "python3"]
-      : ["python3", "python"];
+  if (explicit) {
+    if (path.isAbsolute(explicit)) return [explicit];
+    if (process.platform === "win32" && /^[A-Za-z]:(?:$|[^\\/])/.test(explicit)) {
+      throw new Error("AUTOTUNE_PYTHON must not use a drive-relative Windows path");
+    }
+    if (explicit.includes("/") || explicit.includes("\\")) return [path.resolve(explicit)];
+    const resolved = await findExecutable(explicit, env);
+    return [resolved ?? path.resolve(explicit)];
+  }
+  const names = process.platform === "win32" ? ["python", "python3"] : ["python3", "python"];
+  const candidates = await Promise.all(names.map((name) => findExecutable(name, env)));
+  const resolved = candidates.filter((candidate): candidate is string => candidate !== undefined);
+  if (resolved.length === 0) {
+    throw new Error("Python 3.9 or newer is required: no interpreter found in absolute PATH entries");
+  }
+  return resolved;
+}
+
+async function findExecutable(command: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  const extensions = process.platform === "win32" && path.extname(command) === ""
+    ? (environmentValue(env, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";")
+    : [""];
+  for (const directory of (environmentValue(env, "PATH") ?? "").split(path.delimiter)) {
+    if (!directory || !path.isAbsolute(directory)) continue;
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      try {
+        if (!(await stat(candidate)).isFile()) continue;
+        await access(candidate, constants.X_OK);
+        return candidate;
+      } catch {
+        // Keep searching absolute PATH entries.
+      }
+    }
+  }
+  return undefined;
 }
 
 function labeledPythonError(candidate: string, error: unknown): Error {
@@ -473,13 +509,14 @@ async function provisionRuntime(input: {
   env: NodeJS.ProcessEnv;
   cwd: string;
 }): Promise<void> {
-  if (await uvAvailable(input.env, input.cwd)) {
+  const uv = await findExecutable("uv", input.env);
+  if (uv) {
     try {
-      await runCommand("uv", [
+      await runCommand(uv, [
         "venv", "--no-project", "--no-config", "--no-python-downloads",
         "--python", input.bootstrapPython, input.environmentDir
       ], { cwd: input.cwd, env: input.env, timeoutMs: COMMAND_TIMEOUT_MS });
-      await runCommand("uv", [
+      await runCommand(uv, [
         "pip", "install", "--no-config", "--only-binary", ":all:",
         "--default-index", PYPI_INDEX, "--require-hashes", "--python", input.python,
         "--requirements", input.requirementsFile
@@ -527,16 +564,6 @@ async function provisionWithVenv(input: {
     throw new Error("failed to provision the managed Python runtime with python -m venv and pip", {
       cause: error
     });
-  }
-}
-
-async function uvAvailable(env: NodeJS.ProcessEnv, cwd: string): Promise<boolean> {
-  try {
-    await runCommand("uv", ["--version"], { cwd, env, timeoutMs: PROBE_TIMEOUT_MS });
-    return true;
-  } catch (error) {
-    if (isCommandInterruptedError(error)) throw error;
-    return false;
   }
 }
 
