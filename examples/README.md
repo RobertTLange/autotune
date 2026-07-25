@@ -40,7 +40,7 @@ Run the equal-budget comparison across all four objectives:
 ./examples/bbob/run_experiments.sh
 ```
 
-The launcher additionally requires built Autotune, Optuna with `cmaes`, and a configured Headless agent. For each objective, it runs base CMA-ES, resets without transfer, resets with completed-trial transfer, and Centaur. Defaults are 10 seeded repetitions and 100 new evaluations per method (`50 + 2 × 25` for reset methods), for 160 experiments and 16,000 objective evaluations. The four objectives run in parallel while seeds and methods run sequentially, limiting concurrency to four jobs. Outputs and logs go under `examples/bbob/autotune/experiments/`, grouped by objective, method, and seed.
+The launcher additionally requires built Autotune and a configured Headless agent. Autotune provisions Optuna with `cmaes` when needed. For each objective, it runs base CMA-ES, resets without transfer, resets with completed-trial transfer, and Centaur. Defaults are 10 seeded repetitions and 100 new evaluations per method (`50 + 2 × 25` for reset methods), for 160 experiments and 16,000 objective evaluations. The four objectives run in parallel while seeds and methods run sequentially, limiting concurrency to four jobs. Outputs and logs go under `examples/bbob/autotune/experiments/`, grouped by objective, method, and seed.
 
 ## MNIST CNN
 
@@ -48,7 +48,8 @@ The launcher additionally requires built Autotune, Optuna with `cmaes`, and a co
 
 ```bash
 uv venv .venv
-uv pip install --python .venv/bin/python optuna torch torchvision
+uv pip install --python .venv/bin/python torch torchvision
+source .venv/bin/activate
 autotune run examples/mnist/mnist_cnn.py \
   --trials 8 \
   --agent codex \
@@ -59,12 +60,10 @@ The first run downloads MNIST into `/tmp/autotune-mnist-data`.
 
 ## PID Controller
 
-Centaur requires Optuna 4.8 or newer but below 5, `cmaes` 0.12 or newer, at least two numeric parameters, one trial worker, and no agentic refinement rounds. Persistent runs currently require file-backed SQLite storage.
+Centaur requires at least two numeric parameters, one trial worker, no agentic refinement rounds, a C++17 `g++` for this example, and credentials for the selected Headless agent. Autotune provisions its pinned Optuna and `cmaes` controller dependencies and invokes pinned Headless through npx when needed. Persistent runs currently require file-backed SQLite storage.
 
 ```bash
-python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12'
-npm install -g '@roberttlange/headless@0.4.0'
-autotune run examples/pid_controller/pid_controller.cpp \
+npx -y @roberttlange/autotune run examples/pid_controller/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \
   --config examples/pid_controller/pid_centaur_search_space.yaml \
@@ -86,7 +85,8 @@ Install runtime packages:
 
 ```bash
 uv venv .venv
-uv pip install --python .venv/bin/python optuna torch torchvision numpy scipy
+uv pip install --python .venv/bin/python torch torchvision numpy scipy
+source .venv/bin/activate
 ```
 
 Data is downloaded by `torchvision` on first use. By default, the cache path is `~/data/cifar10`; override it with:

@@ -31,7 +31,7 @@ Autotune combines `headless` agents with Optuna. It analyzes your script, propos
 
 Autotune operates in clear phases:
 
-1. **Prerequisites**: checks `python3`, Optuna, the selected `headless` agent, and the target runtime.
+1. **Prerequisites**: resolves Python, provisions the optimization controller when needed, checks the selected Headless agent, and verifies the target runtime.
 2. **Analysis**: asks the agent to inspect your script and propose tunable parameters, direction, sampler, and pruner.
 3. **Confirmation**: shows the proposed space and accepts `Y`, `feedback`, `edit`, or `n`.
 4. **Compatibility**: when needed, generates a modified copy that adds CLI flags or `autotune_metric`.
@@ -40,22 +40,28 @@ Autotune operates in clear phases:
 
 The original script is left untouched.
 
-## Install
+## Run
 
-Install the CLI and its runtime prerequisites:
+Requirements: Node.js 22 or newer with npm/npx, Python 3.9 or newer, and registry access on the first uncached run. Python must provide `venv` with pip unless `uv` is available. No global Autotune, Headless, Optuna, or `cmaes` installation is required:
+
+```bash
+npx -y @roberttlange/autotune --help
+npx -y @roberttlange/autotune doctor --agent codex
+npx -y @roberttlange/autotune run train.py --trials 20 --agent codex
+```
+
+`@latest` is optional in normal use: npm fetches the `latest` dist-tag when no matching local package is available. Inside an Autotune checkout or project that already provides the package, npx may reuse that local version; use `@latest` when registry resolution must be forced. `-y` accepts npx's install prompt; it does not select a package version.
+
+Autotune invokes the pinned Headless CLI through npx when no `headless` executable is installed. It also reuses a compatible Optuna installation when available, or creates a hash-locked controller environment under `${XDG_CACHE_HOME:-~/.cache}/autotune/python` on Unix and `%LOCALAPPDATA%\autotune\python` on Windows. The controller environment is not activated and does not modify the training process's `PATH`, `VIRTUAL_ENV`, or `PYTHON*` variables. Your training script therefore keeps its original Python environment and dependencies.
+
+Optional global CLI installation:
 
 ```bash
 npm install -g @roberttlange/autotune
-npm install -g @roberttlange/headless@0.4.0
-python3 -m pip install 'optuna>=4.8,<5'
-autotune doctor --agent codex
+autotune --help
 ```
 
-Run without a global Autotune installation:
-
-```bash
-npx @roberttlange/autotune --help
-```
+Set `AUTOTUNE_PYTHON` to choose the controller bootstrap interpreter or `AUTOTUNE_HEADLESS_BIN` to require a specific Headless executable. Non-empty explicit overrides fail rather than silently falling back.
 
 ### Agent Skill
 
@@ -68,8 +74,10 @@ npx skills add RobertTLange/autotune --skill autotune --agent codex --global
 ## Core Usage
 
 ```bash
-autotune run train.py --trials 50 --agent codex
+npx -y @roberttlange/autotune run train.py --trials 50 --agent codex
 ```
+
+The remaining examples use `autotune` for readability; substitute `npx -y @roberttlange/autotune` when using the zero-install form.
 
 Common flags:
 
@@ -227,4 +235,4 @@ npm test
 npm run build
 ```
 
-The test suite uses fake `python3` and `headless` binaries for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.
+The test suite uses fake Python, Headless, and npx executables for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.

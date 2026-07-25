@@ -15,18 +15,14 @@ If the script lacks CLI flags or metric output, autotune may ask the agent to ge
 
 ## Prerequisites
 
-Check that the CLI and runtime are available before starting:
+Run the CLI directly through npx; this requires Node.js with npm/npx, Python 3.9+, and first-run registry access. Python must provide `venv` with pip unless `uv` is available. No global Autotune, Headless, Optuna, or `cmaes` installation is required:
 
 ```bash
-autotune --version
-autotune doctor --agent codex
+npx -y @roberttlange/autotune --version
+npx -y @roberttlange/autotune doctor --agent codex
 ```
 
-If the CLI is missing, ask before installing the npm package globally:
-
-```bash
-npm install -g @roberttlange/autotune
-```
+Omitting `@latest` fetches npm's `latest` dist-tag when no matching local package exists. Inside a checkout or project that already provides Autotune, npx may reuse that local version; use `@latest` to force registry resolution. Autotune provisions controller-only Python dependencies without changing the target training environment.
 
 ## When to Use
 
@@ -37,10 +33,10 @@ Use this skill when asked to tune script hyperparameters, run an autotune exampl
 Use built-in help when exact flags or subcommands matter:
 
 ```bash
-autotune --help
-autotune run --help
-autotune results --help
-autotune doctor --help
+npx -y @roberttlange/autotune --help
+npx -y @roberttlange/autotune run --help
+npx -y @roberttlange/autotune results --help
+npx -y @roberttlange/autotune doctor --help
 ```
 
 ## Basic Flow
@@ -48,13 +44,13 @@ autotune doctor --help
 Check prerequisites first:
 
 ```bash
-autotune doctor train.py --agent codex
+npx -y @roberttlange/autotune doctor train.py --agent codex
 ```
 
 Run a search:
 
 ```bash
-autotune run train.py --trials 20 --agent codex
+npx -y @roberttlange/autotune run train.py --trials 20 --agent codex
 ```
 
 During confirmation, prefer review over blind acceptance:
@@ -73,14 +69,14 @@ Use `--yes` only when accepting the first proposed space is intended.
 - Configure the Headless backend with `--agent codex`, `--model gpt-5.5`, and `--reasoning-effort high`; `--effort high` is a shorter alias.
 - Use `--output results.json` for an explicit results path.
 - Use refinement rounds when useful: `--refine-rounds 2 --refine-trials 10 --refine-mode ask`.
-- Inspect prior output with `autotune results autotune` or `autotune results results.json`.
+- Inspect prior output with `npx -y @roberttlange/autotune results autotune` or `npx -y @roberttlange/autotune results results.json`.
 
 ## Compiled Scripts
 
 Use `--build-command` once before trials, and `--command` for the runtime. Both support `{script}` and `{work-dir}` placeholders.
 
 ```bash
-autotune run examples/pid_controller/pid_controller.cpp \
+npx -y @roberttlange/autotune run examples/pid_controller/pid_controller.cpp \
   --build-command "g++ -std=c++17 -O2 {script} -o {work-dir}/pid_controller" \
   --command "{work-dir}/pid_controller" \
   --trials 12 \
