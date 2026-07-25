@@ -23,6 +23,31 @@ describe("ensurePythonRuntime", () => {
     expect(await readLog(fixture.log)).not.toContainEqual(expect.arrayContaining(["venv"]));
   });
 
+  it("accepts macOS Python when platform.mac_ver is empty", async () => {
+    const fixture = await createFixture({ withUv: true });
+
+    const runtime = await ensurePythonRuntime({
+      includeCmaes: false,
+      bootstrapPython: fixture.python,
+      cacheDir: fixture.cache,
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        FAKE_SYSTEM_OPTUNA: "1",
+        FAKE_RUNTIME_LOG: fixture.log,
+        FAKE_PYTHON_PLATFORM: "darwin",
+        FAKE_MAC_VERSION: ""
+      }
+    });
+
+    expect(runtime).toMatchObject({
+      pythonVersion: "3.12.1",
+      optunaVersion: "4.8.0",
+      managed: false
+    });
+    expect(await realpath(runtime.python)).toBe(await realpath(fixture.python));
+  });
+
   it("provisions and reuses a private uv environment when packages are missing", async () => {
     const fixture = await createFixture({ withUv: true });
     const options = {
@@ -446,7 +471,14 @@ if (moduleIndex >= 0 && args[moduleIndex + 1] === "venv") {
 const codeIndex = args.indexOf("-c");
 const code = codeIndex >= 0 ? args[codeIndex + 1] || "" : "";
 if (codeIndex >= 0 && code.includes("platform.machine")) {
-  console.log(JSON.stringify({ executable, version: "3.12.1", implementation: "cpython", platform: process.platform, arch: process.arch, macVersion: "14.0" }));
+  console.log(JSON.stringify({
+    executable,
+    version: "3.12.1",
+    implementation: "cpython",
+    platform: process.env.FAKE_PYTHON_PLATFORM || process.platform,
+    arch: process.arch,
+    macVersion: process.env.FAKE_MAC_VERSION ?? "14.0"
+  }));
   process.exit(0);
 }
 

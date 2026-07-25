@@ -282,7 +282,6 @@ async function readPythonIdentity(python: string, env: NodeJS.ProcessEnv): Promi
     !identity.executable
     || major < 3
     || (major === 3 && minor < 9)
-    || (identity.platform === "darwin" && !identity.macVersion)
   ) {
     throw new Error(`Python 3.9 or newer is required, found ${identity.version || "unknown"}`);
   }
