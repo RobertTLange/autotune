@@ -167,7 +167,7 @@ describe("runPythonRunner", () => {
         "import sys",
         "import time",
         "from pathlib import Path",
-        "trial = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)",
+        "trial = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)",
         `Path(${JSON.stringify(marker)}).write_text(str(trial.pid))`,
         "time.sleep(60)"
       ].join("\n"),
@@ -199,7 +199,68 @@ describe("runPythonRunner", () => {
     }
   }, 15_000);
 
-  it.skipIf(process.platform === "win32")("bounds cancellation when a reparented trial retains output pipes", async () => {
+  it.skipIf(process.platform === "win32")("bounds captured runner output", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-output-limit-"));
+    const runner = path.join(dir, "legacy.py");
+    await writeFile(
+      runner,
+      "import sys; sys.stdout.write('x' * (17 * 1024 * 1024)); sys.stdout.flush()",
+      "utf8"
+    );
+
+    await expect(runPythonRunner({
+      python: "python3",
+      runnerPath: runner,
+      trials: 1,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1
+    })).rejects.toThrow(/stdout exceeded/);
+  }, 10_000);
+
+  it("kills detached trials when captured output exceeds its limit", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-output-abort-"));
+    const runner = path.join(dir, "legacy.py");
+    const marker = path.join(dir, "trial.pid");
+    await writeFile(
+      runner,
+      [
+        "import subprocess",
+        "import sys",
+        "from pathlib import Path",
+        "kwargs = {'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL}",
+        "if sys.platform == 'win32':",
+        "    kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP",
+        "else:",
+        "    kwargs['start_new_session'] = True",
+        "trial = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], **kwargs)",
+        `Path(${JSON.stringify(marker)}).write_text(str(trial.pid))`,
+        "sys.stdout.write('x' * (17 * 1024 * 1024))",
+        "sys.stdout.flush()"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const running = runPythonRunner({
+      python: "python3",
+      runnerPath: runner,
+      trials: 1,
+      direction: "maximize",
+      sampler: "tpe",
+      pruner: "none",
+      nJobs: 1
+    });
+    const trialPid = Number(await waitForFileText(marker));
+    try {
+      await expect(running).rejects.toThrow(/stdout exceeded/);
+      expect(processIsAlive(trialPid)).toBe(false);
+    } finally {
+      if (processIsAlive(trialPid)) killProcess(trialPid);
+    }
+  }, 15_000);
+
+  it.skipIf(process.platform === "win32")("kills a reparented trial that retains output handles", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-runner-reparented-cancel-"));
     const runner = path.join(dir, "legacy.py");
     const marker = path.join(dir, "trial.pid");
@@ -246,6 +307,7 @@ describe("runPythonRunner", () => {
       (handler as () => void)();
       await expect(running).rejects.toThrow(/interrupted by SIGTERM/);
       expect(Date.now() - started).toBeLessThan(5_000);
+      expect(processIsAlive(trialPid)).toBe(false);
     } finally {
       process.exitCode = previousExitCode;
       if (processIsAlive(trialPid)) {
@@ -273,4 +335,8 @@ function processIsAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function killProcess(pid: number): void {
+  process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
 }

@@ -5,6 +5,15 @@ import path from "node:path";
 import process from "node:process";
 import { ensurePythonRuntime } from "./python-runtime.js";
 import { killWindowsProcessTree } from "./process.js";
+import {
+  cleanupOutputCapture,
+  closeOutputWriters,
+  createOutputCapture,
+  drainCapturedOutput,
+  MAX_CAPTURE_BYTES,
+  signalOutputHolders,
+  type OutputCapture
+} from "./runner-output.js";
 
 export const TARGET_PYTHON_ENV = "AUTOTUNE_TARGET_PYTHON_ENV";
 export const NODE_EXECUTABLE_ENV = "AUTOTUNE_NODE_EXECUTABLE";
@@ -60,24 +69,48 @@ export async function runPythonRunner(input: {
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(python, args, {
-      detached: process.platform !== "win32",
-      env: supportsTargetEnvironment ? controllerEnvironment(callerEnv) : callerEnv,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
+    let capture: OutputCapture | undefined;
+    let child: ReturnType<typeof spawn>;
+    try {
+      capture = process.platform === "win32" ? undefined : createOutputCapture();
+      child = spawn(python, args, {
+        detached: process.platform !== "win32",
+        env: supportsTargetEnvironment ? controllerEnvironment(callerEnv) : callerEnv,
+        stdio: capture
+          ? ["ignore", capture.stdoutWriter, capture.stderrWriter]
+          : ["ignore", "pipe", "pipe"]
+      });
+    } catch (error) {
+      if (capture) cleanupOutputCapture(capture);
+      reject(error);
+      return;
+    } finally {
+      if (capture) closeOutputWriters(capture);
+    }
     let settled = false;
     let forwardedSignal: NodeJS.Signals | undefined;
     let escalationTimer: NodeJS.Timeout | undefined;
     let hardStopTimer: NodeJS.Timeout | undefined;
+    let postCloseTimer: NodeJS.Timeout | undefined;
+    let progressTimer: NodeJS.Timeout | undefined;
+    let childClosed = false;
+    let childCode: number | null = null;
+    let stdoutEnded = false;
+    let stderrEnded = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdout = "";
+    let stderr = "";
     const finish = (error: Error | undefined, detachChild = false) => {
       if (settled) return;
       settled = true;
       cleanupSignals();
       if (detachChild) {
-        child.stdout.destroy();
-        child.stderr.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
         child.unref();
       }
+      if (capture) cleanupOutputCapture(capture);
       if (error) reject(error);
       else resolve(stdout);
     };
@@ -87,13 +120,15 @@ export async function runPythonRunner(input: {
       return new Error(`python runner interrupted by ${signal}`);
     };
     const forceStop = () => {
+      if (!hardStopTimer) {
+        hardStopTimer = setTimeout(
+          () => finish(interruptedError(), true),
+          RUNNER_HARD_STOP_GRACE_MS
+        );
+        hardStopTimer.unref();
+      }
       signalChildTree(child.pid, "SIGKILL");
-      if (hardStopTimer) return;
-      hardStopTimer = setTimeout(
-        () => finish(interruptedError(), true),
-        RUNNER_HARD_STOP_GRACE_MS
-      );
-      hardStopTimer.unref();
+      signalOutputHolders(capture, child.pid);
     };
     const forwardSignal = (signal: NodeJS.Signals) => {
       if (forwardedSignal) {
@@ -105,6 +140,7 @@ export async function runPythonRunner(input: {
       escalationTimer.unref();
       signalDetachedDescendants(child.pid);
       signalChildTree(child.pid, signal);
+      signalOutputHolders(capture, child.pid);
     };
     const onSigint = () => forwardSignal("SIGINT");
     const onSigterm = () => forwardSignal("SIGTERM");
@@ -119,32 +155,112 @@ export async function runPythonRunner(input: {
       if (hardStopTimer) {
         clearTimeout(hardStopTimer);
       }
+      if (postCloseTimer) {
+        clearTimeout(postCloseTimer);
+      }
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+      }
     };
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
+    const resultError = () => {
+      if (forwardedSignal) return interruptedError();
+      if (childCode === 0) return undefined;
+      return new Error(`python runner exited with ${childCode}: ${(stderr || stdout).trim()}`);
+    };
+    const completeWhenDrained = () => {
+      if (childClosed && stdoutEnded && stderrEnded) finish(resultError());
+    };
+    const abortRunner = (error: Error) => {
+      if (settled) return;
+      signalDetachedDescendants(child.pid);
+      signalChildTree(child.pid, "SIGKILL");
+      signalOutputHolders(capture, child.pid);
+      finish(error, true);
+    };
+    const failForOutput = (stream: "stdout" | "stderr") => {
+      abortRunner(new Error(`python runner ${stream} exceeded ${MAX_CAPTURE_BYTES} bytes`));
+    };
+    const consumeStdout = (chunk: string, bytes = Buffer.byteLength(chunk)) => {
+      if (settled) return;
+      stdoutBytes += bytes;
+      if (stdoutBytes > MAX_CAPTURE_BYTES) failForOutput("stdout");
+      else stdout += chunk;
+    };
+    const consumeStderr = (chunk: string, bytes = Buffer.byteLength(chunk)) => {
+      if (settled) return;
+      stderrBytes += bytes;
+      if (stderrBytes > MAX_CAPTURE_BYTES) {
+        failForOutput("stderr");
+        return;
+      }
       stderr += chunk;
       process.stderr.write(chunk);
-    });
+    };
+    const drainCapture = (): number => {
+      if (!capture || settled) return 0;
+      const nextStdout = drainCapturedOutput(capture, "stdout");
+      consumeStdout(nextStdout.text, nextStdout.bytes);
+      stdoutEnded = nextStdout.ended;
+      if (settled) return nextStdout.bytes;
+      const nextStderr = drainCapturedOutput(capture, "stderr");
+      consumeStderr(nextStderr.text, nextStderr.bytes);
+      stderrEnded = nextStderr.ended;
+      completeWhenDrained();
+      return nextStdout.bytes + nextStderr.bytes;
+    };
+    if (capture) {
+      let activeUntil = 0;
+      const pollCapture = () => {
+        if (settled) return;
+        try {
+          const bytes = drainCapture();
+          if (bytes > 0) activeUntil = Date.now() + 100;
+          progressTimer = setTimeout(pollCapture, Date.now() < activeUntil ? 0 : 10);
+          progressTimer.unref();
+        } catch (error) {
+          abortRunner(toError(error));
+        }
+      };
+      progressTimer = setTimeout(pollCapture, 0);
+      progressTimer.unref();
+    } else {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", consumeStdout);
+      child.stderr?.on("data", consumeStderr);
+      child.stdout?.on("end", () => {
+        stdoutEnded = true;
+        completeWhenDrained();
+      });
+      child.stderr?.on("end", () => {
+        stderrEnded = true;
+        completeWhenDrained();
+      });
+      child.stdout?.on("error", (error: Error) => abortRunner(error));
+      child.stderr?.on("error", (error: Error) => abortRunner(error));
+    }
     child.on("error", (error) => {
       finish(forwardedSignal ? interruptedError() : error);
     });
     child.on("close", (code) => {
-      if (forwardedSignal) {
-        finish(interruptedError());
+      if (settled) return;
+      childClosed = true;
+      childCode = code;
+      if (capture && !forwardedSignal) signalOutputHolders(capture, child.pid);
+      try {
+        drainCapture();
+      } catch (error) {
+        abortRunner(toError(error));
         return;
       }
-      if (code === 0) {
-        finish(undefined);
-      } else {
-        finish(new Error(`python runner exited with ${code}: ${(stderr || stdout).trim()}`));
+      if (settled) return;
+      if (!postCloseTimer) {
+        postCloseTimer = setTimeout(
+          () => finish(resultError(), true),
+          RUNNER_HARD_STOP_GRACE_MS
+        );
       }
+      completeWhenDrained();
     });
   });
 }
@@ -237,6 +353,10 @@ function signalChildTree(pid: number | undefined, signal: NodeJS.Signals): void 
   } catch {
     // The controller may have exited between signal delivery and forwarding.
   }
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function runnerSupportsTargetEnvironment(runnerPath: string): Promise<boolean> {
