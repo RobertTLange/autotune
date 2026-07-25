@@ -1,13 +1,29 @@
-import { access, mkdir, mkdtemp, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os, { tmpdir } from "node:os";
 import path from "node:path";
 import {
   claimOwnsQueue,
   cleanupAbandonedRuntimeEntries,
-  type ProvisioningClaim
+  type ProvisioningClaim,
+  writePrivateJsonExclusive
 } from "../src/python-runtime-cache.js";
 
 describe("cleanupAbandonedRuntimeEntries", () => {
+  it("publishes exactly one complete winner without replacement", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-exclusive-publish-"));
+    const ready = path.join(root, "runtime.json");
+    const candidates = [{ winner: "a" }, { winner: "b" }];
+
+    const results = await Promise.all(candidates.map((candidate, index) => writePrivateJsonExclusive(
+      ready,
+      candidate,
+      (index + 1).toString(16).padStart(32, "0")
+    )));
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(candidates).toContainEqual(JSON.parse(await readFile(ready, "utf8")));
+  });
+
   it("does not let a later-published earlier claim preempt the active provisioner", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-lease-"));
     const claimsDir = path.join(root, "runtime.claims");
@@ -29,7 +45,7 @@ describe("cleanupAbandonedRuntimeEntries", () => {
     }
   });
 
-  it("recovers an active lease whose claim disappeared", async () => {
+  it("atomically takes over an active lease whose claim disappeared", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-stale-lease-"));
     const claimsDir = path.join(root, "runtime.claims");
     const activeLease = path.join(claimsDir, ".active");
@@ -47,10 +63,148 @@ describe("cleanupAbandonedRuntimeEntries", () => {
     const waiting = claim(claimsDir, waitingToken, 2);
 
     try {
-      await expect(claimOwnsQueue(claimsDir, waiting)).resolves.toBe(false);
       await expect(claimOwnsQueue(claimsDir, waiting)).resolves.toBe(true);
     } finally {
       clearInterval(waiting.heartbeat);
+    }
+  });
+
+  it("keeps a stale owner fenced if its heartbeat later revives", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-revived-lease-"));
+    const runtimeDir = path.join(root, "runtime");
+    const claimsDir = path.join(root, "runtime.claims");
+    const activeLease = path.join(claimsDir, ".active");
+    const staleToken = "a".repeat(32);
+    const successorToken = "b".repeat(32);
+    const old = new Date(Date.now() - 60_000);
+    await mkdir(runtimeDir);
+    await mkdir(claimsDir);
+    await mkdir(activeLease);
+    await writeFile(path.join(activeLease, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: os.hostname(),
+      startedAt: 1,
+      token: staleToken
+    }));
+    await writeClaim(claimsDir, staleToken, process.pid, 1);
+    await utimes(path.join(claimsDir, staleToken), old, old);
+    await writeClaim(claimsDir, successorToken, process.pid, 2);
+    const stale = claim(claimsDir, staleToken, 1);
+    const successor = claim(claimsDir, successorToken, 2);
+
+    try {
+      await expect(claimOwnsQueue(claimsDir, successor)).resolves.toBe(true);
+      const now = new Date();
+      await utimes(path.join(claimsDir, staleToken), now, now);
+      await expect(claimOwnsQueue(claimsDir, stale)).resolves.toBe(false);
+      await expect(claimOwnsQueue(claimsDir, successor)).resolves.toBe(true);
+      await cleanupAbandonedRuntimeEntries({
+        runtimeDir,
+        claimsDir,
+        publishedPython: managedPythonForTest(runtimeDir, successorToken)
+      });
+      await expect(access(activeLease)).resolves.toBeUndefined();
+    } finally {
+      clearInterval(stale.heartbeat);
+      clearInterval(successor.heartbeat);
+    }
+  });
+
+  it("recovers when a successor claim disappears", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-successor-recovery-"));
+    const claimsDir = path.join(root, "runtime.claims");
+    const activeLease = path.join(claimsDir, ".active");
+    const staleToken = "a".repeat(32);
+    const abandonedToken = "b".repeat(32);
+    const recoveryToken = "c".repeat(32);
+    await mkdir(claimsDir);
+    await mkdir(activeLease);
+    await writeFile(path.join(activeLease, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: os.hostname(),
+      startedAt: 1,
+      token: staleToken
+    }));
+    await writeClaim(claimsDir, staleToken, process.pid, 1);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(path.join(claimsDir, staleToken), old, old);
+    await writeClaim(claimsDir, abandonedToken, process.pid, 2);
+    const abandoned = claim(claimsDir, abandonedToken, 2);
+    await expect(claimOwnsQueue(claimsDir, abandoned)).resolves.toBe(true);
+    clearInterval(abandoned.heartbeat);
+    await rm(path.join(claimsDir, abandonedToken), { recursive: true });
+    const revived = claim(claimsDir, staleToken, 1);
+    const now = new Date();
+    await utimes(path.join(claimsDir, staleToken), now, now);
+    await expect(claimOwnsQueue(claimsDir, revived)).resolves.toBe(false);
+    expect(revived.lost).toBe(true);
+    await rm(path.join(claimsDir, staleToken), { recursive: true });
+    await writeClaim(claimsDir, recoveryToken, process.pid, 3);
+    const recovery = claim(claimsDir, recoveryToken, 3);
+
+    try {
+      await expect(claimOwnsQueue(claimsDir, recovery)).resolves.toBe(true);
+    } finally {
+      clearInterval(recovery.heartbeat);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects an active lease symlink without following it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-symlink-lease-"));
+    const claimsDir = path.join(root, "runtime.claims");
+    const outside = path.join(root, "outside");
+    const waitingToken = "b".repeat(32);
+    await mkdir(claimsDir);
+    await mkdir(outside);
+    await writeFile(path.join(outside, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: os.hostname(),
+      startedAt: 1,
+      token: "a".repeat(32)
+    }));
+    await symlink(outside, path.join(claimsDir, ".active"));
+    await writeClaim(claimsDir, waitingToken, process.pid, 2);
+    const waiting = claim(claimsDir, waitingToken, 2);
+
+    try {
+      await expect(claimOwnsQueue(claimsDir, waiting)).rejects.toThrow(/invalid active provisioning lease/i);
+      await expect(access(path.join(outside, "owner.json"))).resolves.toBeUndefined();
+    } finally {
+      clearInterval(waiting.heartbeat);
+    }
+  });
+
+  it("retires the lease generation chain after publication", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "autotune-runtime-retired-lease-"));
+    const runtimeDir = path.join(root, "runtime");
+    const claimsDir = path.join(root, "runtime.claims");
+    const activeLease = path.join(claimsDir, ".active");
+    const staleToken = "a".repeat(32);
+    const publisherToken = "b".repeat(32);
+    await mkdir(runtimeDir);
+    await mkdir(claimsDir);
+    await mkdir(activeLease);
+    await writeFile(path.join(activeLease, "owner.json"), JSON.stringify({
+      pid: 999_999_999,
+      hostname: os.hostname(),
+      startedAt: 1,
+      token: staleToken
+    }));
+    await writeClaim(claimsDir, publisherToken, process.pid, 2);
+    const publisher = claim(claimsDir, publisherToken, 2);
+
+    try {
+      await expect(claimOwnsQueue(claimsDir, publisher)).resolves.toBe(true);
+      clearInterval(publisher.heartbeat);
+      await rm(path.join(claimsDir, publisherToken), { recursive: true });
+      await cleanupAbandonedRuntimeEntries({
+        runtimeDir,
+        claimsDir,
+        publishedPython: managedPythonForTest(runtimeDir, publisherToken)
+      });
+      await expect(access(activeLease)).rejects.toThrow();
+    } finally {
+      clearInterval(publisher.heartbeat);
     }
   });
 
@@ -171,4 +325,9 @@ function claim(claimsDir: string, token: string, startedAt: number): Provisionin
     heartbeat,
     lost: false
   };
+}
+
+function managedPythonForTest(runtimeDir: string, token: string): string {
+  const suffix = process.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"];
+  return path.join(runtimeDir, `env-${token}`, ...suffix);
 }

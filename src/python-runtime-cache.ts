@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   opendir,
@@ -24,6 +25,11 @@ interface ProvisioningMarker {
   token: string;
 }
 
+interface ProvisioningLease {
+  marker: ProvisioningMarker;
+  tokens: string[];
+}
+
 export interface ProvisioningClaim extends ProvisioningMarker {
   directory: string;
   heartbeat: NodeJS.Timeout;
@@ -34,12 +40,13 @@ const CLAIM_HEARTBEAT_MS = 2_000;
 const CLAIM_EXPIRY_MS = 15_000;
 const ORPHAN_ENVIRONMENT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CLEANUP_ENTRIES_PER_PASS = 16;
+const MAX_LEASE_GENERATIONS = 1_024;
 const OWNER_FILE = "owner.json";
 const ACTIVE_CLAIM_NAME = ".active";
 const CLAIM_NAME = /^[a-f0-9]{32}$/;
 const STAGING_NAME = /^\.([a-f0-9]{32})\.staging$/;
-const ACTIVE_STALE_NAME = /^\.active\.stale\.[a-f0-9]{32}$/;
 const ACTIVE_PREPARE_NAME = /^\.active\.prepare\.[a-f0-9]{32}$/;
+const ACTIVE_RETIRED_NAME = /^\.active\.retired\.[a-f0-9]{32}$/;
 const ENVIRONMENT_NAME = /^env-([a-f0-9]{32})$/;
 
 export async function ensureOwnedPrivateDirectory(directory: string): Promise<string> {
@@ -114,16 +121,8 @@ export async function claimOwnsQueue(
   }
   const now = Date.now();
   const lease = await readProvisioningLease(claimsDir);
-  if (lease) {
-    const live = lease.marker && await claimIsActive(claimsDir, lease.marker.token, now);
-    if (live) {
-      return lease.marker?.token === claim.token;
-    }
-    if (!lease.marker && now - lease.mtimeMs <= CLAIM_EXPIRY_MS) {
-      return false;
-    }
-    await quarantineStaleProvisioningLease(claimsDir, lease.marker?.token);
-    return false;
+  if (lease && await claimIsActive(claimsDir, lease.marker.token, now)) {
+    return lease.marker.token === claim.token;
   }
   const active: ProvisioningMarker[] = [];
   for (const entry of await readdir(claimsDir, { withFileTypes: true })) {
@@ -149,7 +148,7 @@ export async function claimOwnsQueue(
   if (active[0]?.token !== claim.token) {
     return false;
   }
-  return acquireProvisioningLease(claimsDir, claim);
+  return acquireProvisioningLease(claimsDir, claim, lease?.marker.token);
 }
 
 export async function releaseProvisioningClaim(claim: ProvisioningClaim): Promise<void> {
@@ -166,29 +165,21 @@ export async function cleanupAbandonedRuntimeEntries(input: {
 }): Promise<void> {
   const now = input.now ?? Date.now();
   const activeToken = input.activeToken && CLAIM_NAME.test(input.activeToken) ? input.activeToken : undefined;
-  const lease = await readProvisioningLease(input.claimsDir);
-  if (
-    lease
-    && lease.marker?.token !== activeToken
-    && (!lease.marker || !await claimIsActive(input.claimsDir, lease.marker.token, now))
-    && (lease.marker || now - lease.mtimeMs > CLAIM_EXPIRY_MS)
-  ) {
-    await quarantineStaleProvisioningLease(input.claimsDir, lease.marker?.token);
-  }
+  const publishedEnvironment = publishedEnvironmentName(input.runtimeDir, input.publishedPython);
   let remaining = MAX_CLEANUP_ENTRIES_PER_PASS;
 
   const claims = streamCandidateEntries(
     input.claimsDir,
     (entry) => CLAIM_NAME.test(entry.name)
       || STAGING_NAME.test(entry.name)
-      || ACTIVE_STALE_NAME.test(entry.name)
       || ACTIVE_PREPARE_NAME.test(entry.name)
+      || ACTIVE_RETIRED_NAME.test(entry.name)
   );
   for await (const entry of claims) {
     if (remaining === 0) break;
     const claimToken = CLAIM_NAME.test(entry.name) ? entry.name : undefined;
     const stagingToken = STAGING_NAME.exec(entry.name)?.[1];
-    const staleLease = ACTIVE_STALE_NAME.test(entry.name) || ACTIVE_PREPARE_NAME.test(entry.name);
+    const staleLease = ACTIVE_PREPARE_NAME.test(entry.name) || ACTIVE_RETIRED_NAME.test(entry.name);
     if (!entry.isDirectory() || (!claimToken && !stagingToken && !staleLease)) continue;
     if (claimToken === activeToken) continue;
     const directory = path.join(input.claimsDir, entry.name);
@@ -216,8 +207,10 @@ export async function cleanupAbandonedRuntimeEntries(input: {
       // Cleanup is best-effort; provisioning remains authoritative.
     }
   }
+  if (publishedEnvironment) {
+    await retireCompletedProvisioningLease(input.claimsDir);
+  }
 
-  const publishedEnvironment = publishedEnvironmentName(input.runtimeDir, input.publishedPython);
   const runtimeEntries = streamCandidateEntries(
     input.runtimeDir,
     (entry) => ENVIRONMENT_NAME.test(entry.name)
@@ -252,7 +245,8 @@ export async function cleanupAbandonedRuntimeEntries(input: {
 
 async function acquireProvisioningLease(
   claimsDir: string,
-  claim: ProvisioningClaim
+  claim: ProvisioningClaim,
+  observedToken: string | undefined
 ): Promise<boolean> {
   const directory = path.join(claimsDir, ACTIVE_CLAIM_NAME);
   const prepared = path.join(claimsDir, `.active.prepare.${claim.token}`);
@@ -264,11 +258,33 @@ async function acquireProvisioningLease(
       startedAt: claim.startedAt,
       token: claim.token
     }, claim.token);
+    if (!observedToken) {
+      try {
+        await rename(prepared, directory);
+        return true;
+      } catch (error) {
+        if (await lstat(directory).then(() => true).catch(() => false)) return false;
+        throw error;
+      }
+    }
+    const current = await readProvisioningLease(claimsDir);
+    if (!current || current.marker.token !== observedToken) return current?.marker.token === claim.token;
+    if (await claimIsActive(claimsDir, current.marker.token, Date.now())) {
+      return current.marker.token === claim.token;
+    }
+    if (current.tokens.includes(claim.token)) {
+      claim.lost = true;
+      clearInterval(claim.heartbeat);
+      return false;
+    }
     try {
-      await rename(prepared, directory);
-      return true;
+      await link(
+        path.join(prepared, OWNER_FILE),
+        path.join(directory, successorFileName(current.marker.token))
+      );
+      return (await readProvisioningLease(claimsDir))?.marker.token === claim.token;
     } catch (error) {
-      if (await lstat(directory).then(() => true).catch(() => false)) return false;
+      if (errorCode(error) === "EEXIST" || errorCode(error) === "ENOENT") return false;
       throw error;
     }
   } catch (error) {
@@ -281,41 +297,79 @@ async function acquireProvisioningLease(
 
 async function readProvisioningLease(
   claimsDir: string
-): Promise<{ marker?: ProvisioningMarker; mtimeMs: number } | undefined> {
+): Promise<ProvisioningLease | undefined> {
   const directory = path.join(claimsDir, ACTIVE_CLAIM_NAME);
   try {
-    const metadata = await lstat(directory);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return { mtimeMs: metadata.mtimeMs };
-    const marker = await readFile(path.join(directory, OWNER_FILE), "utf8")
-      .then(parseProvisioningMarker)
-      .catch(() => undefined);
-    return { marker, mtimeMs: metadata.mtimeMs };
-  } catch {
-    return undefined;
+    return await readProvisioningLeaseDirectory(directory);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
   }
 }
 
-async function quarantineStaleProvisioningLease(
-  claimsDir: string,
-  observedToken: string | undefined
-): Promise<void> {
+async function readProvisioningLeaseDirectory(directory: string): Promise<ProvisioningLease> {
+  const metadata = await lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("managed Python cache contains an invalid active provisioning lease");
+  }
+  let marker = await readLeaseMarker(path.join(directory, OWNER_FILE));
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (let generation = 0; generation < MAX_LEASE_GENERATIONS; generation += 1) {
+    if (seen.has(marker.token)) {
+      throw new Error("managed Python cache contains a cyclic provisioning lease");
+    }
+    seen.add(marker.token);
+    tokens.push(marker.token);
+    const successor = path.join(directory, successorFileName(marker.token));
+    try {
+      marker = await readLeaseMarker(successor);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return { marker, tokens };
+      throw error;
+    }
+  }
+  throw new Error("managed Python cache provisioning lease exceeded its generation limit");
+}
+
+async function retireCompletedProvisioningLease(claimsDir: string): Promise<void> {
+  const lease = await readProvisioningLease(claimsDir);
+  if (!lease || await anyClaimDirectoryExists(claimsDir, lease.tokens)) return;
   const active = path.join(claimsDir, ACTIVE_CLAIM_NAME);
-  const quarantine = path.join(claimsDir, `.active.stale.${randomBytes(16).toString("hex")}`);
+  const retired = path.join(claimsDir, `.active.retired.${randomBytes(16).toString("hex")}`);
   try {
-    await rename(active, quarantine);
+    await rename(active, retired);
   } catch {
     return;
   }
-  const marker = await readFile(path.join(quarantine, OWNER_FILE), "utf8")
-    .then(parseProvisioningMarker)
-    .catch(() => undefined);
-  const changed = marker?.token !== observedToken;
-  const revived = marker && await claimIsActive(claimsDir, marker.token, Date.now());
-  if (changed || revived) {
-    await rename(quarantine, active).catch(() => undefined);
+  const moved = await readProvisioningLeaseDirectory(retired).catch(() => undefined);
+  if (moved?.marker.token !== lease.marker.token || moved.tokens.length !== lease.tokens.length) {
+    await rename(retired, active).catch(() => undefined);
     return;
   }
-  await rm(quarantine, { recursive: true, force: true }).catch(() => undefined);
+  await rm(retired, { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function anyClaimDirectoryExists(claimsDir: string, tokens: string[]): Promise<boolean> {
+  for (const token of tokens) {
+    const exists = await lstat(path.join(claimsDir, token))
+      .then((metadata) => metadata.isDirectory() && !metadata.isSymbolicLink())
+      .catch(() => false);
+    if (exists) return true;
+  }
+  return false;
+}
+
+async function readLeaseMarker(filePath: string): Promise<ProvisioningMarker> {
+  const metadata = await lstat(filePath);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("managed Python cache contains an invalid provisioning lease marker");
+  }
+  return readFile(filePath, "utf8").then(parseProvisioningMarker);
+}
+
+function successorFileName(token: string): string {
+  return `successor-${token}.json`;
 }
 
 export async function writePrivateJsonAtomic(
@@ -329,6 +383,27 @@ export async function writePrivateJsonAtomic(
     await chmod(temporary, 0o600);
   }
   await rename(temporary, filePath);
+}
+
+export async function writePrivateJsonExclusive(
+  filePath: string,
+  value: unknown,
+  token: string
+): Promise<boolean> {
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${token}.exclusive`);
+  try {
+    await writeFile(temporary, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
+    if (process.platform !== "win32") await chmod(temporary, 0o600);
+    try {
+      await link(temporary, filePath);
+      return true;
+    } catch (error) {
+      if (errorCode(error) === "EEXIST") return false;
+      throw error;
+    }
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined);
+  }
 }
 
 async function validateSecureAncestors(directory: string): Promise<void> {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -12,7 +12,7 @@ import {
   ensureOwnedPrivateDirectory,
   releaseProvisioningClaim,
   validateWindowsCacheLocation,
-  writePrivateJsonAtomic
+  writePrivateJsonExclusive
 } from "./python-runtime-cache.js";
 
 export interface PythonRuntime {
@@ -28,6 +28,11 @@ export interface PythonRuntimeOptions {
   bootstrapPython?: string;
   cacheDir?: string;
   env?: NodeJS.ProcessEnv;
+}
+
+interface CachedRuntimeObservation {
+  runtime?: PythonRuntime;
+  source?: string;
 }
 
 export interface PythonInterpreter {
@@ -56,6 +61,8 @@ const WAIT_INTERVAL_MS = 200;
 const PROBE_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const READY_FILE = "runtime.json";
+const READY_INVALIDATION_FILE = `.${READY_FILE}.invalidating`;
+const CLAIM_TOKEN = /^[a-f0-9]{32}$/;
 const PYPI_INDEX = "https://pypi.org/simple";
 
 const IDENTITY_SCRIPT = [
@@ -122,23 +129,31 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
         continue;
       }
 
-      const winner = await readCachedRuntime(
+      const observed = await inspectCachedRuntime(
         runtimeDir,
         identity.version,
         options.includeCmaes,
         toolEnv
       );
-      if (winner) {
+      if (observed.runtime) {
         await cleanupAbandonedRuntimeEntries({
           runtimeDir,
           claimsDir,
           activeToken: claim.token,
-          publishedPython: winner.python
+          publishedPython: observed.runtime.python
         });
-        return winner;
+        return observed.runtime;
       }
 
-      await removeInvalidReadyFile(runtimeDir);
+      const recovered = await removeInvalidReadyFile({
+        runtimeDir,
+        pythonVersion: identity.version,
+        includeCmaes: options.includeCmaes,
+        env: toolEnv,
+        observedSource: observed.source,
+        token: claim.token
+      });
+      if (recovered) return recovered;
       await cleanupAbandonedRuntimeEntries({
         runtimeDir,
         claimsDir,
@@ -166,7 +181,26 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
           continue;
         }
         const runtime = toRuntime(python, identity.version, versions, true);
-        await writePrivateJsonAtomic(path.join(runtimeDir, READY_FILE), runtime, claim.token);
+        const published = await writePrivateJsonExclusive(
+          path.join(runtimeDir, READY_FILE),
+          runtime,
+          claim.token
+        );
+        if (!published) {
+          const winner = await readCachedRuntime(
+            runtimeDir,
+            identity.version,
+            options.includeCmaes,
+            toolEnv
+          );
+          if (winner) {
+            await rm(environmentDir, { recursive: true, force: true });
+            return winner;
+          }
+          await rm(environmentDir, { recursive: true, force: true });
+          await delay();
+          continue;
+        }
         await cleanupAbandonedRuntimeEntries({
           runtimeDir,
           claimsDir,
@@ -355,12 +389,38 @@ async function readCachedRuntime(
   includeCmaes: boolean,
   env: NodeJS.ProcessEnv
 ): Promise<PythonRuntime | undefined> {
+  return (await inspectCachedRuntime(runtimeDir, pythonVersion, includeCmaes, env)).runtime;
+}
+
+async function inspectCachedRuntime(
+  runtimeDir: string,
+  pythonVersion: string,
+  includeCmaes: boolean,
+  env: NodeJS.ProcessEnv
+): Promise<CachedRuntimeObservation> {
+  const filePath = path.join(runtimeDir, READY_FILE);
+  let source: string;
+  try {
+    source = await readFile(filePath, "utf8");
+  } catch {
+    return {};
+  }
+  return {
+    source,
+    runtime: await validateCachedRuntimeSource(source, runtimeDir, pythonVersion, includeCmaes, env)
+  };
+}
+
+async function validateCachedRuntimeSource(
+  source: string,
+  runtimeDir: string,
+  pythonVersion: string,
+  includeCmaes: boolean,
+  env: NodeJS.ProcessEnv
+): Promise<PythonRuntime | undefined> {
   let recorded: PythonRuntime;
   try {
-    recorded = parseJson<PythonRuntime>(
-      await readFile(path.join(runtimeDir, READY_FILE), "utf8"),
-      "runtime cache"
-    );
+    recorded = parseJson<PythonRuntime>(source, "runtime cache");
   } catch {
     return undefined;
   }
@@ -482,8 +542,116 @@ function managedPythonPath(environmentDir: string): string {
     : path.join(environmentDir, "bin", "python");
 }
 
-async function removeInvalidReadyFile(runtimeDir: string): Promise<void> {
-  await rm(path.join(runtimeDir, READY_FILE), { force: true });
+async function removeInvalidReadyFile(input: {
+  runtimeDir: string;
+  pythonVersion: string;
+  includeCmaes: boolean;
+  env: NodeJS.ProcessEnv;
+  observedSource?: string;
+  token: string;
+}): Promise<PythonRuntime | undefined> {
+  if (input.observedSource === undefined) return undefined;
+  const ready = path.join(input.runtimeDir, READY_FILE);
+  const guard = path.join(input.runtimeDir, READY_INVALIDATION_FILE);
+  if (!await acquireInvalidationGuard(guard, input.token)) {
+    await collectAbandonedInvalidationGuard(guard);
+    return undefined;
+  }
+  try {
+    const snapshot = path.join(guard, READY_FILE);
+    try {
+      await link(ready, snapshot);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return undefined;
+      throw error;
+    }
+    const metadata = await lstat(snapshot);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return undefined;
+    const source = await readFile(snapshot, "utf8");
+    const runtime = await validateCachedRuntimeSource(
+      source,
+      input.runtimeDir,
+      input.pythonVersion,
+      input.includeCmaes,
+      input.env
+    );
+    if (runtime) return runtime;
+    const ownsGuard = await readFile(path.join(guard, "owner.json"), "utf8")
+      .then((owner) => (JSON.parse(owner) as { token?: string }).token === input.token)
+      .catch(() => false);
+    if (ownsGuard && source === input.observedSource) await rm(ready, { force: true });
+    return undefined;
+  } finally {
+    await releaseInvalidationGuard(guard, input.token);
+  }
+}
+
+async function acquireInvalidationGuard(guard: string, token: string): Promise<boolean> {
+  const prepared = `${guard}.prepare-${token}`;
+  try {
+    await mkdir(prepared, { mode: 0o700 });
+    await writeFile(path.join(prepared, "owner.json"), JSON.stringify({
+      pid: process.pid,
+      hostname: os.hostname(),
+      token
+    }), { encoding: "utf8", mode: 0o600 });
+    try {
+      await rename(prepared, guard);
+      return true;
+    } catch (error) {
+      if (await lstat(guard).then(() => true).catch(() => false)) return false;
+      throw error;
+    }
+  } finally {
+    await rm(prepared, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function collectAbandonedInvalidationGuard(guard: string): Promise<void> {
+  try {
+    const owner = await readFile(path.join(guard, "owner.json"), "utf8")
+      .then((source) => JSON.parse(source) as { pid?: number; hostname?: string; token?: string })
+      .catch(() => undefined);
+    if (
+      owner?.hostname !== os.hostname()
+      || !Number.isInteger(owner.pid)
+      || processIsAlive(owner.pid as number)
+      || typeof owner?.token !== "string"
+      || !CLAIM_TOKEN.test(owner.token)
+    ) return;
+    const stale = `${guard}.stale-${owner.token}`;
+    await rename(guard, stale);
+    const movedToken = await readFile(path.join(stale, "owner.json"), "utf8")
+      .then((source) => (JSON.parse(source) as { token?: string }).token)
+      .catch(() => undefined);
+    if (movedToken !== owner.token) {
+      await rename(stale, guard).catch(() => undefined);
+      return;
+    }
+    await rm(stale, { recursive: true, force: true });
+  } catch {
+    // A live invalidator or another collector remains authoritative.
+  }
+}
+
+async function releaseInvalidationGuard(guard: string, token: string): Promise<void> {
+  try {
+    const ownerToken = await readFile(path.join(guard, "owner.json"), "utf8")
+      .then((source) => (JSON.parse(source) as { token?: string }).token);
+    if (ownerToken !== token) return;
+    const released = `${guard}.released-${token}`;
+    await rename(guard, released);
+    const movedToken = await readFile(path.join(released, "owner.json"), "utf8")
+      .then((source) => (JSON.parse(source) as { token?: string }).token)
+      .catch(() => undefined);
+    if (movedToken !== token) {
+      await rename(released, guard).catch(() => undefined);
+      return;
+    }
+    await rm(released, { recursive: true, force: true });
+  } catch {
+    // Guard release is best-effort; a different generation remains authoritative.
+  }
 }
 
 function parseJson<T>(source: string, label: string): T {
@@ -496,4 +664,19 @@ function parseJson<T>(source: string, label: string): T {
 
 function delay(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, WAIT_INTERVAL_MS));
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === "EPERM";
+  }
 }
