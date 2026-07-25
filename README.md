@@ -88,6 +88,7 @@ autotune run train.py \
   --model gpt-5.5 \
   --reasoning-effort high \
   --agent-guidance "prefer optimizer and regularization parameters" \
+  --max-parameters 3 \
   --sampler tpe \
   --pruner none \
   --n-jobs 1 \
@@ -100,6 +101,8 @@ Use `--effort low|medium|high|xhigh` as a shorter alias for `--reasoning-effort`
 When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the agent-proposed settings from the confirmed search space. Explicit CLI flags override agent proposals.
 
 Use `--agent-guidance <text>` or `--agent-guidance-file <file>` to add advisory instructions for search-space generation and refinement, such as parameters to prefer or avoid. If both are provided, file guidance is applied first and inline guidance is appended. Guidance does not apply to modified-script generation and cannot override schema, metric comparability, or objective-measurement constraints. Guidance is sent to the agent and stored in prompt artifacts; guidance files must be regular files no larger than 65536 bytes.
+
+Use `--max-parameters <n>` with `run` or `analyze` to cap the number of active Optuna search parameters. Fixed parameters do not count toward the cap. Autotune asks the agent to prioritize the highest-impact parameters; if an agent response exceeds the cap, it requests one correction and then fails if the corrected response is still over the limit. Predefined configs and manually edited spaces fail immediately when they exceed the cap.
 
 By default, each run gets its own timestamped artifact directory next to the target script:
 
@@ -138,9 +141,9 @@ Use `--yes` only when you want to accept the first proposed search space without
 ## Commands
 
 ```bash
-autotune analyze <script> [--agent codex] [--model MODEL] [--reasoning-effort high]
+autotune analyze <script> [--agent codex] [--model MODEL] [--reasoning-effort high] [--max-parameters N]
 autotune doctor [script] [--agent codex]
-autotune run <script> --trials N [--agent codex] [--model MODEL] [--reasoning-effort high]
+autotune run <script> --trials N [--agent codex] [--model MODEL] [--reasoning-effort high] [--max-parameters N]
 autotune results [autotune|run-dir|results.json] [--top 10] [--json]
 autotune plot-progress <ablation-run-dir> --output progress.svg
 autotune resume --storage sqlite:///study.db --trials N

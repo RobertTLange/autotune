@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Zero-install npx execution for Autotune and integrity-locked Headless fallback execution.
 - Hash-locked, cached Optuna and `cmaes` controller provisioning isolated from training-script dependencies.
+- `--max-parameters` limits for active parameters in generated, refined, configured, and manually edited search spaces.
 
 ### Fixed
 
