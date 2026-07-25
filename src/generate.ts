@@ -259,6 +259,8 @@ def drain_stream(stream, capture, parse_metrics=False, mirror=False):
 
 
 def kill_process_tree(process):
+    if process.poll() is not None:
+        return
     if os.name == "nt":
         system_root = windows_system_root()
         taskkill = system_root / "System32" / "taskkill.exe"

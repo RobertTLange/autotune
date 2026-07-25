@@ -80,6 +80,9 @@ describe("renderOptunaRunner", () => {
 
     expect(code).toContain('taskkill = system_root / "System32" / "taskkill.exe"');
     expect(code).toContain('[str(taskkill), "/PID", str(process.pid), "/T", "/F"]');
+    expect(code).toContain(
+      "def kill_process_tree(process):\n    if process.poll() is not None:\n        return"
+    );
     expect(code).toContain("def join_output_threads(process, threads, pipe_identities):");
     expect(code).toContain("deadline = time.monotonic() + 1");
     expect(code).toContain("if stream and not thread.is_alive():");

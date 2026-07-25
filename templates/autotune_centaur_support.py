@@ -461,6 +461,8 @@ def _join_threads(threads: Sequence[threading.Thread]) -> None:
 
 
 def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
     if os.name == "nt":
         system_root = _windows_system_root()
         taskkill = system_root / "System32" / "taskkill.exe"
@@ -477,7 +479,8 @@ def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
             if completed.returncode != 0 and process.poll() is None:
                 process.kill()
         except (OSError, subprocess.TimeoutExpired):
-            process.kill()
+            if process.poll() is None:
+                process.kill()
         return
     try:
         os.killpg(process.pid, signal.SIGKILL)

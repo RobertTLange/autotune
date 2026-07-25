@@ -32,6 +32,42 @@ const centaurSpace = {
 } as const;
 
 describe("Centaur generated runtime", () => {
+  it("does not signal a process tree after its root was reaped", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const script = `import autotune_centaur_support as support
+
+class ReapedProcess:
+    pid = 4242
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        raise AssertionError("process.kill called for a reaped process")
+
+original_killpg = getattr(support.os, "killpg", None)
+original_run = support.subprocess.run
+setattr(support.os, "killpg", lambda *_args: (_ for _ in ()).throw(
+    AssertionError("killpg called for a reaped process")
+))
+support.subprocess.run = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+    AssertionError("taskkill called for a reaped process")
+)
+try:
+    support._terminate_process_tree(ReapedProcess())
+finally:
+    support.subprocess.run = original_run
+    if original_killpg is None:
+        delattr(support.os, "killpg")
+    else:
+        support.os.killpg = original_killpg
+`;
+    await expect(runPython(python, ["-c", script], {
+      PYTHONPATH: path.resolve("templates")
+    })).resolves.toBe("");
+  });
+
   it("bounds Headless timeouts even when a grandchild inherits output pipes", async () => {
     const python = await centaurPython();
     if (!python) return;
