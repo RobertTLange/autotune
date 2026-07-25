@@ -43,7 +43,10 @@ export function extractHeadlessObject(output: string): Record<string, unknown> {
   throw new Error("headless output did not contain a valid JSON object");
 }
 
-export async function runHeadless(args: string[], options: { cwd: string; bin?: string }): Promise<string> {
+export async function runHeadless(
+  args: string[],
+  options: { cwd: string; bin?: string; resolveNpx?: typeof resolveNpxCommand }
+): Promise<string> {
   const environmentConfigured = process.env.AUTOTUNE_HEADLESS_BIN !== undefined;
   const explicitlyConfigured = options.bin !== undefined || environmentConfigured;
   const configured = options.bin ?? process.env.AUTOTUNE_HEADLESS_BIN;
@@ -53,12 +56,13 @@ export async function runHeadless(args: string[], options: { cwd: string; bin?: 
   if (!explicitlyConfigured) {
     const installed = await findExecutableOnPath("headless");
     if (!installed || isWindowsBatchShim(installed)) {
-      const npx = await resolveNpxCommand();
+      const environment = npxHeadlessEnvironment({ agent: args[0] ?? "", model: optionValue(args, "--model") });
+      const npx = await (options.resolveNpx ?? resolveNpxCommand)();
       return spawnCapture(
         npx.command,
         [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, ...args],
         options.cwd,
-        npxHeadlessEnvironment({ agent: args[0] ?? "", model: optionValue(args, "--model") })
+        environment
       );
     }
     return spawnCapture(installed, args, options.cwd);

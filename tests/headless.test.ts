@@ -18,6 +18,25 @@ describe("headless fallback package", () => {
     }
   });
 
+  it("validates provider selection before resolving npx", async () => {
+    const previousPath = process.env.PATH;
+    let resolutionCalled = false;
+    process.env.PATH = path.resolve("/not-on-path");
+    try {
+      await expect(runHeadless(["opencode"], {
+        cwd: process.cwd(),
+        resolveNpx: async () => {
+          resolutionCalled = true;
+          return { command: process.execPath, args: [] };
+        }
+      })).rejects.toThrow(/provider-qualified model or AUTOTUNE_HEADLESS_ENV/i);
+      expect(resolutionCalled).toBe(false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
   it("limits the npx fallback to selected-agent and npm environment variables", async () => {
     const customPath = path.resolve("/custom/bin");
     const environment = npxHeadlessEnvironment({
@@ -157,6 +176,14 @@ describe("headless fallback package", () => {
       agent: "opencode",
       env: { OPENAI_API_KEY: "ambiguous-key" }
     })).toThrow(/provider-qualified model or AUTOTUNE_HEADLESS_ENV/i);
+
+    const selected = npxHeadlessEnvironment({
+      agent: "opencode",
+      model: "openai/gpt-5",
+      env: { OPENAI_API_KEY: "selected-key", AWS_SECRET_ACCESS_KEY: "unrelated-secret" }
+    });
+    expect(selected.OPENAI_API_KEY).toBe("selected-key");
+    expect(selected.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   });
 });
 

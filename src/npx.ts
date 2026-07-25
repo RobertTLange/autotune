@@ -10,7 +10,7 @@ export interface NpxCommand {
 
 export async function resolveNpxCommand(): Promise<NpxCommand> {
   const node = process.execPath;
-  for (const cli of npxCliCandidates(node, process.env.npm_execpath)) {
+  for (const cli of npxCliCandidates(node)) {
     if (await isExecutableFile(cli)) {
       return { command: node, args: [cli] };
     }
@@ -30,18 +30,13 @@ type PathApi = Pick<typeof path, "dirname" | "join" | "resolve">;
 
 export function npxCliCandidates(
   node: string,
-  npmExecPath: string | undefined,
   pathApi: PathApi = path
 ): string[] {
-  const candidates: string[] = [];
-  if (npmExecPath) {
-    candidates.push(pathApi.join(pathApi.dirname(npmExecPath), "npx-cli.js"));
-  }
   const nodeDirectory = pathApi.dirname(node);
-  candidates.push(
+  const candidates = [
     pathApi.join(nodeDirectory, "node_modules", "npm", "bin", "npx-cli.js"),
     pathApi.resolve(nodeDirectory, "..", "lib", "node_modules", "npm", "bin", "npx-cli.js")
-  );
+  ];
   return [...new Set(candidates.map((candidate) => pathApi.resolve(candidate)))];
 }
 

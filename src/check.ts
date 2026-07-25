@@ -87,8 +87,12 @@ export async function checkOptuna(): Promise<string> {
   return (await ensurePythonRuntime({ includeCmaes: true })).optunaVersion;
 }
 
-export async function checkHeadless(agent: string, model?: string): Promise<string> {
-  const { label, output } = await runHeadlessCheck(agent, model);
+export async function checkHeadless(
+  agent: string,
+  model?: string,
+  resolveNpx: typeof resolveNpxCommand = resolveNpxCommand
+): Promise<string> {
+  const { label, output } = await runHeadlessCheck(agent, model, resolveNpx);
   if (!headlessListsAgent(output, agent)) {
     return `${label} (agent ${agent} not listed by --check)`;
   }
@@ -103,7 +107,11 @@ async function checkCentaurHeadless(agent: string, model?: string): Promise<stri
   return `${label} (${agent})`;
 }
 
-async function runHeadlessCheck(agent: string, model?: string): Promise<{ label: string; output: string }> {
+async function runHeadlessCheck(
+  agent: string,
+  model: string | undefined,
+  resolveNpx: typeof resolveNpxCommand = resolveNpxCommand
+): Promise<{ label: string; output: string }> {
   const configured = process.env.AUTOTUNE_HEADLESS_BIN;
   if (configured !== undefined && !configured.trim()) {
     throw new Error("configured headless executable must not be empty");
@@ -118,11 +126,12 @@ async function runHeadlessCheck(agent: string, model?: string): Promise<{ label:
     const { stdout, stderr } = await runCommand(installed, ["--check"], HEADLESS_CHECK_OPTIONS);
     return { label: installed, output: `${stdout}\n${stderr}` };
   }
-  const npx = await resolveNpxCommand();
+  const environment = npxHeadlessEnvironment({ agent, model });
+  const npx = await resolveNpx();
   const { stdout, stderr } = await runCommand(
     npx.command,
     [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, "--check"],
-    { ...HEADLESS_CHECK_OPTIONS, env: npxHeadlessEnvironment({ agent, model }) }
+    { ...HEADLESS_CHECK_OPTIONS, env: environment }
   );
   return {
     label: `npx -y ${FALLBACK_HEADLESS_PACKAGE}`,

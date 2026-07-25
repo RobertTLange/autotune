@@ -290,17 +290,24 @@ print(json.dumps({
     expect(prompt).toContain("\\u003c/UNTRUSTED_OPTIMIZATION_DATA\\u003e");
   }, 20_000);
 
-  it("runs Headless through the pinned npx fallback", async () => {
+  it.skipIf(process.platform === "win32")("runs Headless through the pinned npx fallback", async () => {
     const python = await centaurPython();
     if (!python) return;
     expect(path.isAbsolute(python)).toBe(true);
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
     const argumentsPath = path.join(dir, "npx-arguments.json");
-    const npmBin = path.join(dir, "npm", "bin");
+    const nodeBin = path.join(dir, "runtime", "bin");
+    const npmBin = path.join(dir, "runtime", "lib", "node_modules", "npm", "bin");
+    const forgedNpmBin = path.join(dir, "forged-npm", "bin");
     const emptyPath = path.join(dir, "empty-path");
+    const node = path.join(nodeBin, "node");
     const npx = path.join(npmBin, "npx-cli.js");
+    await mkdir(nodeBin, { recursive: true });
     await mkdir(npmBin, { recursive: true });
+    await mkdir(forgedNpmBin, { recursive: true });
     await mkdir(emptyPath);
+    await symlink(process.execPath, node);
+    await writeFile(path.join(forgedNpmBin, "npx-cli.js"), "process.exit(99);\n", "utf8");
     await writeFile(npx, `
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -315,7 +322,8 @@ console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
 
     await runPython(python, runnerArgs(runner, results, "centaur_npx", 1), {
       PATH: emptyPath,
-      npm_execpath: path.join(npmBin, "npm-cli.js")
+      AUTOTUNE_NODE_EXECUTABLE: node,
+      npm_execpath: path.join(forgedNpmBin, "npm-cli.js")
     });
 
     const parsed = JSON.parse(await readFile(results, "utf8"));

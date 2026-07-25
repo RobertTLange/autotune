@@ -449,17 +449,11 @@ def _resolve_npx_command(node_executable: str) -> List[str]:
         node = str(node_path.resolve())
     else:
         node = _resolve_executable("node")
-    npm_execpath = os.environ.get("npm_execpath")
-    candidates = []
-    if npm_execpath:
-        candidates.append(Path(npm_execpath).resolve().with_name("npx-cli.js"))
     node_directory = Path(node).parent
-    candidates.extend(
-        [
-            node_directory / "node_modules" / "npm" / "bin" / "npx-cli.js",
-            node_directory.parent / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js",
-        ]
-    )
+    candidates = [
+        node_directory / "node_modules" / "npm" / "bin" / "npx-cli.js",
+        node_directory.parent / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js",
+    ]
     for candidate in candidates:
         if candidate.is_file():
             return [node, str(candidate.resolve())]
