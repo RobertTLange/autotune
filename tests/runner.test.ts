@@ -86,6 +86,7 @@ describe("runPythonRunner", () => {
         "with open(output, 'w', encoding='utf-8') as handle:",
         "    json.dump({",
         "        'controllerPythonPath': os.environ.get('PYTHONPATH'),",
+        "        'nodeExecutable': os.environ.get('AUTOTUNE_NODE_EXECUTABLE'),",
         "        'targetPythonEnvironment': json.loads(os.environ.get('AUTOTUNE_TARGET_PYTHON_ENV', '{}'))",
         "    }, handle)"
       ].join("\n"),
@@ -106,9 +107,11 @@ describe("runPythonRunner", () => {
 
     const captured = JSON.parse(await readFile(output, "utf8")) as {
       controllerPythonPath?: string;
+      nodeExecutable?: string;
       targetPythonEnvironment: Record<string, string>;
     };
     expect(captured.controllerPythonPath).toBeNull();
+    expect(captured.nodeExecutable).toBe(process.execPath);
     expect(captured.targetPythonEnvironment.PYTHONPATH).toBe("/training/environment");
   });
 

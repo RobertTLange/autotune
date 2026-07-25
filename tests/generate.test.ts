@@ -36,6 +36,7 @@ describe("renderOptunaRunner", () => {
       resultsPath: "/tmp/results.json"
     });
     expect(code).toContain("subprocess.Popen(");
+    expect(code).toContain('os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))');
     expect(code).toContain("env={**os.environ, **TARGET_PYTHON_ENV}");
     expect(code).toContain("except BaseException:");
     expect(code).toContain("signal.signal(signal.SIGTERM, request_interrupt)");
@@ -213,6 +214,9 @@ describe("renderOptunaRunner", () => {
     expect(code).toContain("importlib.util.spec_from_file_location(name, module_path)");
     expect(code).toContain('if name == "centaur":');
     expect(code).toContain("return CentaurSampler(");
+    expect(code).toContain('\\"node_executable\\":');
+    expect(code).toContain('NODE_EXECUTABLE = os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))');
+    expect(code).toContain("node_executable=NODE_EXECUTABLE");
     expect(code).toContain(`\\"headless_fallback_package\\":\\"${FALLBACK_HEADLESS_PACKAGE}\\"`);
     expect(code).toContain('headless_fallback_package=CONFIG["headless_fallback_package"]');
     expect(code).toContain('work_dir=Path(__file__).resolve().parent');
@@ -257,7 +261,7 @@ describe("renderOptunaRunner", () => {
     const runtime = await readFile(companion, "utf8");
     expect(runtime).toContain('"--allow"');
     expect(runtime).toContain('"read-only"');
-    expect(runtime).toContain('return [*_resolve_npx_command(), "-y", fallback_package], True');
+    expect(runtime).toContain('return [*_resolve_npx_command(node_executable), "-y", fallback_package], True');
     expect(runtime).not.toContain("shell=True");
     await expect(access(path.join(dir, "regular", "autotune_centaur_runtime.py"))).rejects.toThrow();
     await expect(access(path.join(dir, "regular", "autotune_centaur_support.py"))).rejects.toThrow();

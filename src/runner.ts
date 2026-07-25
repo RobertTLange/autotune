@@ -4,6 +4,7 @@ import process from "node:process";
 import { ensurePythonRuntime } from "./python-runtime.js";
 
 export const TARGET_PYTHON_ENV = "AUTOTUNE_TARGET_PYTHON_ENV";
+export const NODE_EXECUTABLE_ENV = "AUTOTUNE_NODE_EXECUTABLE";
 
 export async function runPythonRunner(input: {
   runnerPath: string;
@@ -166,5 +167,6 @@ function controllerEnvironment(callerEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
     }
   }
   controllerEnv[TARGET_PYTHON_ENV] = JSON.stringify(targetPythonEnvironment);
+  controllerEnv[NODE_EXECUTABLE_ENV] = process.execPath;
   return controllerEnv;
 }

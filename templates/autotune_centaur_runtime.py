@@ -62,6 +62,7 @@ class CentaurSampler(BaseSampler):
         agent: str,
         model: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
+        node_executable: str,
         headless_fallback_package: str,
         objective_context: Any = None,
     ) -> None:
@@ -113,9 +114,12 @@ class CentaurSampler(BaseSampler):
                     self._headless_command, uses_npx = _resolve_headless_command(
                         configured_headless,
                         self._headless_fallback_package,
+                        node_executable,
                     )
                     if uses_npx:
-                        self._headless_env = npm_environment(self._headless_env)
+                        self._headless_env = npm_environment(
+                            self._headless_env, node_executable
+                        )
                 except FileNotFoundError:
                     if self._headless_configured:
                         raise RuntimeError(
@@ -423,7 +427,7 @@ def _resolve_executable(configured: str) -> str:
 
 
 def _resolve_headless_command(
-    configured: Optional[str], fallback_package: str
+    configured: Optional[str], fallback_package: str, node_executable: str
 ) -> Tuple[List[str], bool]:
     if configured is not None:
         return [_resolve_executable(configured)], False
@@ -433,11 +437,18 @@ def _resolve_headless_command(
             raise FileNotFoundError(headless)
         return [headless], False
     except FileNotFoundError:
-        return [*_resolve_npx_command(), "-y", fallback_package], True
+        return [*_resolve_npx_command(node_executable), "-y", fallback_package], True
 
 
-def _resolve_npx_command() -> List[str]:
-    node = _resolve_executable("node")
+def _resolve_npx_command(node_executable: str) -> List[str]:
+    configured_node = nonempty("Node executable", node_executable)
+    node_path = Path(configured_node)
+    if node_path.is_absolute() and node_path.is_file() and (
+        os.name == "nt" or os.access(node_path, os.X_OK)
+    ):
+        node = str(node_path.resolve())
+    else:
+        node = _resolve_executable("node")
     npm_execpath = os.environ.get("npm_execpath")
     candidates = []
     if npm_execpath:

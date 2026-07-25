@@ -45,6 +45,7 @@ export function renderOptunaRunner(input: {
     timeout,
     time_budget_seconds: input.timeBudgetSeconds,
     objective_context: input.searchSpace.reasoning,
+    node_executable: input.searchSpace.optuna?.sampler === "centaur" ? process.execPath : undefined,
     headless_fallback_package: FALLBACK_HEADLESS_PACKAGE,
     centaur: input.searchSpace.optuna?.sampler === "centaur"
       ? {
@@ -91,6 +92,7 @@ from autotune_centaur_runtime import CentaurSampler
 ` : ""}
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
+NODE_EXECUTABLE = os.environ.pop("AUTOTUNE_NODE_EXECUTABLE", CONFIG.get("node_executable"))
 TARGET_PYTHON_ENV = json.loads(os.environ.pop("AUTOTUNE_TARGET_PYTHON_ENV", "{}"))
 CURRENT_TRIAL_TARGET = 0
 BASELINE_FINISHED_COUNT = 0
@@ -441,6 +443,7 @@ def make_sampler(name, study_name=None, direction=None, storage=None):
             agent=config["agent"],
             model=config.get("model"),
             reasoning_effort=config.get("reasoning_effort"),
+            node_executable=NODE_EXECUTABLE,
             headless_fallback_package=CONFIG["headless_fallback_package"],
         )
     if name == "grid":

@@ -102,11 +102,21 @@ def headless_environment(agent: str, model: Optional[str]) -> Dict[str, str]:
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
-def npm_environment(base: Mapping[str, str]) -> Dict[str, str]:
+def npm_environment(
+    base: Mapping[str, str], node_executable: Optional[str] = None
+) -> Dict[str, str]:
     environment = dict(base)
     environment.update(
         {name: os.environ[name] for name in NPM_ENV_ALLOWLIST if name in os.environ}
     )
+    if node_executable:
+        path_entries = [str(Path(node_executable).resolve().parent)]
+        path_entries.extend(environment.get("PATH", "").split(os.pathsep))
+        if os.name != "nt":
+            path_entries.extend(os.defpath.split(os.pathsep))
+        environment["PATH"] = os.pathsep.join(
+            dict.fromkeys(entry for entry in path_entries if entry)
+        )
     return environment
 
 

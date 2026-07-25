@@ -222,28 +222,32 @@ print(json.dumps({
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
     const argumentsPath = path.join(dir, "npx-arguments.json");
     const npmBin = path.join(dir, "npm", "bin");
+    const emptyPath = path.join(dir, "empty-path");
     const npx = path.join(npmBin, "npx-cli.js");
     await mkdir(npmBin, { recursive: true });
+    await mkdir(emptyPath);
     await writeFile(npx, `
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
-fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(args));
+fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify({ args, path: process.env.PATH }));
 if (args[0] !== "-y" || args[1] !== ${JSON.stringify(FALLBACK_HEADLESS_PACKAGE)} || args[2] !== "codex") process.exit(7);
+if (process.platform !== "win32" && spawnSync("sh", ["-c", "node -e 'process.exit(0)'"], { stdio: "ignore" }).status !== 0) process.exit(8);
 console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
 `, "utf8");
     const runner = await writeRunner(dir, centaurSpace, "centaur_npx", python);
     const results = path.join(dir, "results.json");
 
     await runPython(python, runnerArgs(runner, results, "centaur_npx", 1), {
-      PATH: `${path.dirname(process.execPath)}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+      PATH: emptyPath,
       npm_execpath: path.join(npmBin, "npm-cli.js")
     });
 
     const parsed = JSON.parse(await readFile(results, "utf8"));
     expect(parsed.all_trials[0].params).toEqual({ x: 0.25, y: 1.5, optimizer: "adam" });
-    expect(JSON.parse(await readFile(argumentsPath, "utf8"))).toEqual(
-      expect.arrayContaining(["-y", FALLBACK_HEADLESS_PACKAGE, "codex"])
-    );
+    const invocation = JSON.parse(await readFile(argumentsPath, "utf8"));
+    expect(invocation.args).toEqual(expect.arrayContaining(["-y", FALLBACK_HEADLESS_PACKAGE, "codex"]));
+    expect(invocation.path.split(path.delimiter)).toContain(path.dirname(process.execPath));
   }, 20_000);
 
   it("resolves a relative configured Headless executable before changing directories", async () => {
