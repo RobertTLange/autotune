@@ -306,7 +306,8 @@ print(json.dumps({
     await mkdir(npmBin, { recursive: true });
     await mkdir(forgedNpmBin, { recursive: true });
     await mkdir(emptyPath);
-    await symlink(process.execPath, node);
+    await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
+    await chmod(node, 0o755);
     await writeFile(path.join(forgedNpmBin, "npx-cli.js"), "process.exit(99);\n", "utf8");
     await writeFile(npx, `
 import fs from "node:fs";
