@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
-- Zero-install npx execution for Autotune and pinned Headless fallback execution.
+- Zero-install npx execution for Autotune and integrity-locked Headless fallback execution.
 - Hash-locked, cached Optuna and `cmaes` controller provisioning isolated from training-script dependencies.
 
 ## [0.1.0] - 2026-07-23

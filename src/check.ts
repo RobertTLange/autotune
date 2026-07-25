@@ -2,8 +2,8 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { isCommandInterruptedError, runCommand } from "./process.js";
-import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
-import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
+import { FALLBACK_HEADLESS_PACKAGE, runHeadlessFallback } from "./headless.js";
+import { findExecutableOnPath, isWindowsBatchShim, resolveNpmCommand } from "./npx.js";
 import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
 import { npxHeadlessEnvironment } from "./headless-environment.js";
 import type { Invocation } from "./types.js";
@@ -90,9 +90,9 @@ export async function checkOptuna(): Promise<string> {
 export async function checkHeadless(
   agent: string,
   model?: string,
-  resolveNpx: typeof resolveNpxCommand = resolveNpxCommand
+  resolveNpm: typeof resolveNpmCommand = resolveNpmCommand
 ): Promise<string> {
-  const { label, output } = await runHeadlessCheck(agent, model, resolveNpx);
+  const { label, output } = await runHeadlessCheck(agent, model, resolveNpm);
   if (!headlessListsAgent(output, agent)) {
     return `${label} (agent ${agent} not listed by --check)`;
   }
@@ -110,7 +110,7 @@ async function checkCentaurHeadless(agent: string, model?: string): Promise<stri
 async function runHeadlessCheck(
   agent: string,
   model: string | undefined,
-  resolveNpx: typeof resolveNpxCommand = resolveNpxCommand
+  resolveNpm: typeof resolveNpmCommand = resolveNpmCommand
 ): Promise<{ label: string; output: string }> {
   const configured = process.env.AUTOTUNE_HEADLESS_BIN;
   if (configured !== undefined && !configured.trim()) {
@@ -127,15 +127,16 @@ async function runHeadlessCheck(
     return { label: installed, output: `${stdout}\n${stderr}` };
   }
   const environment = npxHeadlessEnvironment({ agent, model });
-  const npx = await resolveNpx();
-  const { stdout, stderr } = await runCommand(
-    npx.command,
-    [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, "--check"],
-    { ...HEADLESS_CHECK_OPTIONS, env: environment }
+  const output = await runHeadlessFallback(
+    ["--check"],
+    environment,
+    resolveNpm,
+    HEADLESS_CHECK_OPTIONS.timeoutMs,
+    HEADLESS_CHECK_OPTIONS.maxOutputBytes
   );
   return {
-    label: `npx -y ${FALLBACK_HEADLESS_PACKAGE}`,
-    output: `${stdout}\n${stderr}`
+    label: `npm ci ${FALLBACK_HEADLESS_PACKAGE}`,
+    output
   };
 }
 

@@ -1,3 +1,5 @@
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { npxHeadlessEnvironment } from "../src/headless-environment.js";
 import { FALLBACK_HEADLESS_PACKAGE, extractHeadlessJson, extractHeadlessObject, runHeadless } from "../src/headless.js";
@@ -25,7 +27,7 @@ describe("headless fallback package", () => {
     try {
       await expect(runHeadless(["opencode"], {
         cwd: process.cwd(),
-        resolveNpx: async () => {
+        resolveNpm: async () => {
           resolutionCalled = true;
           return { command: process.execPath, args: [] };
         }
@@ -37,7 +39,70 @@ describe("headless fallback package", () => {
     }
   });
 
-  it("limits the npx fallback to selected-agent and npm environment variables", async () => {
+  it("runs the locked fallback in a temporary package boundary", async () => {
+    const previousPath = process.env.PATH;
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    const project = await mkdtemp(path.join(tmpdir(), "autotune-headless-project-"));
+    await writeFile(path.join(project, "package.json"), JSON.stringify({
+      dependencies: { "@roberttlange/headless": "file:./malicious-headless" }
+    }), "utf8");
+    process.env.PATH = path.resolve("/not-on-path");
+    process.env.OPENAI_API_KEY = "selected-key";
+
+    try {
+      const installedCli = [
+        "const fs=require('fs');",
+        "const install=JSON.parse(fs.readFileSync('install.json','utf8'));",
+        "console.log(JSON.stringify({cwd:process.cwd(),pkg:JSON.parse(fs.readFileSync('package.json','utf8')),args:process.argv.slice(2),install,executionKey:process.env.OPENAI_API_KEY}));"
+      ].join("");
+      const installer = [
+        "const fs=require('fs');",
+        "fs.mkdirSync('node_modules/@roberttlange/headless/dist',{recursive:true});",
+        `fs.writeFileSync('node_modules/@roberttlange/headless/dist/cli.js',${JSON.stringify(installedCli)});`,
+        "fs.writeFileSync('install.json',JSON.stringify({args:process.argv.slice(1),env:process.env}));"
+      ].join("");
+      const output = await runHeadless(["codex"], {
+        cwd: project,
+        resolveNpm: async () => ({
+          command: process.execPath,
+          args: ["-e", installer, "--"]
+        })
+      });
+      const invocation = JSON.parse(output) as {
+        cwd: string;
+        pkg: Record<string, unknown>;
+        args: string[];
+        install: { args: string[]; env: NodeJS.ProcessEnv };
+        executionKey?: string;
+      };
+
+      expect(invocation.cwd).not.toBe(project);
+      expect(invocation.pkg).toMatchObject({
+        private: true,
+        dependencies: { "@roberttlange/headless": "0.4.0" }
+      });
+      expect(invocation.args).toEqual(["codex"]);
+      expect(invocation.install.args).toEqual(expect.arrayContaining([
+        "ci",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund"
+      ]));
+      expect(invocation.install.env.OPENAI_API_KEY).toBeUndefined();
+      expect(invocation.executionKey).toBe("selected-key");
+      await expect(access(invocation.cwd)).rejects.toThrow();
+      expect(JSON.parse(await readFile(path.join(project, "package.json"), "utf8")))
+        .toHaveProperty("dependencies.@roberttlange/headless");
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previousOpenAiKey;
+      await rm(project, { recursive: true, force: true });
+    }
+  });
+
+  it("limits the fallback to selected-agent and npm environment variables", async () => {
     const customPath = path.resolve("/custom/bin");
     const environment = npxHeadlessEnvironment({
       agent: "codex",

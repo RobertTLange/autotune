@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { checkHeadless, checkPrerequisites } from "../src/check.js";
@@ -79,14 +79,27 @@ describe("checkPrerequisites", () => {
     ).resolves.toMatchObject({ optuna: "4.8.0", cmaes: "0.12.0" });
   });
 
-  it("uses a filtered environment for the npx Headless fallback", async () => {
+  it("uses a filtered environment for the locked Headless fallback", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
     const environmentPath = path.join(dir, "npx-environment.json");
     const npxCli = path.join(dir, "npx-cli.js");
+    const installedCli = `
+const fs = require("node:fs");
+const install = JSON.parse(fs.readFileSync("install.json", "utf8"));
+fs.writeFileSync(${JSON.stringify(environmentPath)}, JSON.stringify({
+  env: process.env,
+  cwd: process.cwd(),
+  args: process.argv.slice(2),
+  packageJson: JSON.parse(fs.readFileSync("package.json", "utf8")),
+  install
+}));
+console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');
+`;
     await writeFile(npxCli, `
 const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(environmentPath)}, JSON.stringify(process.env));
-console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');
+fs.mkdirSync("node_modules/@roberttlange/headless/dist", { recursive: true });
+fs.writeFileSync("node_modules/@roberttlange/headless/dist/cli.js", ${JSON.stringify(installedCli)});
+fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), env: process.env }));
 `, "utf8");
     process.env.PATH = dir;
     process.env.ANTHROPIC_API_KEY = "selected-key";
@@ -98,10 +111,23 @@ console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');
     await expect(checkHeadless("claude", undefined, async () => ({
       command: process.execPath,
       args: [npxCli]
-    }))).resolves.toContain("npx");
-    const environment = JSON.parse(await readFile(environmentPath, "utf8"));
-    expect(environment.ANTHROPIC_API_KEY).toBe("selected-key");
-    expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    }))).resolves.toContain("npm");
+    const invocation = JSON.parse(await readFile(environmentPath, "utf8"));
+    expect(invocation.env.ANTHROPIC_API_KEY).toBe("selected-key");
+    expect(invocation.env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(invocation.install.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(invocation.packageJson).toMatchObject({
+      private: true,
+      dependencies: { "@roberttlange/headless": "0.4.0" }
+    });
+    expect(invocation.install.args).toEqual([
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund"
+    ]);
+    expect(invocation.args).toEqual(["--check"]);
+    await expect(access(invocation.cwd)).rejects.toThrow();
   });
 
   it("fails before npx when a multiprovider agent has no provider selection", async () => {

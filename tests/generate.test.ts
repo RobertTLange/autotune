@@ -255,16 +255,21 @@ describe("renderOptunaRunner", () => {
 
     const companion = path.join(dir, "centaur", "autotune_centaur_runtime.py");
     const support = path.join(dir, "centaur", "autotune_centaur_support.py");
+    const headlessLock = path.join(dir, "centaur", "autotune_headless_runtime.lock.json");
     await expect(access(companion)).resolves.toBeUndefined();
     await expect(access(support)).resolves.toBeUndefined();
+    await expect(access(headlessLock)).resolves.toBeUndefined();
     await expect(runPython(["-m", "py_compile", companion, support, centaurRunner])).resolves.toBe("");
     const runtime = await readFile(companion, "utf8");
     expect(runtime).toContain('"--allow"');
     expect(runtime).toContain('"read-only"');
-    expect(runtime).toContain('return [*_resolve_npx_command(node_executable), "-y", fallback_package], True');
+    expect(runtime).toContain('"ci",');
+    expect(runtime).toContain('"--ignore-scripts",');
+    expect(runtime).toContain("_resolve_npm_command(node)");
     expect(runtime).not.toContain("shell=True");
     await expect(access(path.join(dir, "regular", "autotune_centaur_runtime.py"))).rejects.toThrow();
     await expect(access(path.join(dir, "regular", "autotune_centaur_support.py"))).rejects.toThrow();
+    await expect(access(path.join(dir, "regular", "autotune_headless_runtime.lock.json"))).rejects.toThrow();
   });
 
   it("replaces output symlinks without overwriting their targets", async () => {

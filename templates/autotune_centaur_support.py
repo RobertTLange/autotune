@@ -407,7 +407,11 @@ class _TailCapture:
 
 
 def bounded_process(
-    argv: Sequence[str], *, cwd: Path, env: Mapping[str, str]
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    timeout_seconds: float = HEADLESS_TIMEOUT_SECONDS,
 ) -> str:
     process = subprocess.Popen(
         list(argv),
@@ -428,7 +432,7 @@ def bounded_process(
     for thread in threads:
         thread.start()
     try:
-        returncode = process.wait(timeout=HEADLESS_TIMEOUT_SECONDS)
+        returncode = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         _terminate_process_tree(process)
         process.wait()

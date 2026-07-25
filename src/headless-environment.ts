@@ -94,7 +94,8 @@ export function npxHeadlessEnvironment(input: {
 }): NodeJS.ProcessEnv {
   const source = input.env ?? process.env;
   const explicitNames = explicitEnvironmentNames(source);
-  const names = new Set([...BASE_ENVIRONMENT, ...NPM_ENVIRONMENT]);
+  const environment = npmInstallEnvironment(source);
+  const names = new Set<string>();
   const normalizedAgent = input.agent.trim().toLowerCase();
   const provider = selectedProvider(normalizedAgent, input.model, source, explicitNames.length > 0);
   addNames(names, AGENT_ENVIRONMENT[normalizedAgent]);
@@ -108,8 +109,15 @@ export function npxHeadlessEnvironment(input: {
     addNames(names, GEMINI_PROVIDER_ENVIRONMENT[provider]);
   }
   addNames(names, explicitNames);
-  const environment: NodeJS.ProcessEnv = {};
   for (const name of names) {
+    if (source[name] !== undefined) environment[name] = source[name];
+  }
+  return environment;
+}
+
+export function npmInstallEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const name of [...BASE_ENVIRONMENT, ...NPM_ENVIRONMENT]) {
     if (source[name] !== undefined) environment[name] = source[name];
   }
   environment.PATH = safeNpxPath(source.PATH);

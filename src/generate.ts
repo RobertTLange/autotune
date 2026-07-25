@@ -13,6 +13,7 @@ export interface SeedTrial {
 
 const CENTAUR_RUNTIME_URL = new URL("../templates/autotune_centaur_runtime.py", import.meta.url);
 const CENTAUR_SUPPORT_URL = new URL("../templates/autotune_centaur_support.py", import.meta.url);
+const HEADLESS_RUNTIME_LOCK_URL = new URL("../resources/headless-runtime/package-lock.json", import.meta.url);
 
 export function renderOptunaRunner(input: {
   invocation: Invocation;
@@ -727,15 +728,18 @@ def main():
     try:
         if not time_budget_exhausted(study):
             study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+        if INTERRUPTED.is_set():
+            raise KeyboardInterrupt
+        result = write_results(study, args.direction, output_path)
+        print(json.dumps(result))
+        if result["best_trial"] is None:
+            print(f"[{timestamp()}] all trials failed", file=sys.stderr)
+            sys.exit(2)
     finally:
         terminate_active_trials()
-    if INTERRUPTED.is_set():
-        raise KeyboardInterrupt
-    result = write_results(study, args.direction, output_path)
-    print(json.dumps(result))
-    if result["best_trial"] is None:
-        print(f"[{timestamp()}] all trials failed", file=sys.stderr)
-        sys.exit(2)
+        close_sampler = getattr(study.sampler, "close", None)
+        if callable(close_sampler):
+            close_sampler()
 
 
 if __name__ == "__main__":
@@ -766,8 +770,10 @@ export async function writeOptunaRunner(input: {
     const outputDirectory = path.dirname(input.outputPath);
     const runtimePath = path.join(outputDirectory, "autotune_centaur_runtime.py");
     const supportPath = path.join(outputDirectory, "autotune_centaur_support.py");
+    const headlessLockPath = path.join(outputDirectory, "autotune_headless_runtime.lock.json");
     await writeAtomicFile(runtimePath, await readFile(CENTAUR_RUNTIME_URL), 0o600);
     await writeAtomicFile(supportPath, await readFile(CENTAUR_SUPPORT_URL), 0o600);
+    await writeAtomicFile(headlessLockPath, await readFile(HEADLESS_RUNTIME_LOCK_URL), 0o600);
   }
 }
 

@@ -1,7 +1,6 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { FALLBACK_HEADLESS_PACKAGE } from "../src/headless.js";
 import type { SearchSpace } from "../src/types.js";
 import {
   blockingTrainSource,
@@ -290,52 +289,117 @@ print(json.dumps({
     expect(prompt).toContain("\\u003c/UNTRUSTED_OPTIMIZATION_DATA\\u003e");
   }, 20_000);
 
-  it.skipIf(process.platform === "win32")("runs Headless through the pinned npx fallback", async () => {
+  it.skipIf(process.platform === "win32")("rebuilds the locked Headless fallback for each proposal", async () => {
     const python = await centaurPython();
     if (!python) return;
     expect(path.isAbsolute(python)).toBe(true);
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
     const argumentsPath = path.join(dir, "npx-arguments.json");
+    const installMarker = path.join(dir, "npm-install-count.txt");
     const nodeBin = path.join(dir, "runtime", "bin");
     const npmBin = path.join(dir, "runtime", "lib", "node_modules", "npm", "bin");
     const forgedNpmBin = path.join(dir, "forged-npm", "bin");
     const emptyPath = path.join(dir, "empty-path");
     const node = path.join(nodeBin, "node");
-    const npx = path.join(npmBin, "npx-cli.js");
+    const npm = path.join(npmBin, "npm-cli.js");
     await mkdir(nodeBin, { recursive: true });
     await mkdir(npmBin, { recursive: true });
     await mkdir(forgedNpmBin, { recursive: true });
     await mkdir(emptyPath);
     await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
     await chmod(node, 0o755);
-    await writeFile(path.join(forgedNpmBin, "npx-cli.js"), "process.exit(99);\n", "utf8");
-    await writeFile(npx, `
-import fs from "node:fs";
-import { spawnSync } from "node:child_process";
-const args = process.argv.slice(2);
-fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify({ args, path: process.env.PATH }));
-if (args[0] !== "-y" || args[1] !== ${JSON.stringify(FALLBACK_HEADLESS_PACKAGE)} || args[2] !== "codex") process.exit(7);
+    await writeFile(path.join(forgedNpmBin, "npm-cli.js"), "process.exit(99);\n", "utf8");
+    const installedCli = `
+const fs = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const install = JSON.parse(fs.readFileSync("install.json", "utf8"));
+fs.writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify({
+  args: process.argv.slice(2),
+  path: process.env.PATH,
+  cwd: process.cwd(),
+  packageJson: JSON.parse(fs.readFileSync("package.json", "utf8")),
+  executionKey: process.env.OPENAI_API_KEY,
+  install
+}));
 if (process.platform !== "win32" && spawnSync("sh", ["-c", "node -e 'process.exit(0)'"], { stdio: "ignore" }).status !== 0) process.exit(8);
 console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
+`;
+    await writeFile(npm, `
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(installMarker)}, "i");
+fs.mkdirSync("node_modules/@roberttlange/headless/dist", { recursive: true });
+fs.writeFileSync("node_modules/@roberttlange/headless/dist/cli.js", ${JSON.stringify(installedCli)});
+fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), env: process.env }));
 `, "utf8");
     const runner = await writeRunner(dir, centaurSpace, "centaur_npx", python);
     const results = path.join(dir, "results.json");
 
-    await runPython(python, runnerArgs(runner, results, "centaur_npx", 1), {
+    await runPython(python, runnerArgs(runner, results, "centaur_npx", 2), {
       PATH: emptyPath,
       AUTOTUNE_NODE_EXECUTABLE: node,
-      npm_execpath: path.join(forgedNpmBin, "npm-cli.js")
+      npm_execpath: path.join(forgedNpmBin, "npm-cli.js"),
+      OPENAI_API_KEY: "selected-key"
     });
 
     const parsed = JSON.parse(await readFile(results, "utf8"));
     expect(parsed.all_trials[0].params).toEqual({ x: 0.25, y: 1.5, optimizer: "adam" });
+    expect(await readFile(installMarker, "utf8")).toBe("ii");
     const invocation = JSON.parse(await readFile(argumentsPath, "utf8"));
-    expect(invocation.args).toEqual(expect.arrayContaining(["-y", FALLBACK_HEADLESS_PACKAGE, "codex"]));
+    expect(invocation.install.args).toEqual(expect.arrayContaining([
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund"
+    ]));
+    expect(invocation.args[0]).toBe("codex");
+    expect(invocation.install.env.OPENAI_API_KEY).toBeUndefined();
+    expect(invocation.executionKey).toBe("selected-key");
+    expect(path.relative(dir, invocation.cwd).startsWith(`..${path.sep}`)).toBe(true);
+    expect(invocation.packageJson).toMatchObject({
+      private: true,
+      dependencies: { "@roberttlange/headless": "0.4.0" }
+    });
+    await expect(access(invocation.cwd)).rejects.toThrow();
     const canonicalPath = await Promise.all(
       invocation.path.split(path.delimiter).map((entry: string) => realpath(entry).catch(() => entry))
     );
     expect(canonicalPath).toContain(await realpath(nodeBin));
   }, 20_000);
+
+  it("rejects a tampered generated Headless runtime lock", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-lock-"));
+    await writeRunner(dir, centaurSpace, "centaur_tampered_lock", python);
+    await writeFile(path.join(dir, "autotune_headless_runtime.lock.json"), "{}\n", "utf8");
+
+    await expect(runPython(python, [
+      "-c",
+      "from autotune_centaur_runtime import _load_headless_runtime_lock; _load_headless_runtime_lock()"
+    ], { PYTHONPATH: dir })).rejects.toThrow(/lock failed its integrity check/i);
+  });
+
+  it.skipIf(process.platform === "win32")("does not trust npm from PATH", async () => {
+    const python = await centaurPython();
+    if (!python) return;
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-hostile-npm-"));
+    const node = path.join(dir, "runtime", "bin", "node");
+    const hostileBin = path.join(dir, "hostile-bin");
+    await mkdir(path.dirname(node), { recursive: true });
+    await mkdir(hostileBin);
+    await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
+    await writeFile(path.join(hostileBin, "npm"), "#!/bin/sh\nexit 0\n", "utf8");
+    await chmod(node, 0o755);
+    await chmod(path.join(hostileBin, "npm"), 0o755);
+
+    await expect(runPython(python, [
+      "-c",
+      `from autotune_centaur_runtime import _resolve_headless_command; _resolve_headless_command(None, "@roberttlange/headless@0.4.0", ${JSON.stringify(node)})`
+    ], {
+      PATH: hostileBin,
+      PYTHONPATH: path.resolve("templates")
+    })).rejects.toThrow(/npm-cli\.js was not found beside/i);
+  });
 
   it("resolves a relative configured Headless executable before changing directories", async () => {
     const python = await centaurPython();
