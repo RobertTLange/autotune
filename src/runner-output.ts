@@ -252,36 +252,80 @@ function runLsof(command: string, pid: number | undefined, deadline: number) {
 
 function linuxFileHolderProcessIds(capture: OutputCapture, deadline: number): number[] {
   const holders: number[] = [];
+  let candidates: number[] = [];
+  const pidClock = readLinuxPidClock();
   let processes: ReturnType<typeof opendirSync>;
   try {
     processes = opendirSync("/proc");
   } catch {
     return [];
   }
-  let scannedProcesses = 0;
-  let scannedDescriptors = 0;
   try {
     let entry;
+    const discoveryDeadline = performance.now()
+      + Math.max(1, (deadline - performance.now()) / 4);
     while (
-      performance.now() < deadline
-      && scannedProcesses < MAX_PROCESSES_SCANNED
-      && scannedDescriptors < MAX_TOTAL_FDS_SCANNED
+      performance.now() < discoveryDeadline
       && (entry = processes.readSync()) !== null
     ) {
-      if (!/^\d+$/.test(entry.name)) continue;
-      scannedProcesses += 1;
-      const pid = Number(entry.name);
-      if (linuxProcessHoldsCapture(pid, capture, deadline, (count) => {
-        scannedDescriptors += count;
-        return scannedDescriptors < MAX_TOTAL_FDS_SCANNED;
-      })) {
-        holders.push(pid);
+      candidates.push(Number(entry.name));
+      if (candidates.length > MAX_PROCESSES_SCANNED * 2) {
+        candidates = prioritizeRecentProcessIds(
+          candidates,
+          pidClock.lastPid,
+          pidClock.pidMax
+        );
       }
     }
   } finally {
     processes.closeSync();
   }
+  candidates = prioritizeRecentProcessIds(candidates, pidClock.lastPid, pidClock.pidMax);
+  let scannedDescriptors = 0;
+  for (const pid of candidates) {
+    if (performance.now() >= deadline || scannedDescriptors >= MAX_TOTAL_FDS_SCANNED) break;
+    if (linuxProcessHoldsCapture(pid, capture, deadline, (count) => {
+      scannedDescriptors += count;
+      return scannedDescriptors <= MAX_TOTAL_FDS_SCANNED;
+    })) {
+      holders.push(pid);
+    }
+  }
   return holders;
+}
+
+export function prioritizeRecentProcessIds(
+  candidates: Iterable<number>,
+  lastPid: number | undefined,
+  pidMax: number | undefined,
+  limit = MAX_PROCESSES_SCANNED
+): number[] {
+  return [...candidates]
+    .filter((pid) => Number.isInteger(pid) && pid > 0)
+    .sort((left, right) => lastPid !== undefined && pidMax !== undefined
+      ? pidAge(left, lastPid, pidMax) - pidAge(right, lastPid, pidMax)
+      : right - left)
+    .slice(0, limit);
+}
+
+function readLinuxPidClock(): { lastPid?: number; pidMax?: number } {
+  try {
+    const lastPid = Number(readFileSync("/proc/sys/kernel/ns_last_pid", "utf8").trim());
+    const pidMax = Number(readFileSync("/proc/sys/kernel/pid_max", "utf8").trim());
+    if (
+      Number.isInteger(lastPid)
+      && lastPid > 0
+      && Number.isInteger(pidMax)
+      && pidMax >= lastPid
+    ) return { lastPid, pidMax };
+  } catch {
+    // Fall back to descending PIDs when the namespace clock is unavailable.
+  }
+  return {};
+}
+
+function pidAge(pid: number, lastPid: number, pidMax: number): number {
+  return (lastPid - pid + pidMax) % pidMax;
 }
 
 function processHoldsCapture(pid: number, capture: OutputCapture, deadline: number): boolean {

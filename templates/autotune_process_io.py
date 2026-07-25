@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import os
 import signal
 import subprocess
@@ -67,13 +68,17 @@ def _output_holder_pids(kind: str, identities: Tuple[Any, ...], deadline: float)
         except OSError:
             return holders
         with entries:
-            for index, entry in enumerate(entries):
-                if index >= 4096 or time.monotonic() >= deadline:
-                    break
-                if entry.name.isdigit() and _process_holds_output(
-                    int(entry.name), kind, identities, deadline, descriptor_budget
-                ):
-                    holders.append(int(entry.name))
+            discovery_deadline = time.monotonic() + max(
+                0.001, (deadline - time.monotonic()) / 4
+            )
+            candidates = _recent_process_pids(entries, discovery_deadline)
+        for pid in candidates:
+            if time.monotonic() >= deadline or descriptor_budget[0] <= 0:
+                break
+            if _process_holds_output(
+                pid, kind, identities, deadline, descriptor_budget
+            ):
+                holders.append(pid)
         return holders
     lsof = _fixed_command(("/usr/sbin/lsof", "/usr/bin/lsof"))
     if not lsof:
@@ -96,6 +101,39 @@ def _output_holder_pids(kind: str, identities: Tuple[Any, ...], deadline: float)
         elif line.startswith("n") and pid and line[1:] in identities:
             holders.add(pid)
     return list(holders)
+
+
+def _recent_process_pids(
+    entries: Any,
+    deadline: float,
+    limit: int = 4096,
+    last_pid: Optional[int] = None,
+    pid_max: Optional[int] = None,
+) -> List[int]:
+    if last_pid is None or pid_max is None:
+        try:
+            last_pid = int(Path("/proc/sys/kernel/ns_last_pid").read_text())
+            pid_max = int(Path("/proc/sys/kernel/pid_max").read_text())
+        except (OSError, ValueError):
+            last_pid = 0
+            pid_max = 0
+    recent: List[Tuple[int, int]] = []
+    for entry in entries:
+        if time.monotonic() >= deadline:
+            break
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        score = (
+            pid_max - ((last_pid - pid + pid_max) % pid_max)
+            if last_pid > 0 and pid_max >= last_pid
+            else pid
+        )
+        if len(recent) < limit:
+            heapq.heappush(recent, (score, pid))
+        elif score > recent[0][0]:
+            heapq.heapreplace(recent, (score, pid))
+    return [pid for _, pid in sorted(recent, reverse=True)]
 
 
 def _process_holds_output(

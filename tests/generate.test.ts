@@ -95,6 +95,31 @@ describe("renderOptunaRunner", () => {
       .toBeLessThan(centaurCode.indexOf('_load_centaur_module("autotune_centaur_support")'));
   });
 
+  it("prioritizes recent PIDs in the shipped Python helper", async () => {
+    const script = [
+      "import sys, time",
+      `sys.path.insert(0, ${JSON.stringify(path.resolve("templates"))})`,
+      "from autotune_process_io import _recent_process_pids",
+      "Entry = type('Entry', (), {})",
+      "entries = []",
+      "for pid in range(1, 5001):",
+      "    entry = Entry()",
+      "    entry.name = str(pid)",
+      "    entries.append(entry)",
+      "recent = _recent_process_pids(entries, time.monotonic() + 5, last_pid=5000, pid_max=32768)",
+      "assert len(recent) == 4096",
+      "assert recent[0] == 5000",
+      "assert recent[-1] == 905",
+      "wrapped = _recent_process_pids(entries[-3:] + entries[:3], time.monotonic() + 5, last_pid=3, pid_max=5000)",
+      "assert wrapped == [3, 2, 1, 5000, 4999, 4998]",
+      "fallback = _recent_process_pids(entries, time.monotonic() + 5, last_pid=0, pid_max=0)",
+      "assert fallback[0] == 5000",
+      "assert fallback[-1] == 905"
+    ].join("\n");
+
+    await expect(runPython(["-c", script])).resolves.toBe("");
+  });
+
   it("seeds stochastic Optuna samplers", () => {
     const code = renderOptunaRunner({
       invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },

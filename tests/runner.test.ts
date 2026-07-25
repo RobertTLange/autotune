@@ -2,7 +2,11 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { readProcessIdentity, sameProcessIdentity } from "../src/runner-output.js";
+import {
+  prioritizeRecentProcessIds,
+  readProcessIdentity,
+  sameProcessIdentity
+} from "../src/runner-output.js";
 import {
   descendantsFromPosixSnapshot,
   parsePosixProcessSnapshot,
@@ -58,6 +62,35 @@ describe("runPythonRunner", () => {
     expect(signalWindowsRunnerTree(42, "win32", terminate)).toBe(true);
     expect(terminate).toHaveBeenCalledOnce();
     expect(terminate).toHaveBeenCalledWith(42, "SIGKILL");
+  });
+
+  it("prioritizes recent PIDs when a Linux host exceeds the scan limit", () => {
+    const candidates = Array.from({ length: 5_000 }, (_, index) => index + 1);
+
+    const prioritized = prioritizeRecentProcessIds(candidates, 5_000, 32_768);
+
+    expect(prioritized).toHaveLength(4_096);
+    expect(prioritized[0]).toBe(5_000);
+    expect(prioritized.at(-1)).toBe(905);
+  });
+
+  it("prioritizes recent PIDs across Linux allocation wraparound", () => {
+    const prioritized = prioritizeRecentProcessIds(
+      [9_998, 9_999, 1, 2, 3],
+      3,
+      10_000
+    );
+
+    expect(prioritized).toEqual([3, 2, 1, 9_999, 9_998]);
+  });
+
+  it("falls back to descending PIDs without the Linux allocation clock", () => {
+    const candidates = Array.from({ length: 5_000 }, (_, index) => index + 1);
+
+    const prioritized = prioritizeRecentProcessIds(candidates, undefined, undefined);
+
+    expect(prioritized[0]).toBe(5_000);
+    expect(prioritized.at(-1)).toBe(905);
   });
 
   it("passes runner args without shell interpolation", async () => {
