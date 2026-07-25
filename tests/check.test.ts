@@ -82,6 +82,7 @@ describe("checkPrerequisites", () => {
   it("uses a filtered environment for the locked Headless fallback", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
     const environmentPath = path.join(dir, "npx-environment.json");
+    const pathMarker = path.join(dir, "path-headless-ran");
     const npxCli = path.join(dir, "npx-cli.js");
     const installedCli = `
 const fs = require("node:fs");
@@ -101,6 +102,10 @@ fs.mkdirSync("node_modules/@roberttlange/headless/dist", { recursive: true });
 fs.writeFileSync("node_modules/@roberttlange/headless/dist/cli.js", ${JSON.stringify(installedCli)});
 fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), env: process.env }));
 `, "utf8");
+    await writeExecutable(
+      path.join(dir, "headless"),
+      `echo ran > ${JSON.stringify(pathMarker)}\necho '| claude | ✓ | local | 0.0.0 | model | - |'\n`
+    );
     process.env.PATH = dir;
     process.env.ANTHROPIC_API_KEY = "selected-key";
     process.env.AWS_SECRET_ACCESS_KEY = "unrelated-aws-secret";
@@ -128,6 +133,7 @@ fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), e
     ]);
     expect(invocation.args).toEqual(["--check"]);
     await expect(access(invocation.cwd)).rejects.toThrow();
+    await expect(access(pathMarker)).rejects.toThrow();
   });
 
   it("fails before npx when a multiprovider agent has no provider selection", async () => {

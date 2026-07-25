@@ -538,14 +538,8 @@ def _resolve_headless_command(
         raise ValueError("headless fallback package does not match its runtime lock")
     if configured is not None:
         return [_resolve_executable(configured)], False, ""
-    try:
-        headless = _resolve_executable("headless")
-        if os.name == "nt" and Path(headless).suffix.lower() in (".cmd", ".bat"):
-            raise FileNotFoundError(headless)
-        return [headless], False, ""
-    except FileNotFoundError:
-        node = _resolve_node_executable(node_executable)
-        return _resolve_npm_command(node), True, node
+    node = _resolve_node_executable(node_executable)
+    return _resolve_npm_command(node), True, node
 
 
 def _resolve_node_executable(node_executable: str) -> str:

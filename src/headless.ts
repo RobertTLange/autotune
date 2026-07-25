@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
 import { isCommandInterruptedError, runCommand } from "./process.js";
-import { findExecutableOnPath, isWindowsBatchShim, resolveNpmCommand } from "./npx.js";
+import { resolveNpmCommand } from "./npx.js";
 import { npmInstallEnvironment, npxHeadlessEnvironment } from "./headless-environment.js";
 
 const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -66,12 +66,8 @@ export async function runHeadless(
     throw new Error("configured headless executable must not be empty");
   }
   if (!explicitlyConfigured) {
-    const installed = await findExecutableOnPath("headless");
-    if (!installed || isWindowsBatchShim(installed)) {
-      const environment = npxHeadlessEnvironment({ agent: args[0] ?? "", model: optionValue(args, "--model") });
-      return runHeadlessFallback(args, environment, options.resolveNpm);
-    }
-    return spawnCapture(installed, args, options.cwd);
+    const environment = npxHeadlessEnvironment({ agent: args[0] ?? "", model: optionValue(args, "--model") });
+    return runHeadlessFallback(args, environment, options.resolveNpm);
   }
   const bin = configured as string;
   try {

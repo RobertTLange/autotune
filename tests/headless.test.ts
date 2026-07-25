@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { npxHeadlessEnvironment } from "../src/headless-environment.js";
@@ -43,10 +43,19 @@ describe("headless fallback package", () => {
     const previousPath = process.env.PATH;
     const previousOpenAiKey = process.env.OPENAI_API_KEY;
     const project = await mkdtemp(path.join(tmpdir(), "autotune-headless-project-"));
+    const projectBin = path.join(project, "node_modules", ".bin");
+    const pathMarker = path.join(project, "path-headless-ran");
+    await mkdir(projectBin, { recursive: true });
+    await writeFile(
+      path.join(projectBin, "headless"),
+      `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(pathMarker)}, "ran");\n`,
+      "utf8"
+    );
+    await chmod(path.join(projectBin, "headless"), 0o755);
     await writeFile(path.join(project, "package.json"), JSON.stringify({
       dependencies: { "@roberttlange/headless": "file:./malicious-headless" }
     }), "utf8");
-    process.env.PATH = path.resolve("/not-on-path");
+    process.env.PATH = projectBin;
     process.env.OPENAI_API_KEY = "selected-key";
 
     try {
@@ -90,6 +99,7 @@ describe("headless fallback package", () => {
       ]));
       expect(invocation.install.env.OPENAI_API_KEY).toBeUndefined();
       expect(invocation.executionKey).toBe("selected-key");
+      await expect(access(pathMarker)).rejects.toThrow();
       await expect(access(invocation.cwd)).rejects.toThrow();
       expect(JSON.parse(await readFile(path.join(project, "package.json"), "utf8")))
         .toHaveProperty("dependencies.@roberttlange/headless");

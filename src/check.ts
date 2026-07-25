@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { isCommandInterruptedError, runCommand } from "./process.js";
 import { FALLBACK_HEADLESS_PACKAGE, runHeadlessFallback } from "./headless.js";
-import { findExecutableOnPath, isWindowsBatchShim, resolveNpmCommand } from "./npx.js";
+import { resolveNpmCommand } from "./npx.js";
 import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
 import { npxHeadlessEnvironment } from "./headless-environment.js";
 import type { Invocation } from "./types.js";
@@ -120,11 +120,6 @@ async function runHeadlessCheck(
     const bin = configured;
     const { stdout, stderr } = await runCommand(bin, ["--check"], HEADLESS_CHECK_OPTIONS);
     return { label: bin, output: `${stdout}\n${stderr}` };
-  }
-  const installed = await findExecutableOnPath("headless");
-  if (installed && !isWindowsBatchShim(installed)) {
-    const { stdout, stderr } = await runCommand(installed, ["--check"], HEADLESS_CHECK_OPTIONS);
-    return { label: installed, output: `${stdout}\n${stderr}` };
   }
   const environment = npxHeadlessEnvironment({ agent, model });
   const output = await runHeadlessFallback(

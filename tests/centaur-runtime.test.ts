@@ -296,6 +296,7 @@ print(json.dumps({
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-npx-"));
     const argumentsPath = path.join(dir, "npx-arguments.json");
     const installMarker = path.join(dir, "npm-install-count.txt");
+    const pathMarker = path.join(dir, "path-headless-ran");
     const nodeBin = path.join(dir, "runtime", "bin");
     const npmBin = path.join(dir, "runtime", "lib", "node_modules", "npm", "bin");
     const forgedNpmBin = path.join(dir, "forged-npm", "bin");
@@ -306,6 +307,11 @@ print(json.dumps({
     await mkdir(npmBin, { recursive: true });
     await mkdir(forgedNpmBin, { recursive: true });
     await mkdir(emptyPath);
+    await writeFile(path.join(emptyPath, "headless"), `#!${process.execPath}
+require("node:fs").writeFileSync(${JSON.stringify(pathMarker)}, "ran");
+console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
+`, "utf8");
+    await chmod(path.join(emptyPath, "headless"), 0o755);
     await writeFile(node, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, "utf8");
     await chmod(node, 0o755);
     await writeFile(path.join(forgedNpmBin, "npm-cli.js"), "process.exit(99);\n", "utf8");
@@ -354,6 +360,7 @@ fs.writeFileSync("install.json", JSON.stringify({ args: process.argv.slice(2), e
     expect(invocation.args[0]).toBe("codex");
     expect(invocation.install.env.OPENAI_API_KEY).toBeUndefined();
     expect(invocation.executionKey).toBe("selected-key");
+    await expect(access(pathMarker)).rejects.toThrow();
     expect(path.relative(dir, invocation.cwd).startsWith(`..${path.sep}`)).toBe(true);
     expect(invocation.packageJson).toMatchObject({
       private: true,
