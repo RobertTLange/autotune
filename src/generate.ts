@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promi
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
+import { OUTPUT_HOLDER_HELPERS } from "./python-output-holders.js";
 import type { HeadlessOptions, Invocation, SearchSpace } from "./types.js";
 
 export interface SeedTrial {
@@ -13,6 +14,7 @@ export interface SeedTrial {
 
 const CENTAUR_RUNTIME_URL = new URL("../templates/autotune_centaur_runtime.py", import.meta.url);
 const CENTAUR_SUPPORT_URL = new URL("../templates/autotune_centaur_support.py", import.meta.url);
+const PROCESS_IO_URL = new URL("../templates/autotune_process_io.py", import.meta.url);
 const HEADLESS_RUNTIME_LOCK_URL = new URL("../resources/headless-runtime/package-lock.json", import.meta.url);
 
 export function renderOptunaRunner(input: {
@@ -76,6 +78,7 @@ from pathlib import Path
 
 import optuna
 from optuna.trial import TrialState
+${OUTPUT_HOLDER_HELPERS}
 ${input.searchSpace.optuna?.sampler === "centaur" ? `
 def _load_centaur_module(name):
     module_path = Path(__file__).resolve().with_name(name + ".py")
@@ -87,6 +90,7 @@ def _load_centaur_module(name):
     spec.loader.exec_module(module)
 
 
+_load_centaur_module("autotune_process_io")
 _load_centaur_module("autotune_centaur_support")
 _load_centaur_module("autotune_centaur_runtime")
 from autotune_centaur_runtime import CentaurSampler
@@ -299,18 +303,19 @@ def windows_system_root():
     return standard
 
 
-def join_output_threads(process, threads):
+def join_output_threads(process, threads, pipe_identities):
+    deadline = time.monotonic() + 1
     for thread in threads:
-        thread.join(timeout=1)
-    if not any(thread.is_alive() for thread in threads):
-        return
-    kill_process_tree(process)
-    if process.stdout:
-        process.stdout.close()
-    if process.stderr:
-        process.stderr.close()
-    for thread in threads:
-        thread.join(timeout=1)
+        thread.join(timeout=max(0, deadline - time.monotonic()))
+    if any(thread.is_alive() for thread in threads):
+        kill_process_tree(process)
+        terminate_output_holders(pipe_identities, process.pid)
+        deadline = time.monotonic() + 1
+        for thread in threads:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+    for stream, thread in zip((process.stdout, process.stderr), threads):
+        if stream and not thread.is_alive():
+            stream.close()
 
 
 def request_interrupt(signum, frame):
@@ -345,6 +350,7 @@ def run_trial_command(argv):
             errors="replace",
             start_new_session=hasattr(os, "setsid"),
         )
+        pipe_identities = output_pipe_identities(process)
         with ACTIVE_PROCESS_LOCK:
             ACTIVE_PROCESSES.add(process)
     finally:
@@ -372,7 +378,7 @@ def run_trial_command(argv):
         process.wait()
         raise
     finally:
-        join_output_threads(process, (stdout_thread, stderr_thread))
+        join_output_threads(process, (stdout_thread, stderr_thread), pipe_identities)
         with ACTIVE_PROCESS_LOCK:
             ACTIVE_PROCESSES.discard(process)
     return {
@@ -770,9 +776,11 @@ export async function writeOptunaRunner(input: {
     const outputDirectory = path.dirname(input.outputPath);
     const runtimePath = path.join(outputDirectory, "autotune_centaur_runtime.py");
     const supportPath = path.join(outputDirectory, "autotune_centaur_support.py");
+    const processIoPath = path.join(outputDirectory, "autotune_process_io.py");
     const headlessLockPath = path.join(outputDirectory, "autotune_headless_runtime.lock.json");
     await writeAtomicFile(runtimePath, await readFile(CENTAUR_RUNTIME_URL), 0o600);
     await writeAtomicFile(supportPath, await readFile(CENTAUR_SUPPORT_URL), 0o600);
+    await writeAtomicFile(processIoPath, await readFile(PROCESS_IO_URL), 0o600);
     await writeAtomicFile(headlessLockPath, await readFile(HEADLESS_RUNTIME_LOCK_URL), 0o600);
   }
 }

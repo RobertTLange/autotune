@@ -35,18 +35,32 @@ describe("Centaur generated runtime", () => {
   it("bounds Headless timeouts even when a grandchild inherits output pipes", async () => {
     const python = await centaurPython();
     if (!python) return;
-    const child = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)']); time.sleep(10)";
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-centaur-output-holder-"));
+    const marker = path.join(dir, "holder.pid");
+    const child = `import subprocess,sys,time; from pathlib import Path; holder=subprocess.Popen([sys.executable, '-c', 'import os,time; output=os.dup(1); os.close(1); os.close(2); time.sleep(10)'], start_new_session=True); Path(${JSON.stringify(marker)}).write_text(str(holder.pid)); time.sleep(10)`;
     const script = `import os
 import sys
+import time
 from pathlib import Path
 import autotune_centaur_support as support
 support.HEADLESS_TIMEOUT_SECONDS = 0.05
+started = time.monotonic()
 try:
     support.bounded_process([sys.executable, "-c", ${JSON.stringify(child)}], cwd=Path.cwd(), env=os.environ)
 except RuntimeError as error:
     assert "timed out" in str(error)
 else:
     raise AssertionError("expected timeout")
+assert time.monotonic() - started < 3.5
+holder_pid = int(Path(${JSON.stringify(marker)}).read_text())
+for _ in range(20):
+    try:
+        os.kill(holder_pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    raise AssertionError("detached output holder survived cleanup")
 `;
     await expect(runPython(python, ["-c", script], {
       PYTHONPATH: path.resolve("templates")

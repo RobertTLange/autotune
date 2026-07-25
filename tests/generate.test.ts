@@ -80,8 +80,19 @@ describe("renderOptunaRunner", () => {
 
     expect(code).toContain('taskkill = system_root / "System32" / "taskkill.exe"');
     expect(code).toContain('[str(taskkill), "/PID", str(process.pid), "/T", "/F"]');
-    expect(code).toContain("def join_output_threads(process, threads):");
-    expect(code).toContain("thread.join(timeout=1)");
+    expect(code).toContain("def join_output_threads(process, threads, pipe_identities):");
+    expect(code).toContain("deadline = time.monotonic() + 1");
+    expect(code).toContain("if stream and not thread.is_alive():");
+    expect(code).toContain("terminate_output_holders(pipe_identities, process.pid)");
+    const centaurCode = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace: centaurSearchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json",
+      headless: { agent: "codex" }
+    });
+    expect(centaurCode.indexOf('_load_centaur_module("autotune_process_io")'))
+      .toBeLessThan(centaurCode.indexOf('_load_centaur_module("autotune_centaur_support")'));
   });
 
   it("seeds stochastic Optuna samplers", () => {

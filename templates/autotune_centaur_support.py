@@ -11,6 +11,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import cmaes
 import numpy as np
 import optuna
+from autotune_process_io import _output_pipe_identities, _terminate_output_holders
 from optuna.distributions import (
     BaseDistribution,
     CategoricalDistribution,
@@ -423,6 +425,7 @@ def bounded_process(
         cwd=cwd,
         env=dict(env),
     )
+    pipe_identities = _output_pipe_identities(process)
     stdout = _TailCapture()
     stderr = _TailCapture()
     threads = [
@@ -438,19 +441,23 @@ def bounded_process(
         process.wait()
         raise RuntimeError("headless proposal timed out")
     finally:
-        for thread in threads:
-            thread.join(timeout=1)
+        _join_threads(threads)
         if any(thread.is_alive() for thread in threads):
             _terminate_process_tree(process)
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-            for thread in threads:
-                thread.join(timeout=1)
+            _terminate_output_holders(pipe_identities, process.pid)
+            _join_threads(threads)
+        for stream, thread in zip((process.stdout, process.stderr), threads):
+            if stream and not thread.is_alive():
+                stream.close()
     if returncode != 0:
         raise RuntimeError(f"headless proposal exited with status {returncode}")
     return stdout.value
+
+
+def _join_threads(threads: Sequence[threading.Thread]) -> None:
+    deadline = time.monotonic() + 1
+    for thread in threads:
+        thread.join(timeout=max(0, deadline - time.monotonic()))
 
 
 def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
