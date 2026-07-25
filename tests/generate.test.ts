@@ -69,6 +69,20 @@ describe("renderOptunaRunner", () => {
     expect(code).not.toContain("shell=True");
   });
 
+  it("renders bounded cross-platform trial cleanup", () => {
+    const code = renderOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
+      searchSpace,
+      outputPath: "/tmp/runner.py",
+      resultsPath: "/tmp/results.json"
+    });
+
+    expect(code).toContain('taskkill = system_root / "System32" / "taskkill.exe"');
+    expect(code).toContain('[str(taskkill), "/PID", str(process.pid), "/T", "/F"]');
+    expect(code).toContain("def join_output_threads(process, threads):");
+    expect(code).toContain("thread.join(timeout=1)");
+  });
+
   it("seeds stochastic Optuna samplers", () => {
     const code = renderOptunaRunner({
       invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },

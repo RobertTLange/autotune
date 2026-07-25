@@ -252,13 +252,62 @@ def drain_stream(stream, capture, parse_metrics=False, mirror=False):
 
 
 def kill_process_tree(process):
+    if os.name == "nt":
+        system_root = windows_system_root()
+        taskkill = system_root / "System32" / "taskkill.exe"
+        try:
+            completed = subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                env={"SystemRoot": str(system_root), "windir": str(system_root)},
+            )
+            if completed.returncode != 0 and process.poll() is None:
+                process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+        return
     try:
-        if hasattr(os, "killpg"):
-            os.killpg(process.pid, 9)
-        else:
-            process.kill()
+        os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def windows_system_root():
+    standard = Path("C:/Windows")
+    if (standard / "System32" / "taskkill.exe").is_file():
+        return standard
+    configured = os.environ.get("SystemRoot")
+    if configured:
+        candidate = Path(configured)
+        taskkill = candidate / "System32" / "taskkill.exe"
+        if (
+            candidate.is_absolute()
+            and re.fullmatch(r"[A-Za-z]:", candidate.drive)
+            and candidate.parent == Path(candidate.anchor)
+            and candidate.name.lower() in ("windows", "winnt")
+            and taskkill.is_file()
+        ):
+            return candidate.resolve()
+    return standard
+
+
+def join_output_threads(process, threads):
+    for thread in threads:
+        thread.join(timeout=1)
+    if not any(thread.is_alive() for thread in threads):
+        return
+    kill_process_tree(process)
+    if process.stdout:
+        process.stdout.close()
+    if process.stderr:
+        process.stderr.close()
+    for thread in threads:
+        thread.join(timeout=1)
 
 
 def request_interrupt(signum, frame):
@@ -300,8 +349,8 @@ def run_trial_command(argv):
             SPAWNING_PROCESS_COUNT -= 1
     if INTERRUPTED.is_set():
         kill_process_tree(process)
-    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True))
-    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True))
+    stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True), daemon=True)
+    stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True), daemon=True)
     stdout_thread.start()
     stderr_thread.start()
     timed_out = False
@@ -320,8 +369,7 @@ def run_trial_command(argv):
         process.wait()
         raise
     finally:
-        stdout_thread.join()
-        stderr_thread.join()
+        join_output_threads(process, (stdout_thread, stderr_thread))
         with ACTIVE_PROCESS_LOCK:
             ACTIVE_PROCESSES.discard(process)
     return {
