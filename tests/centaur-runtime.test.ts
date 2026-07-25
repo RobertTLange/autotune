@@ -331,7 +331,7 @@ console.log(JSON.stringify({ x: 0.25, y: 1.5, optimizer: "adam" }));
     expect(parsed.all_trials[0].params).toEqual({ x: 0.25, y: 1.5, optimizer: "adam" });
     const invocation = JSON.parse(await readFile(argumentsPath, "utf8"));
     expect(invocation.args).toEqual(expect.arrayContaining(["-y", FALLBACK_HEADLESS_PACKAGE, "codex"]));
-    expect(invocation.path.split(path.delimiter)).toContain(path.dirname(process.execPath));
+    expect(invocation.path.split(path.delimiter)).toContain(nodeBin);
   }, 20_000);
 
   it("resolves a relative configured Headless executable before changing directories", async () => {
