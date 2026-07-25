@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ensurePythonRuntime } from "../src/python-runtime.js";
@@ -34,7 +34,14 @@ describe("ensurePythonRuntime", () => {
 
     const first = await ensurePythonRuntime(options);
     const firstLog = await readLog(fixture.log);
+    const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+    const orphanEnvironment = path.join(runtimeDirectory, `env-${"3".repeat(32)}`);
+    await mkdir(orphanEnvironment);
     const second = await ensurePythonRuntime(options);
+    await expect(access(orphanEnvironment)).resolves.toBeUndefined();
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    await utimes(orphanEnvironment, old, old);
+    const third = await ensurePythonRuntime(options);
 
     expect(first).toMatchObject({
       pythonVersion: "3.12.1",
@@ -44,6 +51,8 @@ describe("ensurePythonRuntime", () => {
     });
     expect(first.python).toContain(fixture.cache);
     expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    await expect(access(orphanEnvironment)).rejects.toThrow();
     expect(firstLog.filter((args) => args[0] === "venv")).toHaveLength(1);
     expect(firstLog.find((args) => args[0] === "pip")).toEqual(
       expect.arrayContaining(["--require-hashes", "--requirements"])
@@ -97,13 +106,17 @@ describe("ensurePythonRuntime", () => {
       env: { ...process.env, PATH: fixture.path, FAKE_RUNTIME_LOG: fixture.log }
     };
     const first = await ensurePythonRuntime(options);
-    const runtimeDirectory = path.dirname(path.dirname(path.dirname(first.python)));
+    const abandonedEnvironment = path.dirname(path.dirname(first.python));
+    const runtimeDirectory = path.dirname(abandonedEnvironment);
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    await utimes(abandonedEnvironment, old, old);
     await writeFile(path.join(runtimeDirectory, "runtime.json"), "{truncated", "utf8");
 
     const recovered = await ensurePythonRuntime(options);
 
     expect(recovered).toMatchObject({ optunaVersion: "4.8.0", managed: true });
     expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(2);
+    await expect(access(abandonedEnvironment)).rejects.toThrow();
   });
 
   it.skipIf(process.platform === "win32")("rejects a cache writable by other users", async () => {

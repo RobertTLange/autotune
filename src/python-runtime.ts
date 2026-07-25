@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { isCommandInterruptedError, runCommand } from "./process.js";
 import {
   claimOwnsQueue,
+  cleanupAbandonedRuntimeEntries,
   createProvisioningClaim,
   ensureOwnedPrivateDirectory,
   releaseProvisioningClaim,
@@ -92,12 +93,17 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
   await validateWindowsCacheLocation(cacheRoot, callerEnv);
   const runtimeDir = path.join(cacheRoot, runtimeCacheKey(identity, requirementsDigest));
   await ensureOwnedPrivateDirectory(runtimeDir);
-  const cached = await readCachedRuntime(runtimeDir, identity.version, options.includeCmaes, toolEnv);
-  if (cached) {
-    return cached;
-  }
   const claimsDir = `${runtimeDir}.claims`;
   await ensureOwnedPrivateDirectory(claimsDir);
+  const cached = await readCachedRuntime(runtimeDir, identity.version, options.includeCmaes, toolEnv);
+  if (cached) {
+    await cleanupAbandonedRuntimeEntries({
+      runtimeDir,
+      claimsDir,
+      publishedPython: cached.python
+    });
+    return cached;
+  }
   let claim = await createProvisioningClaim(claimsDir);
 
   try {
@@ -123,11 +129,22 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
         toolEnv
       );
       if (winner) {
+        await cleanupAbandonedRuntimeEntries({
+          runtimeDir,
+          claimsDir,
+          activeToken: claim.token,
+          publishedPython: winner.python
+        });
         return winner;
       }
 
-      const environmentDir = path.join(runtimeDir, `env-${claim.token}`);
       await removeInvalidReadyFile(runtimeDir);
+      await cleanupAbandonedRuntimeEntries({
+        runtimeDir,
+        claimsDir,
+        activeToken: claim.token
+      });
+      const environmentDir = path.join(runtimeDir, `env-${claim.token}`);
       const python = managedPythonPath(environmentDir);
       try {
         await provisionRuntime({
@@ -150,6 +167,12 @@ export async function ensurePythonRuntime(options: PythonRuntimeOptions): Promis
         }
         const runtime = toRuntime(python, identity.version, versions, true);
         await writePrivateJsonAtomic(path.join(runtimeDir, READY_FILE), runtime, claim.token);
+        await cleanupAbandonedRuntimeEntries({
+          runtimeDir,
+          claimsDir,
+          activeToken: claim.token,
+          publishedPython: runtime.python
+        });
         return runtime;
       } catch (error) {
         await rm(environmentDir, { recursive: true, force: true });

@@ -3,6 +3,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  opendir,
   readFile,
   readdir,
   realpath,
@@ -11,6 +12,7 @@ import {
   utimes,
   writeFile
 } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -30,7 +32,12 @@ export interface ProvisioningClaim extends ProvisioningMarker {
 
 const CLAIM_HEARTBEAT_MS = 2_000;
 const CLAIM_EXPIRY_MS = 15_000;
+const ORPHAN_ENVIRONMENT_RETENTION_MS = 24 * 60 * 60 * 1000;
+const MAX_CLEANUP_ENTRIES_PER_PASS = 16;
 const OWNER_FILE = "owner.json";
+const CLAIM_NAME = /^[a-f0-9]{32}$/;
+const STAGING_NAME = /^\.([a-f0-9]{32})\.staging$/;
+const ENVIRONMENT_NAME = /^env-([a-f0-9]{32})$/;
 
 export async function ensureOwnedPrivateDirectory(directory: string): Promise<string> {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -131,6 +138,86 @@ export async function releaseProvisioningClaim(claim: ProvisioningClaim): Promis
   await rm(claim.directory, { recursive: true, force: true }).catch(() => undefined);
 }
 
+export async function cleanupAbandonedRuntimeEntries(input: {
+  runtimeDir: string;
+  claimsDir: string;
+  activeToken?: string;
+  publishedPython?: string;
+  now?: number;
+}): Promise<void> {
+  const now = input.now ?? Date.now();
+  const activeToken = input.activeToken && CLAIM_NAME.test(input.activeToken) ? input.activeToken : undefined;
+  let remaining = MAX_CLEANUP_ENTRIES_PER_PASS;
+
+  const claims = streamCandidateEntries(
+    input.claimsDir,
+    (entry) => CLAIM_NAME.test(entry.name) || STAGING_NAME.test(entry.name)
+  );
+  for await (const entry of claims) {
+    if (remaining === 0) break;
+    const claimToken = CLAIM_NAME.test(entry.name) ? entry.name : undefined;
+    const stagingToken = STAGING_NAME.exec(entry.name)?.[1];
+    if (!entry.isDirectory() || (!claimToken && !stagingToken)) continue;
+    if (claimToken === activeToken) continue;
+    const directory = path.join(input.claimsDir, entry.name);
+    try {
+      const metadata = await lstat(directory);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) continue;
+      const expired = now - metadata.mtimeMs > CLAIM_EXPIRY_MS;
+      if (claimToken) {
+        const marker = await readFile(path.join(directory, OWNER_FILE), "utf8")
+          .then(parseProvisioningMarker)
+          .catch(() => undefined);
+        const alive = marker
+          && marker.token === claimToken
+          && marker.hostname === os.hostname()
+          && processIsAlive(marker.pid);
+        const remotelyActive = marker
+          && marker.token === claimToken
+          && marker.hostname !== os.hostname();
+        if (!expired && (alive || remotelyActive)) {
+          continue;
+        }
+      }
+      if (expired && await removeRealDirectory(directory)) remaining -= 1;
+    } catch {
+      // Cleanup is best-effort; provisioning remains authoritative.
+    }
+  }
+
+  const publishedEnvironment = publishedEnvironmentName(input.runtimeDir, input.publishedPython);
+  const runtimeEntries = streamCandidateEntries(
+    input.runtimeDir,
+    (entry) => ENVIRONMENT_NAME.test(entry.name)
+  );
+  remaining = MAX_CLEANUP_ENTRIES_PER_PASS;
+  for await (const entry of runtimeEntries) {
+    if (remaining === 0) break;
+    const token = ENVIRONMENT_NAME.exec(entry.name)?.[1];
+    if (
+      !token
+      || !entry.isDirectory()
+      || token === activeToken
+      || entry.name === publishedEnvironment
+      || await claimIsActive(input.claimsDir, token, now)
+    ) continue;
+    const directory = path.join(input.runtimeDir, entry.name);
+    try {
+      const metadata = await lstat(directory);
+      if (
+        metadata.isDirectory()
+        && !metadata.isSymbolicLink()
+        && now - metadata.mtimeMs > ORPHAN_ENVIRONMENT_RETENTION_MS
+        && await removeRealDirectory(directory)
+      ) {
+        remaining -= 1;
+      }
+    } catch {
+      // Cleanup is best-effort; provisioning remains authoritative.
+    }
+  }
+}
+
 export async function writePrivateJsonAtomic(
   filePath: string,
   value: unknown,
@@ -180,7 +267,75 @@ async function refreshProvisioningClaim(claim: ProvisioningClaim): Promise<void>
 }
 
 function parseProvisioningMarker(source: string): ProvisioningMarker {
-  return JSON.parse(source.trim()) as ProvisioningMarker;
+  const value = JSON.parse(source.trim()) as Partial<ProvisioningMarker>;
+  if (
+    !Number.isInteger(value.pid)
+    || (value.pid ?? 0) < 1
+    || typeof value.hostname !== "string"
+    || !value.hostname
+    || typeof value.startedAt !== "number"
+    || !Number.isFinite(value.startedAt)
+    || typeof value.token !== "string"
+    || !CLAIM_NAME.test(value.token)
+  ) {
+    throw new Error("invalid provisioning claim marker");
+  }
+  return value as ProvisioningMarker;
+}
+
+function publishedEnvironmentName(runtimeDir: string, python: string | undefined): string | undefined {
+  if (!python || !path.isAbsolute(python)) return undefined;
+  const relative = path.relative(runtimeDir, python);
+  const [environmentName] = relative.split(path.sep);
+  const expectedSuffix = process.platform === "win32"
+    ? path.join("Scripts", "python.exe")
+    : path.join("bin", "python");
+  return ENVIRONMENT_NAME.test(environmentName ?? "")
+    && relative === path.join(environmentName as string, expectedSuffix)
+    ? environmentName
+    : undefined;
+}
+
+async function removeRealDirectory(directory: string): Promise<boolean> {
+  try {
+    const metadata = await lstat(directory);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false;
+    await rm(directory, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function claimIsActive(claimsDir: string, token: string, now: number): Promise<boolean> {
+  const directory = path.join(claimsDir, token);
+  try {
+    const [metadata, marker] = await Promise.all([
+      lstat(directory),
+      readFile(path.join(directory, OWNER_FILE), "utf8").then(parseProvisioningMarker)
+    ]);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink() || now - metadata.mtimeMs > CLAIM_EXPIRY_MS) {
+      return false;
+    }
+    return marker.token === token
+      && (marker.hostname !== os.hostname() || processIsAlive(marker.pid));
+  } catch {
+    return false;
+  }
+}
+
+async function* streamCandidateEntries(
+  directory: string,
+  isCandidate: (entry: Dirent) => boolean
+): AsyncGenerator<Dirent> {
+  try {
+    const handle = await opendir(directory);
+    for await (const entry of handle) {
+      if (isCandidate(entry)) yield entry;
+    }
+  } catch {
+    return;
+  }
 }
 
 function processIsAlive(pid: number): boolean {
