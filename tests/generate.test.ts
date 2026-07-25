@@ -123,6 +123,14 @@ describe("renderOptunaRunner", () => {
     await expect(runPython(["-c", script])).resolves.toBe("");
   });
 
+  it("imports the Headless timeout used by the Centaur runtime", async () => {
+    const runtime = await readFile("templates/autotune_centaur_runtime.py", "utf8");
+
+    expect(runtime).toMatch(
+      /from autotune_centaur_support import \(\s+HEADLESS_TIMEOUT_SECONDS,/
+    );
+  });
+
   it("seeds stochastic Optuna samplers", () => {
     const code = renderOptunaRunner({
       invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },

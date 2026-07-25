@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import optuna
 from autotune_centaur_support import (
+    HEADLESS_TIMEOUT_SECONDS,
     MAX_PROMPT_BYTES,
     acquire_study_lock,
     bounded_process,

@@ -79,10 +79,14 @@ import sys
 import time
 from pathlib import Path
 import autotune_centaur_support as support
-support.HEADLESS_TIMEOUT_SECONDS = 0.05
 started = time.monotonic()
 try:
-    support.bounded_process([sys.executable, "-c", ${JSON.stringify(child)}], cwd=Path.cwd(), env=os.environ)
+    support.bounded_process(
+        [sys.executable, "-c", ${JSON.stringify(child)}],
+        cwd=Path.cwd(),
+        env=os.environ,
+        timeout_seconds=0.05,
+    )
 except RuntimeError as error:
     assert "timed out" in str(error)
 else:
