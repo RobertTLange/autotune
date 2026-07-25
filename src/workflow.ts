@@ -67,7 +67,10 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     centaur: effectiveSampler === "centaur",
     skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
   });
-  writeStatus(`python3 ${prerequisites.python}`, "success");
+  writeStatus(
+    `python ${prerequisites.python}${prerequisites.managedPython ? " (managed control environment)" : ""}`,
+    "success"
+  );
   writeStatus(`optuna ${prerequisites.optuna}`, "success");
   if (prerequisites.cmaes) {
     writeStatus(`cmaes ${prerequisites.cmaes}`, "success");
@@ -151,7 +154,8 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
       studyName: studyNameForRound(studyName, round, refineRounds),
       seedTrials,
       round,
-      totalRounds: refineRounds
+      totalRounds: refineRounds,
+      controllerPython: prerequisites.pythonExecutable
     });
     remainingTrialTimeBudgetSeconds = remainingTrialTimeBudget(remainingTrialTimeBudgetSeconds, result);
     const manifest = buildRoundManifest({
@@ -305,6 +309,7 @@ async function runSearchRound(input: {
   seedTrials: SeedTrial[];
   round: number;
   totalRounds: number;
+  controllerPython: string;
 }): Promise<StudyResult> {
   const executionInvocation = needsModifiedCopy(input.searchSpace)
     ? await prepareModifiedInvocation({
@@ -334,6 +339,7 @@ async function runSearchRound(input: {
   const label = input.totalRounds > 0 ? `Round ${input.round + 1}/${input.totalRounds + 1}: ` : "";
   writeStatus(`${label}Running ${input.trials} Optuna trials...`);
   await runPythonRunner({
+    python: input.controllerPython,
     runnerPath,
     trials: input.trials,
     direction: input.searchSpace.direction,

@@ -1335,12 +1335,23 @@ if (args[0] === '--version') {
   console.log('Python 3.12.0');
   process.exit(0);
 }
-if (args[0] === '-c') {
-  console.log(args[1]?.includes('cmaes') ? '4.8.0\\n0.12.0' : '3.6.1');
+const codeIndex = args.indexOf('-c');
+const code = codeIndex >= 0 ? args[codeIndex + 1] || '' : '';
+if (code.includes('platform.machine')) {
+  console.log(JSON.stringify({ executable: process.argv[1], version: '3.12.0', implementation: 'cpython', platform: process.platform, arch: process.arch, macVersion: '14.0' }));
   process.exit(0);
 }
-const outputIndex = args.indexOf('--output');
-const output = outputIndex >= 0 ? args[outputIndex + 1] : '.autotune/results.json';
+if (code.includes('import cmaes')) {
+  console.log(JSON.stringify({ optuna: '4.8.0', cmaes: '0.12.0' }));
+  process.exit(0);
+}
+if (code.includes('import json, optuna')) {
+  console.log(JSON.stringify({ optuna: '4.8.0' }));
+  process.exit(0);
+}
+const runnerArgs = args[0] === '-I' || args[0] === '-E' ? args.slice(1) : args;
+const outputIndex = runnerArgs.indexOf('--output');
+const output = outputIndex >= 0 ? runnerArgs[outputIndex + 1] : '.autotune/results.json';
 const result = {
   study_name: 'train_autotune',
   direction: 'maximize',
@@ -1350,7 +1361,7 @@ const result = {
 };
 fs.mkdirSync(require('node:path').dirname(output), { recursive: true });
 fs.writeFileSync(output, JSON.stringify(result));
-fs.writeFileSync(output + '.argv.json', JSON.stringify(args));
+fs.writeFileSync(output + '.argv.json', JSON.stringify(runnerArgs));
 console.log(JSON.stringify(result));
 `,
     "utf8"
@@ -1369,16 +1380,27 @@ if (args[0] === '--version') {
   console.log('Python 3.12.0');
   process.exit(0);
 }
-if (args[0] === '-c') {
-  console.log(args[1]?.includes('cmaes') ? '4.8.0\\n0.12.0' : '3.6.1');
+const codeIndex = args.indexOf('-c');
+const code = codeIndex >= 0 ? args[codeIndex + 1] || '' : '';
+if (code.includes('platform.machine')) {
+  console.log(JSON.stringify({ executable: process.argv[1], version: '3.12.0', implementation: 'cpython', platform: process.platform, arch: process.arch, macVersion: '14.0' }));
   process.exit(0);
 }
-const outputIndex = args.indexOf('--output');
-const output = outputIndex >= 0 ? args[outputIndex + 1] : '.autotune/results.json';
+if (code.includes('import cmaes')) {
+  console.log(JSON.stringify({ optuna: '4.8.0', cmaes: '0.12.0' }));
+  process.exit(0);
+}
+if (code.includes('import json, optuna')) {
+  console.log(JSON.stringify({ optuna: '4.8.0' }));
+  process.exit(0);
+}
+const runnerArgs = args[0] === '-I' || args[0] === '-E' ? args.slice(1) : args;
+const outputIndex = runnerArgs.indexOf('--output');
+const output = outputIndex >= 0 ? runnerArgs[outputIndex + 1] : '.autotune/results.json';
 const result = ${JSON.stringify(result)};
 fs.mkdirSync(require('node:path').dirname(output), { recursive: true });
 fs.writeFileSync(output, JSON.stringify(result));
-fs.writeFileSync(output + '.argv.json', JSON.stringify(args));
+fs.writeFileSync(output + '.argv.json', JSON.stringify(runnerArgs));
 console.log(JSON.stringify(result));
 `,
     "utf8"

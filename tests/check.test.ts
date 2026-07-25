@@ -18,7 +18,7 @@ describe("checkPrerequisites", () => {
 
   it("checks python, optuna, headless, and runtime from PATH without shell lookup", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-"));
-    await writeExecutable(path.join(dir, "python3"), "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else echo '3.6.1'; fi\n");
+    await writeCompatiblePython(path.join(dir, "python3"));
     await writeExecutable(path.join(dir, "headless"), "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'\n");
     process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
     process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
@@ -28,12 +28,12 @@ describe("checkPrerequisites", () => {
         invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
         agent: "claude"
       })
-    ).resolves.toMatchObject({ python: "3.12.1", optuna: "3.6.1" });
+    ).resolves.toMatchObject({ python: "3.12.1", optuna: "4.8.0" });
   });
 
   it("reports missing script runtimes", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-missing-"));
-    await writeExecutable(path.join(dir, "python3"), "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else echo '3.6.1'; fi\n");
+    await writeCompatiblePython(path.join(dir, "python3"));
     process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
 
     await expect(
@@ -47,10 +47,7 @@ describe("checkPrerequisites", () => {
 
   it("checks supported Optuna and cmaes versions for Centaur", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-"));
-    await writeExecutable(
-      path.join(dir, "python3"),
-      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
-    );
+    await writeCompatiblePython(path.join(dir, "python3"));
     await writeExecutable(
       path.join(dir, "headless"),
       "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'; echo '| codex | ✗ | - | - | model | - |'\n"
@@ -69,10 +66,7 @@ describe("checkPrerequisites", () => {
 
   it("requires an installed headless executable for Centaur", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
-    await writeExecutable(
-      path.join(dir, "python3"),
-      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
-    );
+    await writeCompatiblePython(path.join(dir, "python3"));
     process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
     delete process.env.AUTOTUNE_HEADLESS_BIN;
 
@@ -85,10 +79,7 @@ describe("checkPrerequisites", () => {
 
   it("rejects unavailable Centaur proposal agents", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-agent-"));
-    await writeExecutable(
-      path.join(dir, "python3"),
-      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.12.0\\n'; fi\n"
-    );
+    await writeCompatiblePython(path.join(dir, "python3"));
     await writeExecutable(
       path.join(dir, "headless"),
       "echo '| claude | ✓ | oauth | 2.1.0 | model | - |'; echo '| codex | ✗ | - | - | model | - |'\n"
@@ -103,44 +94,24 @@ describe("checkPrerequisites", () => {
     })).rejects.toThrow(/Centaur proposal agent.*codex.*not available/i);
   });
 
-  it("rejects unsupported Optuna versions for Centaur", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-version-"));
-    await writeExecutable(
-      path.join(dir, "python3"),
-      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.7.0\\n0.12.0\\n'; fi\n"
-    );
-    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
-    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
-    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
-
-    await expect(
-      checkPrerequisites({
-        invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
-        agent: "claude",
-        centaur: true
-      })
-    ).rejects.toThrow(/Optuna >= 4\.8\.0 and < 5/i);
-  });
-
-  it("rejects unsupported cmaes versions for Centaur", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-cmaes-version-"));
-    await writeExecutable(
-      path.join(dir, "python3"),
-      "if [ \"$1\" = \"--version\" ]; then echo 'Python 3.12.1'; else printf '4.8.0\\n0.11.1\\n'; fi\n"
-    );
-    await writeExecutable(path.join(dir, "headless"), "echo 'claude ok'\n");
-    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ""}`;
-    process.env.AUTOTUNE_HEADLESS_BIN = path.join(dir, "headless");
-
-    await expect(
-      checkPrerequisites({
-        invocation: { language: "python", command: ["python3"], script: "/tmp/train.py" },
-        agent: "claude",
-        centaur: true
-      })
-    ).rejects.toThrow(/cmaes >= 0\.12/i);
-  });
 });
+
+async function writeCompatiblePython(filePath: string): Promise<void> {
+  await writeExecutable(filePath, [
+    "if [[ \"$1\" == \"--version\" ]]; then",
+    "  echo 'Python 3.12.1'",
+    "elif [[ \"$*\" == *\"platform.machine\"* ]]; then",
+    "  echo '{\"executable\":\"'\"$0\"'\",\"version\":\"3.12.1\",\"implementation\":\"cpython\",\"platform\":\"linux\",\"arch\":\"x86_64\"}'",
+    "elif [[ \"$*\" == *\"import cmaes\"* ]]; then",
+    "  echo '{\"optuna\":\"4.8.0\",\"cmaes\":\"0.12.0\"}'",
+    "elif [[ \"$*\" == *\"import json, optuna\"* ]]; then",
+    "  echo '{\"optuna\":\"4.8.0\"}'",
+    "else",
+    "  exit 1",
+    "fi",
+    ""
+  ].join("\n"));
+}
 
 async function writeExecutable(filePath: string, body: string): Promise<void> {
   await writeFile(filePath, `#!/usr/bin/env bash\n${body}`, "utf8");

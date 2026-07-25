@@ -104,7 +104,7 @@ setTimeout(() => console.log(JSON.stringify(${JSON.stringify(proposal)})), ${del
 }
 
 export function runnerArgs(runner: string, results: string, studyName: string, trials: number): string[] {
-  return [runner, "--trials", String(trials), "--direction", "maximize", "--sampler", "centaur", "--pruner", "none", "--n-jobs", "1", "--study-name", studyName, "--output", results];
+  return ["-I", runner, "--trials", String(trials), "--direction", "maximize", "--sampler", "centaur", "--pruner", "none", "--n-jobs", "1", "--study-name", studyName, "--output", results];
 }
 
 export function runPython(

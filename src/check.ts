@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { runCommand } from "./process.js";
 import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
+import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
 import type { Invocation } from "./types.js";
 
 export interface PrerequisiteReport {
@@ -11,6 +12,8 @@ export interface PrerequisiteReport {
   cmaes?: string;
   headless: string;
   runtime: string;
+  managedPython: boolean;
+  pythonExecutable: string;
 }
 
 export interface DoctorCheck {
@@ -25,16 +28,22 @@ export async function checkPrerequisites(input: {
   centaur?: boolean;
   skipHeadless?: boolean;
 }): Promise<PrerequisiteReport> {
-  const python = await checkPython();
-  const centaurPackages = input.centaur ? await checkCentaurPackages() : undefined;
-  const optuna = centaurPackages?.optuna ?? await checkOptuna();
+  const pythonRuntime = await ensurePythonRuntime({ includeCmaes: true });
   const headless = input.skipHeadless
     ? "skipped"
     : input.centaur
       ? await checkCentaurHeadless(input.agent)
       : await checkHeadless(input.agent);
   const runtime = await checkRuntime(input.invocation);
-  return { python, optuna, cmaes: centaurPackages?.cmaes, headless, runtime };
+  return {
+    python: pythonRuntime.pythonVersion,
+    optuna: pythonRuntime.optunaVersion,
+    ...(pythonRuntime.cmaesVersion ? { cmaes: pythonRuntime.cmaesVersion } : {}),
+    headless,
+    runtime,
+    managedPython: pythonRuntime.managed,
+    pythonExecutable: pythonRuntime.python
+  };
 }
 
 export async function checkDoctorPrerequisites(input: {
@@ -66,52 +75,11 @@ async function runDoctorCheck(name: string, check: () => Promise<string>): Promi
 }
 
 export async function checkPython(): Promise<string> {
-  const { stdout } = await runCommand("python3", ["--version"]);
-  const version = stdout.trim().replace(/^Python\s+/, "");
-  const [major = "0", minor = "0"] = version.split(".");
-  if (Number(major) < 3 || (Number(major) === 3 && Number(minor) < 9)) {
-    throw new Error(`python3 >= 3.9 required, found ${version}`);
-  }
-  return version;
+  return (await inspectPythonInterpreter()).pythonVersion;
 }
 
 export async function checkOptuna(): Promise<string> {
-  try {
-    const { stdout } = await runCommand("python3", ["-c", "import optuna; print(optuna.__version__)"]);
-    return stdout.trim();
-  } catch (error) {
-    throw new Error(`Optuna is required: python3 -m pip install optuna (${String(error)})`);
-  }
-}
-
-async function checkCentaurPackages(): Promise<{ optuna: string; cmaes: string }> {
-  let stdout: string;
-  try {
-    ({ stdout } = await runCommand("python3", [
-      "-c",
-      "import cmaes, optuna; print(optuna.__version__); print(cmaes.__version__)"
-    ]));
-  } catch (error) {
-    throw new Error(`Centaur requires Optuna and cmaes: python3 -m pip install 'optuna>=4.8,<5' 'cmaes>=0.12' (${String(error)})`);
-  }
-  const [optuna = "", cmaes = ""] = stdout.trim().split(/\r?\n/);
-  if (!isSupportedCentaurOptuna(optuna)) {
-    throw new Error(`Centaur requires Optuna >= 4.8.0 and < 5, found ${optuna || "unknown"}`);
-  }
-  if (!isAtLeastVersion(cmaes, 0, 12)) {
-    throw new Error(`Centaur requires cmaes >= 0.12, found ${cmaes || "unknown"}`);
-  }
-  return { optuna, cmaes };
-}
-
-function isSupportedCentaurOptuna(version: string): boolean {
-  const [major, minor] = version.split(".").map(Number);
-  return major === 4 && Number.isFinite(minor) && minor >= 8;
-}
-
-function isAtLeastVersion(version: string, minimumMajor: number, minimumMinor: number): boolean {
-  const [major, minor] = version.split(".").map(Number);
-  return Number.isFinite(major) && Number.isFinite(minor) && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
+  return (await ensurePythonRuntime({ includeCmaes: true })).optunaVersion;
 }
 
 export async function checkHeadless(agent: string): Promise<string> {

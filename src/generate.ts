@@ -57,10 +57,12 @@ export function renderOptunaRunner(input: {
   return `#!/usr/bin/env python3
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -70,15 +72,34 @@ from pathlib import Path
 
 import optuna
 from optuna.trial import TrialState
-${input.searchSpace.optuna?.sampler === "centaur" ? "from autotune_centaur_runtime import CentaurSampler" : ""}
+${input.searchSpace.optuna?.sampler === "centaur" ? `
+def _load_centaur_module(name):
+    module_path = Path(__file__).resolve().with_name(name + ".py")
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("Unable to load " + name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
+
+_load_centaur_module("autotune_centaur_support")
+_load_centaur_module("autotune_centaur_runtime")
+from autotune_centaur_runtime import CentaurSampler
+` : ""}
 
 CONFIG = json.loads(${JSON.stringify(JSON.stringify(payload))})
+TARGET_PYTHON_ENV = json.loads(os.environ.pop("AUTOTUNE_TARGET_PYTHON_ENV", "{}"))
 CURRENT_TRIAL_TARGET = 0
 BASELINE_FINISHED_COUNT = 0
 SEED_TRIAL_COUNT = 0
 STARTED_TRIAL_COUNT = 0
 PROGRESS_HEADER_PRINTED = False
 PROGRESS_LOCK = threading.Lock()
+ACTIVE_PROCESSES = set()
+ACTIVE_PROCESS_LOCK = threading.Lock()
+INTERRUPTED = threading.Event()
+SPAWNING_PROCESS_COUNT = 0
 OPTIMIZATION_DIRECTION = CONFIG.get("direction", "maximize")
 ANSI_PATTERN = re.compile(r"\\033\\[[0-9;]*m")
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -238,18 +259,45 @@ def kill_process_tree(process):
         pass
 
 
+def request_interrupt(signum, frame):
+    INTERRUPTED.set()
+    for process in tuple(ACTIVE_PROCESSES):
+        kill_process_tree(process)
+    if SPAWNING_PROCESS_COUNT == 0:
+        raise KeyboardInterrupt
+
+
+def terminate_active_trials():
+    with ACTIVE_PROCESS_LOCK:
+        processes = list(ACTIVE_PROCESSES)
+    for process in processes:
+        kill_process_tree(process)
+
+
 def run_trial_command(argv):
+    global SPAWNING_PROCESS_COUNT
     max_output_bytes = CONFIG.get("max_output_bytes", 65536)
     stdout_capture = OutputCapture(max_output_bytes)
     stderr_capture = OutputCapture(max_output_bytes)
-    process = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        start_new_session=hasattr(os, "setsid"),
-    )
+    with ACTIVE_PROCESS_LOCK:
+        SPAWNING_PROCESS_COUNT += 1
+    try:
+        process = subprocess.Popen(
+            argv,
+            env={**os.environ, **TARGET_PYTHON_ENV},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            start_new_session=hasattr(os, "setsid"),
+        )
+        with ACTIVE_PROCESS_LOCK:
+            ACTIVE_PROCESSES.add(process)
+    finally:
+        with ACTIVE_PROCESS_LOCK:
+            SPAWNING_PROCESS_COUNT -= 1
+    if INTERRUPTED.is_set():
+        kill_process_tree(process)
     stdout_thread = threading.Thread(target=drain_stream, args=(process.stdout, stdout_capture, True, True))
     stderr_thread = threading.Thread(target=drain_stream, args=(process.stderr, stderr_capture, False, True))
     stdout_thread.start()
@@ -258,14 +306,22 @@ def run_trial_command(argv):
     error = None
     try:
         returncode = process.wait(timeout=CONFIG["timeout"])
+        if INTERRUPTED.is_set():
+            raise KeyboardInterrupt
     except subprocess.TimeoutExpired:
         timed_out = True
         error = f"Trial command timed out after {CONFIG['timeout']}s"
         kill_process_tree(process)
         returncode = process.wait()
+    except BaseException:
+        kill_process_tree(process)
+        process.wait()
+        raise
     finally:
         stdout_thread.join()
         stderr_thread.join()
+        with ACTIVE_PROCESS_LOCK:
+            ACTIVE_PROCESSES.discard(process)
     return {
         "returncode": returncode,
         "stdout": stdout_capture.tail,
@@ -575,6 +631,8 @@ def time_budget_exhausted(study):
 
 
 def main():
+    signal.signal(signal.SIGINT, request_interrupt)
+    signal.signal(signal.SIGTERM, request_interrupt)
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, required=True)
     parser.add_argument("--direction", choices=["maximize", "minimize"], required=True)
@@ -612,8 +670,13 @@ def main():
         if time_budget_exhausted(study):
             study.stop()
 
-    if not time_budget_exhausted(study):
-        study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+    try:
+        if not time_budget_exhausted(study):
+            study.optimize(objective, n_trials=args.trials, n_jobs=args.n_jobs, callbacks=[on_trial_complete])
+    finally:
+        terminate_active_trials()
+    if INTERRUPTED.is_set():
+        raise KeyboardInterrupt
     result = write_results(study, args.direction, output_path)
     print(json.dumps(result))
     if result["best_trial"] is None:

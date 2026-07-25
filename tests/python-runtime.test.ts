@@ -139,6 +139,50 @@ describe("ensurePythonRuntime", () => {
     expect(probes).not.toHaveLength(0);
     expect(probes.every((args) => args.includes("-I"))).toBe(true);
   });
+
+  it("falls back to another Python command when the default is unsupported", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const fallbackPython = path.join(fixture.bin, "python");
+    await writeExecutable(fixture.python, fakeUnsupportedPythonSource());
+    await writeExecutable(fallbackPython, fakePythonSource());
+
+    const runtime = await ensurePythonRuntime({
+      includeCmaes: false,
+      cacheDir: fixture.cache,
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        FAKE_SYSTEM_OPTUNA: "1",
+        FAKE_RUNTIME_LOG: fixture.log
+      }
+    });
+
+    expect(await realpath(runtime.python)).toBe(await realpath(fallbackPython));
+  });
+
+  it("reuses a compatible fallback before provisioning from the default", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const fallbackPython = path.join(fixture.bin, "python");
+    await writeExecutable(
+      fixture.python,
+      fakePythonSource().replace('process.env.FAKE_SYSTEM_OPTUNA === "1"', "false")
+    );
+    await writeExecutable(fallbackPython, fakePythonSource());
+
+    const runtime = await ensurePythonRuntime({
+      includeCmaes: false,
+      cacheDir: fixture.cache,
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        FAKE_SYSTEM_OPTUNA: "1",
+        FAKE_RUNTIME_LOG: fixture.log
+      }
+    });
+
+    expect(await realpath(runtime.python)).toBe(await realpath(fallbackPython));
+    expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(0);
+  });
 });
 
 async function createFixture(options: { withUv: boolean }): Promise<{
@@ -192,11 +236,24 @@ if (moduleIndex >= 0 && args[moduleIndex + 1] === "venv") {
 const codeIndex = args.indexOf("-c");
 const code = codeIndex >= 0 ? args[codeIndex + 1] || "" : "";
 if (codeIndex >= 0 && code.includes("platform.machine")) {
-  console.log(JSON.stringify({ executable, version: "3.12.1", implementation: "cpython", platform: process.platform, arch: process.arch }));
+  console.log(JSON.stringify({ executable, version: "3.12.1", implementation: "cpython", platform: process.platform, arch: process.arch, macVersion: "14.0" }));
   process.exit(0);
 }
+
 if (codeIndex >= 0 && code.includes("optuna") && process.env.FAKE_SYSTEM_OPTUNA === "1") {
   console.log(JSON.stringify({ optuna: "4.8.0" }));
+  process.exit(0);
+}
+process.exit(1);
+`;
+}
+
+function fakeUnsupportedPythonSource(): string {
+  return `#!${process.execPath}
+import { fileURLToPath } from "node:url";
+const executable = fileURLToPath(import.meta.url);
+if (process.argv.includes("-c")) {
+  console.log(JSON.stringify({ executable, version: "3.8.0", implementation: "cpython", platform: process.platform, arch: process.arch, macVersion: "14.0" }));
   process.exit(0);
 }
 process.exit(1);

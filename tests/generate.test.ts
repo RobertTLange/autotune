@@ -35,6 +35,9 @@ describe("renderOptunaRunner", () => {
       resultsPath: "/tmp/results.json"
     });
     expect(code).toContain("subprocess.Popen(");
+    expect(code).toContain("env={**os.environ, **TARGET_PYTHON_ENV}");
+    expect(code).toContain("except BaseException:");
+    expect(code).toContain("signal.signal(signal.SIGTERM, request_interrupt)");
     expect(code).toContain("class OutputCapture");
     expect(code).toContain("self.pending = self.pending[-self.max_chars:]");
     expect(code).toContain("metric_error");
@@ -192,6 +195,7 @@ describe("renderOptunaRunner", () => {
     });
 
     expect(code).toContain("from autotune_centaur_runtime import CentaurSampler");
+    expect(code).toContain("importlib.util.spec_from_file_location(name, module_path)");
     expect(code).toContain('if name == "centaur":');
     expect(code).toContain("return CentaurSampler(");
     expect(code).toContain('work_dir=Path(__file__).resolve().parent');
@@ -337,6 +341,44 @@ describe("renderOptunaRunner", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")("terminates active trials when the runner is stopped", async () => {
+    if (!(await pythonHasOptuna())) {
+      return;
+    }
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-signal-runner-"));
+    const train = path.join(dir, "train.py");
+    const runner = path.join(dir, "train_optuna.py");
+    const marker = path.join(dir, "trial.pid");
+    await writeFile(
+      train,
+      `import os,time\nfrom pathlib import Path\nPath(${JSON.stringify(marker)}).write_text(str(os.getpid()))\ntime.sleep(60)\nprint('autotune_metric=1')\n`,
+      "utf8"
+    );
+    await writeOptunaRunner({
+      invocation: { language: "python", command: ["python3"], script: train },
+      searchSpace,
+      outputPath: runner,
+      resultsPath: path.join(dir, "results.json")
+    });
+    const controller = spawn("python3", [
+      "-I", runner, "--trials", "1", "--direction", "minimize", "--sampler", "random",
+      "--pruner", "none", "--n-jobs", "1"
+    ], { stdio: "ignore" });
+    let trialPid: number | undefined;
+    try {
+      trialPid = Number(await waitForFileText(marker));
+      controller.kill("SIGTERM");
+      await new Promise<void>((resolve) => controller.once("close", () => resolve()));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(processIsAlive(trialPid)).toBe(false);
+    } finally {
+      controller.kill("SIGKILL");
+      if (trialPid && processIsAlive(trialPid)) {
+        process.kill(-trialPid, "SIGKILL");
+      }
+    }
+  }, 15_000);
+
   it("writes an executable runner file", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-generate-"));
     const runner = path.join(dir, "train_optuna.py");
@@ -418,4 +460,24 @@ function runPython(args: string[]): Promise<string> {
       reject(new Error(`python3 ${args.join(" ")} failed with ${code}: ${stderr || stdout}`));
     });
   });
+}
+
+async function waitForFileText(filePath: string): Promise<string> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return await readFile(filePath, "utf8");
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error(`timed out waiting for ${filePath}`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
