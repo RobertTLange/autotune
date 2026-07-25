@@ -195,6 +195,12 @@ describe("CLI option normalization", () => {
     );
   });
 
+  it("exposes model selection on doctor", () => {
+    const doctorCommand = createProgram().commands.find((command) => command.name() === "doctor");
+
+    expect(doctorCommand?.options.map((option) => option.long)).toContain("--model");
+  });
+
   it("combines guidance file and inline guidance for run options", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-guidance-cli-"));
     const guidanceFile = path.join(dir, "guidance.txt");

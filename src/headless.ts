@@ -2,6 +2,7 @@ import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
 import { isCommandInterruptedError, runCommand } from "./process.js";
 import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
+import { npxHeadlessEnvironment } from "./headless-environment.js";
 
 const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
 const HEADLESS_MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -53,7 +54,12 @@ export async function runHeadless(args: string[], options: { cwd: string; bin?: 
     const installed = await findExecutableOnPath("headless");
     if (!installed || isWindowsBatchShim(installed)) {
       const npx = await resolveNpxCommand();
-      return spawnCapture(npx.command, [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, ...args], options.cwd);
+      return spawnCapture(
+        npx.command,
+        [...npx.args, "-y", FALLBACK_HEADLESS_PACKAGE, ...args],
+        options.cwd,
+        npxHeadlessEnvironment({ agent: args[0] ?? "", model: optionValue(args, "--model") })
+      );
     }
     return spawnCapture(installed, args, options.cwd);
   }
@@ -65,10 +71,11 @@ export async function runHeadless(args: string[], options: { cwd: string; bin?: 
   }
 }
 
-async function spawnCapture(bin: string, args: string[], cwd: string): Promise<string> {
+async function spawnCapture(bin: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
   try {
     const { stdout, stderr } = await runCommand(bin, args, {
       cwd,
+      env,
       timeoutMs: HEADLESS_TIMEOUT_MS,
       maxOutputBytes: HEADLESS_MAX_OUTPUT_BYTES
     });
@@ -79,6 +86,11 @@ async function spawnCapture(bin: string, args: string[], cwd: string): Promise<s
     }
     throw new Error(`headless failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function optionValue(args: string[], option: string): string | undefined {
+  const index = args.indexOf(option);
+  return index >= 0 ? args[index + 1] : undefined;
 }
 
 function isMissingExecutable(error: unknown): boolean {

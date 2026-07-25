@@ -1,12 +1,17 @@
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkPrerequisites } from "../src/check.js";
+import { checkHeadless, checkPrerequisites } from "../src/check.js";
 
 describe("checkPrerequisites", () => {
   const originalPath = process.env.PATH;
   const originalHeadless = process.env.AUTOTUNE_HEADLESS_BIN;
   const originalNpmExecPath = process.env.npm_execpath;
+  const originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
+  const originalAwsSecret = process.env.AWS_SECRET_ACCESS_KEY;
+  const originalExplicitEnvironment = process.env.AUTOTUNE_HEADLESS_ENV;
+  const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+  const originalVertex = process.env.CLAUDE_CODE_USE_VERTEX;
 
   afterEach(() => {
     process.env.PATH = originalPath;
@@ -20,6 +25,16 @@ describe("checkPrerequisites", () => {
     } else {
       process.env.npm_execpath = originalNpmExecPath;
     }
+    if (originalAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalAnthropicKey;
+    if (originalAwsSecret === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
+    else process.env.AWS_SECRET_ACCESS_KEY = originalAwsSecret;
+    if (originalExplicitEnvironment === undefined) delete process.env.AUTOTUNE_HEADLESS_ENV;
+    else process.env.AUTOTUNE_HEADLESS_ENV = originalExplicitEnvironment;
+    if (originalBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = originalBedrock;
+    if (originalVertex === undefined) delete process.env.CLAUDE_CODE_USE_VERTEX;
+    else process.env.CLAUDE_CODE_USE_VERTEX = originalVertex;
   });
 
   it("checks python, optuna, headless, and runtime from PATH without shell lookup", async () => {
@@ -74,12 +89,21 @@ describe("checkPrerequisites", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-centaur-headless-"));
     await writeCompatiblePython(path.join(dir, "python3"));
     const npmBin = path.join(dir, "npm", "bin");
+    const environmentPath = path.join(dir, "npx-environment.json");
     const npxCli = path.join(npmBin, "npx-cli.js");
     await mkdir(npmBin, { recursive: true });
-    await writeFile(npxCli, "console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');\n", "utf8");
+    await writeFile(npxCli, `
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(environmentPath)}, JSON.stringify(process.env));
+console.log('| claude | ✓ | oauth | 2.1.0 | model | - |');
+`, "utf8");
     await chmod(npxCli, 0o755);
     process.env.npm_execpath = path.join(npmBin, "npm-cli.js");
     process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    process.env.ANTHROPIC_API_KEY = "selected-key";
+    process.env.AWS_SECRET_ACCESS_KEY = "unrelated-aws-secret";
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
     delete process.env.AUTOTUNE_HEADLESS_BIN;
 
     await expect(checkPrerequisites({
@@ -87,6 +111,28 @@ describe("checkPrerequisites", () => {
       agent: "claude",
       centaur: true
     })).resolves.toMatchObject({ headless: expect.stringContaining("npx") });
+    const environment = JSON.parse(await readFile(environmentPath, "utf8"));
+    expect(environment.ANTHROPIC_API_KEY).toBe("selected-key");
+    expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it("fails before npx when a multiprovider agent has no provider selection", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-check-provider-"));
+    const npmBin = path.join(dir, "npm", "bin");
+    const marker = path.join(dir, "npx-ran");
+    await mkdir(npmBin, { recursive: true });
+    const npxCli = path.join(npmBin, "npx-cli.js");
+    await writeFile(npxCli, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");`, "utf8");
+    await chmod(npxCli, 0o755);
+    process.env.npm_execpath = path.join(npmBin, "npm-cli.js");
+    process.env.PATH = `${dir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+    delete process.env.AUTOTUNE_HEADLESS_BIN;
+    delete process.env.AUTOTUNE_HEADLESS_ENV;
+
+    await expect(checkHeadless("opencode")).rejects.toThrow(/provider-qualified model or AUTOTUNE_HEADLESS_ENV/i);
+    await expect(access(marker)).rejects.toThrow();
+    await expect(checkHeadless("opencode", "openai/gpt-5")).resolves.toContain("npx -y");
+    await expect(access(marker)).resolves.toBeUndefined();
   });
 
   it("rejects an empty explicit Headless override", async () => {

@@ -59,6 +59,8 @@ else:
     if (!python) return;
     const script = `import json
 import os
+import sys
+from pathlib import Path
 from autotune_centaur_support import headless_environment, npm_environment
 
 def capture(agent, model):
@@ -78,6 +80,36 @@ def capture_pi(model, provider):
         else:
             os.environ["PI_CODING_AGENT_PROVIDER"] = previous
 
+def capture_flags(agent, model, flags):
+    keys = ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "GOOGLE_GENAI_USE_VERTEXAI"]
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ.pop(key, None)
+    os.environ.update(flags)
+    try:
+        return capture(agent, model)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+def capture_explicit(variable, value):
+    keys = ["AUTOTUNE_HEADLESS_ENV", "AUTOTUNE_CENTAUR_HEADLESS_ENV"]
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ.pop(key, None)
+    os.environ[variable] = value
+    try:
+        return capture("opencode", None)
+    finally:
+        for key, previous_value in previous.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
+
 print(json.dumps({
     "pi": capture_pi("gpt-5", "openrouter"),
     "pi_aws": capture_pi("gpt-5", "aws"),
@@ -90,13 +122,25 @@ print(json.dumps({
     "azure_pi": capture("pi", "azure-openai-responses/gpt-5"),
     "azure_custom": capture("opencode", "azure-openai-responses/gpt-5"),
     "config_only": capture("opencode", None),
-    "npm": npm_environment({"PATH": "safe"}),
+    "claude": capture_flags("claude", None, {}),
+    "claude_aws": capture_flags("claude", None, {"CLAUDE_CODE_USE_BEDROCK": "1"}),
+    "claude_vertex": capture_flags("claude", None, {"CLAUDE_CODE_USE_VERTEX": "1"}),
+    "gemini": capture_flags("gemini", None, {}),
+    "gemini_vertex": capture_flags("gemini", None, {"GOOGLE_GENAI_USE_VERTEXAI": "true"}),
+    "explicit": capture_explicit("AUTOTUNE_HEADLESS_ENV", "CUSTOM_PROVIDER_TOKEN"),
+    "legacy_explicit": capture_explicit("AUTOTUNE_CENTAUR_HEADLESS_ENV", "CUSTOM_PROVIDER_TOKEN"),
+    "injection": capture_explicit("AUTOTUNE_HEADLESS_ENV", "NODE_OPTIONS"),
+    "npm": npm_environment({"PATH": "relative" + os.pathsep + str(Path(sys.executable).parent)}, sys.executable),
 }))`;
 
     const output = await runPython(python, ["-c", script], {
       PYTHONPATH: path.resolve("templates"),
       PI_CODING_AGENT_PROVIDER: "openrouter",
+      CLAUDE_CONFIG_DIR: "/config/claude",
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Gateway-Key: secret",
       GEMINI_API_KEY: "gemini-secret",
+      GOOGLE_API_KEY: "google-secret",
       GOOGLE_APPLICATION_CREDENTIALS: "/credentials/vertex.json",
       GOOGLE_CLOUD_PROJECT: "vertex-project",
       AZURE_OPENAI_API_KEY: "azure-secret",
@@ -104,10 +148,15 @@ print(json.dumps({
       AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-5=production",
       AZURE_RESOURCE_NAME: "opencode-resource",
       AWS_ACCESS_KEY_ID: "must-not-reach-custom-provider",
+      AWS_CONFIG_FILE: "/config/aws",
+      AWS_SHARED_CREDENTIALS_FILE: "/config/aws-credentials",
       OPENAI_API_KEY: "openai-secret",
       OPENROUTER_API_KEY: "openrouter-secret",
+      CUSTOM_PROVIDER_TOKEN: "custom-secret",
+      XDG_DATA_HOME: "/data/xdg",
       HTTPS_PROXY: "https://proxy.example",
-      NPM_CONFIG_REGISTRY: "https://registry.example"
+      NPM_CONFIG_REGISTRY: "https://registry.example",
+      npm_config_userconfig: "/config/npmrc"
     });
     const environments = JSON.parse(output);
 
@@ -117,6 +166,7 @@ print(json.dumps({
     expect(environments.alias.OPENAI_API_KEY).toBe("openai-secret");
     expect(environments.alias.OPENROUTER_API_KEY).toBeUndefined();
     expect(environments.custom.OPENAI_API_KEY).toBeUndefined();
+    expect(environments.custom.XDG_DATA_HOME).toBe("/data/xdg");
     expect(environments.aws_custom.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(environments.google.GEMINI_API_KEY).toBe("gemini-secret");
     expect(environments.google.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
@@ -129,11 +179,36 @@ print(json.dumps({
     expect(environments.azure_pi.AZURE_OPENAI_API_KEY).toBe("azure-secret");
     expect(environments.azure_custom.AZURE_OPENAI_API_KEY).toBeUndefined();
     expect(environments.config_only.error).toContain("provider-qualified model");
-    expect(environments.npm).toMatchObject({
-      PATH: "safe",
-      HTTPS_PROXY: "https://proxy.example",
-      NPM_CONFIG_REGISTRY: "https://registry.example"
+    expect(environments.claude).toMatchObject({
+      ANTHROPIC_API_KEY: "anthropic-secret",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Gateway-Key: secret",
+      CLAUDE_CONFIG_DIR: "/config/claude"
     });
+    expect(environments.claude.AWS_ACCESS_KEY_ID).toBeUndefined();
+    expect(environments.claude_aws.AWS_ACCESS_KEY_ID).toBe("must-not-reach-custom-provider");
+    expect(environments.claude_aws.AWS_CONFIG_FILE).toBe("/config/aws");
+    expect(environments.claude_aws.AWS_SHARED_CREDENTIALS_FILE).toBe("/config/aws-credentials");
+    expect(environments.claude_aws.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(environments.claude_aws.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(environments.claude_vertex.GOOGLE_APPLICATION_CREDENTIALS).toBe("/credentials/vertex.json");
+    expect(environments.claude_vertex.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(environments.claude_vertex.ANTHROPIC_CUSTOM_HEADERS).toBeUndefined();
+    expect(environments.gemini.GEMINI_API_KEY).toBe("gemini-secret");
+    expect(environments.gemini.GOOGLE_CLOUD_PROJECT).toBe("vertex-project");
+    expect(environments.gemini.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(environments.gemini_vertex.GOOGLE_API_KEY).toBe("google-secret");
+    expect(environments.gemini_vertex.GOOGLE_APPLICATION_CREDENTIALS).toBe("/credentials/vertex.json");
+    expect(environments.gemini_vertex.GEMINI_API_KEY).toBeUndefined();
+    expect(environments.explicit.CUSTOM_PROVIDER_TOKEN).toBe("custom-secret");
+    expect(environments.legacy_explicit.CUSTOM_PROVIDER_TOKEN).toBe("custom-secret");
+    expect(environments.injection.error).toContain("credential or config");
+    expect(environments.npm).toMatchObject({
+      HTTPS_PROXY: "https://proxy.example",
+      NPM_CONFIG_REGISTRY: "https://registry.example",
+      npm_config_userconfig: "/config/npmrc"
+    });
+    expect(environments.npm.PATH.split(path.delimiter)).not.toContain("relative");
+    expect(environments.npm.PATH.split(path.delimiter).every(path.isAbsolute)).toBe(true);
     expect(environments.npm.OPENAI_API_KEY).toBeUndefined();
   }, 20_000);
 

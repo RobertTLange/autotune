@@ -64,6 +64,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const prerequisites = await checkPrerequisites({
     invocation,
     agent: options.agent,
+    model: options.model,
     centaur: effectiveSampler === "centaur",
     skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
   });
@@ -225,12 +226,13 @@ export async function analyzeOnly(script: string, options: {
 export async function doctorAutotune(options: {
   script?: string;
   agent: string;
+  model?: string;
   command?: string;
 }): Promise<void> {
   const invocation = options.script
     ? detectInvocation(await resolveReadableScript(options.script), options.command)
     : undefined;
-  const checks = await checkDoctorPrerequisites({ invocation, agent: options.agent });
+  const checks = await checkDoctorPrerequisites({ invocation, agent: options.agent, model: options.model });
   console.log("autotune doctor");
   for (const check of checks) {
     console.log(formatDoctorCheck(check));

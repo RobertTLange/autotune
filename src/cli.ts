@@ -90,9 +90,10 @@ export function createProgram(): Command {
   .command("doctor")
   .argument("[script]", "optional script to check runtime detection")
   .option("--agent <name>", "headless agent", "claude")
+  .option("--model <name>", "headless model override")
   .option("--command <command>", "override script invocation command")
-  .action(async (script: string | undefined, options: { agent: string; command?: string }) => {
-    await doctorAutotune({ script, agent: options.agent, command: options.command });
+  .action(async (script: string | undefined, options: { agent: string; model?: string; command?: string }) => {
+    await doctorAutotune({ script, agent: options.agent, model: options.model, command: options.command });
   });
 
   program
