@@ -188,27 +188,48 @@ function killChildTree(pid: number | undefined, signal: NodeJS.Signals): void {
   }
   try {
     if (process.platform === "win32") {
-      const systemRoot = resolveWindowsSystemRoot();
-      const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
-      const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
-        env: { SystemRoot: systemRoot, windir: systemRoot },
-        stdio: "ignore",
-        timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
-        windowsHide: true
-      });
-      if (result.status !== 0) {
-        try {
-          process.kill(pid, signal);
-        } catch {
-          // The process may already have exited.
-        }
-      }
+      killWindowsProcessTree(pid, signal);
     } else {
       process.kill(-pid, signal);
     }
   } catch {
     // Process may have exited between timeout and kill.
   }
+}
+
+export function killWindowsProcessTree(pid: number, signal: NodeJS.Signals): void {
+  let treeKilled = false;
+  try {
+    const invocation = windowsTaskkillInvocation(pid);
+    treeKilled = spawnSync(invocation.command, invocation.args, invocation.options).status === 0;
+  } catch {
+    // Fall back to signaling the controller process directly.
+  }
+  if (!treeKilled) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // The process may already have exited.
+    }
+  }
+}
+
+export function windowsTaskkillInvocation(
+  pid: number,
+  fileExists: (filePath: string) => boolean = existsSync,
+  configuredRoot: string | undefined = process.env.SystemRoot
+) {
+  const systemRoot = resolveWindowsSystemRoot(fileExists, configuredRoot);
+  return {
+    command: path.win32.join(systemRoot, "System32", "taskkill.exe"),
+    args: ["/PID", String(pid), "/T", "/F"],
+    options: {
+      env: { SystemRoot: systemRoot, windir: systemRoot },
+      stdio: "ignore" as const,
+      timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
+      windowsHide: true
+    }
+  };
 }
 
 export function resolveWindowsSystemRoot(

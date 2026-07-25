@@ -1,4 +1,4 @@
-import { resolveWindowsSystemRoot, runCommand } from "../src/process.js";
+import { resolveWindowsSystemRoot, runCommand, windowsTaskkillInvocation } from "../src/process.js";
 
 describe("Windows process-tree support", () => {
   it("prefers the standard trusted system root when taskkill exists", () => {
@@ -18,6 +18,22 @@ describe("Windows process-tree support", () => {
       (candidate) => candidate === "\\\\server\\share\\Windows\\System32\\taskkill.exe",
       "\\\\server\\share\\Windows"
     )).toBe("C:\\Windows");
+  });
+
+  it("builds a bounded taskkill invocation from the validated system root", () => {
+    const onlyDriveDTaskkillExists = (candidate: string) => candidate === "D:\\Windows\\System32\\taskkill.exe";
+    const invocation = windowsTaskkillInvocation(42, onlyDriveDTaskkillExists, "D:\\Windows");
+
+    expect(invocation).toEqual({
+      command: "D:\\Windows\\System32\\taskkill.exe",
+      args: ["/PID", "42", "/T", "/F"],
+      options: {
+        env: { SystemRoot: "D:\\Windows", windir: "D:\\Windows" },
+        stdio: "ignore",
+        timeout: 5_000,
+        windowsHide: true
+      }
+    });
   });
 });
 

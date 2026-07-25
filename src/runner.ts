@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { ensurePythonRuntime } from "./python-runtime.js";
+import { killWindowsProcessTree } from "./process.js";
 
 export const TARGET_PYTHON_ENV = "AUTOTUNE_TARGET_PYTHON_ENV";
 export const NODE_EXECUTABLE_ENV = "AUTOTUNE_NODE_EXECUTABLE";
@@ -117,9 +118,7 @@ function signalDetachedDescendants(parentPid: number | undefined): void {
     return;
   }
   if (process.platform === "win32") {
-    spawnSync("C:\\Windows\\System32\\taskkill.exe", ["/PID", String(parentPid), "/T", "/F"], {
-      stdio: "ignore"
-    });
+    killWindowsProcessTree(parentPid, "SIGKILL");
     return;
   }
   const result = spawnSync("/usr/bin/pgrep", ["-P", String(parentPid)], { encoding: "utf8" });
