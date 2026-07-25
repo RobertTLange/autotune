@@ -69,11 +69,11 @@ export async function runCommand(
       killChildTree(child.pid, signal);
       killTimer = setTimeout(() => {
         killTimer = undefined;
-        killChildTree(child.pid, "SIGKILL");
         if (childClosed) {
           finishTermination();
           return;
         }
+        killChildTree(child.pid, "SIGKILL");
         hardStopTimer = setTimeout(() => finishTermination(true), DEFAULT_KILL_GRACE_MS);
       }, DEFAULT_KILL_GRACE_MS);
     };
@@ -132,9 +132,11 @@ export async function runCommand(
       }
       childClosed = true;
       if (forwardedSignal || timedOut) {
-        if (!killTimer) {
-          finishTermination();
+        if (killTimer) {
+          clearTimeout(killTimer);
+          killTimer = undefined;
         }
+        finishTermination();
         return;
       }
       settled = true;

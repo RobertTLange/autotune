@@ -61,9 +61,11 @@ describe("runCommand", () => {
   });
 
   it("times out long-running commands", async () => {
+    const started = Date.now();
     await expect(runCommand("node", ["-e", "setTimeout(() => {}, 1000)"], { timeoutMs: 10 })).rejects.toThrow(
       /timed out/
     );
+    expect(Date.now() - started).toBeLessThan(800);
   });
 
   it("waits for signal cleanup instead of exiting synchronously", async () => {
