@@ -8,6 +8,7 @@ import {
   renderReviseSearchSpacePrompt,
   type TrialResultSummary
 } from "./prompts.js";
+import { isCommandInterruptedError } from "./process.js";
 import type { HeadlessOptions, Invocation, SearchBudget, SearchSpace } from "./types.js";
 
 export async function analyzeScript(input: {
@@ -122,9 +123,11 @@ async function retryHeadless(args: string[]): Promise<string> {
   try {
     return await runHeadless(args, { cwd: process.cwd() });
   } catch (firstError) {
+    if (isCommandInterruptedError(firstError)) throw firstError;
     try {
       return await runHeadless(args, { cwd: process.cwd() });
     } catch (secondError) {
+      if (isCommandInterruptedError(secondError)) throw secondError;
       throw new Error(`headless failed after retry: ${String(secondError)}; first error: ${String(firstError)}`);
     }
   }

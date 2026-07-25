@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -17,6 +17,20 @@ export interface CommandOptions {
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 1000;
+const WINDOWS_TREE_KILL_TIMEOUT_MS = 5_000;
+
+export class CommandInterruptedError extends Error {
+  readonly code = "ERR_COMMAND_INTERRUPTED";
+
+  constructor(command: string, readonly signal: NodeJS.Signals) {
+    super(`${command} interrupted by ${signal}`);
+    this.name = "CommandInterruptedError";
+  }
+}
+
+export function isCommandInterruptedError(error: unknown): error is CommandInterruptedError {
+  return error instanceof CommandInterruptedError;
+}
 
 export async function runCommand(
   command: string,
@@ -26,37 +40,69 @@ export async function runCommand(
   return new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
+    let forwardedSignal: NodeJS.Signals | undefined;
+    let timeout: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let hardStopTimer: NodeJS.Timeout | undefined;
+    let childClosed = false;
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     });
-    const cleanupSignals = installCleanupHandlers(child.pid);
+    const finishTermination = (detachChild = false) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      if (hardStopTimer) clearTimeout(hardStopTimer);
+      cleanupSignals();
+      if (detachChild) {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+      }
+      reject(terminationError(command, options.timeoutMs, forwardedSignal));
+    };
+    const terminate = (signal: NodeJS.Signals) => {
+      killChildTree(child.pid, signal);
+      killTimer = setTimeout(() => {
+        killTimer = undefined;
+        killChildTree(child.pid, "SIGKILL");
+        if (childClosed) {
+          finishTermination();
+          return;
+        }
+        hardStopTimer = setTimeout(() => finishTermination(true), DEFAULT_KILL_GRACE_MS);
+      }, DEFAULT_KILL_GRACE_MS);
+    };
+    const cleanupSignals = installCleanupHandlers((signal) => {
+      if (settled) return;
+      if (forwardedSignal) {
+        killChildTree(child.pid, "SIGKILL");
+        return;
+      }
+      forwardedSignal = signal;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      process.exitCode = 128 + signalNumber(signal);
+      if (timedOut) {
+        killChildTree(child.pid, "SIGKILL");
+        return;
+      }
+      terminate(signal);
+    });
     let stdout = "";
     let stderr = "";
     const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-    const timeout =
-      options.timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            killChildTree(child.pid, "SIGTERM");
-            killTimer = setTimeout(() => {
-              killChildTree(child.pid, "SIGKILL");
-              hardStopTimer = setTimeout(() => {
-                if (settled) return;
-                settled = true;
-                cleanupSignals();
-                child.stdout.destroy();
-                child.stderr.destroy();
-                child.unref();
-                reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
-              }, DEFAULT_KILL_GRACE_MS);
-            }, DEFAULT_KILL_GRACE_MS);
-          }, options.timeoutMs);
+    timeout = options.timeoutMs === undefined
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          terminate("SIGTERM");
+        }, options.timeoutMs);
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -70,7 +116,7 @@ export async function runCommand(
       if (settled) {
         return;
       }
-      if (timedOut) {
+      if (timedOut || forwardedSignal) {
         return;
       }
       settled = true;
@@ -84,6 +130,13 @@ export async function runCommand(
       if (settled) {
         return;
       }
+      childClosed = true;
+      if (forwardedSignal || timedOut) {
+        if (!killTimer) {
+          finishTermination();
+        }
+        return;
+      }
       settled = true;
       if (timeout) {
         clearTimeout(timeout);
@@ -95,10 +148,6 @@ export async function runCommand(
         clearTimeout(hardStopTimer);
       }
       cleanupSignals();
-      if (timedOut) {
-        reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
-        return;
-      }
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -108,22 +157,25 @@ export async function runCommand(
   });
 }
 
-function installCleanupHandlers(pid: number | undefined): () => void {
-  if (!pid || process.platform === "win32") {
-    return () => {};
-  }
-  const handleSignal = (signal: NodeJS.Signals) => {
-    killChildTree(pid, signal);
-    process.exit(128 + signalNumber(signal));
-  };
+function installCleanupHandlers(handleSignal: (signal: NodeJS.Signals) => void): () => void {
   const onSigint = () => handleSignal("SIGINT");
   const onSigterm = () => handleSignal("SIGTERM");
-  process.once("SIGINT", onSigint);
-  process.once("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
   return () => {
     process.off("SIGINT", onSigint);
     process.off("SIGTERM", onSigterm);
   };
+}
+
+function terminationError(
+  command: string,
+  timeoutMs: number | undefined,
+  signal?: NodeJS.Signals
+): Error {
+  return signal
+    ? new CommandInterruptedError(command, signal)
+    : new Error(`${command} timed out after ${timeoutMs}ms`);
 }
 
 function signalNumber(signal: NodeJS.Signals): number {
@@ -138,27 +190,19 @@ function killChildTree(pid: number | undefined, signal: NodeJS.Signals): void {
     if (process.platform === "win32") {
       const systemRoot = resolveWindowsSystemRoot();
       const taskkill = path.join(systemRoot, "System32", "taskkill.exe");
-      const killer = spawn(taskkill, ["/PID", String(pid), "/T", "/F"], {
+      const result = spawnSync(taskkill, ["/PID", String(pid), "/T", "/F"], {
         env: { SystemRoot: systemRoot, windir: systemRoot },
         stdio: "ignore",
+        timeout: WINDOWS_TREE_KILL_TIMEOUT_MS,
         windowsHide: true
       });
-      killer.on("error", () => {
+      if (result.status !== 0) {
         try {
           process.kill(pid, signal);
         } catch {
           // The process may already have exited.
         }
-      });
-      killer.on("close", (code) => {
-        if (code === 0) return;
-        try {
-          process.kill(pid, signal);
-        } catch {
-          // The process may already have exited.
-        }
-      });
-      killer.unref();
+      }
     } else {
       process.kill(-pid, signal);
     }

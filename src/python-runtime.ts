@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { runCommand } from "./process.js";
+import { isCommandInterruptedError, runCommand } from "./process.js";
 import {
   claimOwnsQueue,
   createProvisioningClaim,
@@ -174,6 +174,7 @@ export async function inspectPythonInterpreter(options: {
       const identity = await readPythonIdentity(candidate, toolEnv);
       return { python: identity.executable, pythonVersion: identity.version };
     } catch (error) {
+      if (isCommandInterruptedError(error)) throw error;
       errors.push(labeledPythonError(candidate, error));
     }
   }
@@ -198,6 +199,7 @@ async function readPythonIdentity(python: string, env: NodeJS.ProcessEnv): Promi
       timeoutMs: PROBE_TIMEOUT_MS
     }));
   } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     throw new Error(`Python 3.9 or newer is required: could not execute ${python}`, { cause: error });
   }
   const identity = parseJson<PythonIdentity>(stdout, "Python identity");
@@ -231,6 +233,7 @@ async function resolvePythonRuntimeCandidate(
         return { identity, existing };
       }
     } catch (error) {
+      if (isCommandInterruptedError(error)) throw error;
       errors.push(labeledPythonError(candidate, error));
     }
   }
@@ -279,7 +282,8 @@ async function readPackageVersions(
     });
     const versions = parseJson<PackageVersions>(stdout, "Python package versions");
     return supportedVersions(versions, includeCmaes) ? versions : undefined;
-  } catch {
+  } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     return undefined;
   }
 }
@@ -383,11 +387,13 @@ async function provisionRuntime(input: {
       ], { cwd: input.cwd, env: input.env, timeoutMs: COMMAND_TIMEOUT_MS });
       return;
     } catch (uvError) {
+      if (isCommandInterruptedError(uvError)) throw uvError;
       await rm(input.environmentDir, { recursive: true, force: true });
       try {
         await provisionWithVenv(input);
         return;
       } catch (venvError) {
+        if (isCommandInterruptedError(venvError)) throw venvError;
         throw new AggregateError(
           [uvError, venvError],
           "failed to provision the managed Python runtime with uv or python -m venv"
@@ -418,6 +424,7 @@ async function provisionWithVenv(input: {
       "--requirement", input.requirementsFile
     ], { cwd: input.cwd, env: input.env, timeoutMs: COMMAND_TIMEOUT_MS });
   } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     throw new Error("failed to provision the managed Python runtime with python -m venv and pip", {
       cause: error
     });
@@ -428,7 +435,8 @@ async function uvAvailable(env: NodeJS.ProcessEnv, cwd: string): Promise<boolean
   try {
     await runCommand("uv", ["--version"], { cwd, env, timeoutMs: PROBE_TIMEOUT_MS });
     return true;
-  } catch {
+  } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     return false;
   }
 }

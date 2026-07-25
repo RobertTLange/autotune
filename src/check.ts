@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import { runCommand } from "./process.js";
+import { isCommandInterruptedError, runCommand } from "./process.js";
 import { FALLBACK_HEADLESS_PACKAGE } from "./headless.js";
 import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
 import { ensurePythonRuntime, inspectPythonInterpreter } from "./python-runtime.js";
@@ -71,6 +71,7 @@ async function runDoctorCheck(name: string, check: () => Promise<string>): Promi
   try {
     return { name, status: "ok", detail: await check() };
   } catch (error) {
+    if (isCommandInterruptedError(error)) throw error;
     return { name, status: "fail", detail: error instanceof Error ? error.message : String(error) };
   }
 }

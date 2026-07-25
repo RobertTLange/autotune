@@ -50,6 +50,33 @@ describe("runCommand", () => {
     );
   });
 
+  it("waits for signal cleanup instead of exiting synchronously", async () => {
+    const previousExitCode = process.exitCode;
+    const priorHandlers = new Set(process.rawListeners("SIGTERM"));
+    const running = runCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+    const outcome = running.catch((error: unknown) => error);
+    const handler = process.rawListeners("SIGTERM").find((listener) => !priorHandlers.has(listener));
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`unexpected process.exit(${code})`);
+    }) as never);
+
+    try {
+      expect(handler).toBeDefined();
+      expect(() => (handler as () => void)()).not.toThrow();
+      expect(process.rawListeners("SIGTERM")).toContain(handler);
+      expect(() => (handler as () => void)()).not.toThrow();
+      await expect(outcome).resolves.toEqual(expect.objectContaining({
+        code: "ERR_COMMAND_INTERRUPTED",
+        message: expect.stringMatching(/interrupted by SIGTERM/i)
+      }));
+      expect(exit).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(143);
+    } finally {
+      exit.mockRestore();
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it.runIf(process.platform === "win32")("times out commands whose grandchildren inherit output pipes", async () => {
     const source = `
 const { spawn } = require("node:child_process");

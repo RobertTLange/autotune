@@ -1,6 +1,6 @@
 import type { SearchSpace } from "./types.js";
 import { parseSearchSpaceText } from "./search-space.js";
-import { runCommand } from "./process.js";
+import { isCommandInterruptedError, runCommand } from "./process.js";
 import { findExecutableOnPath, isWindowsBatchShim, resolveNpxCommand } from "./npx.js";
 
 const HEADLESS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -74,7 +74,7 @@ async function spawnCapture(bin: string, args: string[], cwd: string): Promise<s
     });
     return stdout + (stderr ? `\n${stderr}` : "");
   } catch (error) {
-    if (isMissingExecutable(error)) {
+    if (isMissingExecutable(error) || isCommandInterruptedError(error)) {
       throw error;
     }
     throw new Error(`headless failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -183,6 +183,35 @@ describe("ensurePythonRuntime", () => {
     expect(await realpath(runtime.python)).toBe(await realpath(fallbackPython));
     expect((await readLog(fixture.log)).filter((args) => args[0] === "venv")).toHaveLength(0);
   });
+
+  it("does not start a fallback provisioner after interruption", async () => {
+    const fixture = await createFixture({ withUv: true });
+    const previousExitCode = process.exitCode;
+    const priorHandlers = new Set(process.rawListeners("SIGTERM"));
+    const running = ensurePythonRuntime({
+      includeCmaes: true,
+      bootstrapPython: fixture.python,
+      cacheDir: fixture.cache,
+      env: {
+        ...process.env,
+        PATH: fixture.path,
+        FAKE_BLOCK_UV_VENV: "1",
+        FAKE_RUNTIME_LOG: fixture.log
+      }
+    });
+
+    try {
+      await waitForLogEntry(fixture.log, (args) => args[0] === "venv");
+      const handler = process.rawListeners("SIGTERM").find((listener) => !priorHandlers.has(listener));
+      expect(handler).toBeDefined();
+      (handler as () => void)();
+      await expect(running).rejects.toMatchObject({ code: "ERR_COMMAND_INTERRUPTED" });
+      const log = await readLog(fixture.log);
+      expect(log).not.toContainEqual(expect.arrayContaining(["-m", "venv"]));
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
 });
 
 async function createFixture(options: { withUv: boolean }): Promise<{
@@ -209,6 +238,14 @@ async function createFixture(options: { withUv: boolean }): Promise<{
 async function readLog(filePath: string): Promise<string[][]> {
   const source = await readFile(filePath, "utf8").catch(() => "");
   return source.trim() ? source.trim().split("\n").map((line) => JSON.parse(line) as string[]) : [];
+}
+
+async function waitForLogEntry(filePath: string, predicate: (args: string[]) => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await readLog(filePath)).some(predicate)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for command in ${filePath}`);
 }
 
 async function writeExecutable(filePath: string, source: string): Promise<void> {
@@ -286,12 +323,16 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 if (args[0] === "venv") {
-  const target = args[args.length - 1];
-  const managed = path.join(target, process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
-  mkdirSync(path.dirname(managed), { recursive: true });
-  writeFileSync(managed, ${JSON.stringify(fakeManagedPythonSource())});
-  chmodSync(managed, 0o755);
-  process.exit(0);
+  if (process.env.FAKE_BLOCK_UV_VENV === "1") {
+    setInterval(() => {}, 1000);
+  } else {
+    const target = args[args.length - 1];
+    const managed = path.join(target, process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
+    mkdirSync(path.dirname(managed), { recursive: true });
+    writeFileSync(managed, ${JSON.stringify(fakeManagedPythonSource())});
+    chmodSync(managed, 0o755);
+    process.exit(0);
+  }
 }
 if (args[0] === "pip") process.exit(0);
 process.exit(1);
