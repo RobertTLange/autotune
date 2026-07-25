@@ -61,6 +61,12 @@ export interface ProcessIdentity {
   generation: string;
 }
 
+export interface ProcessSnapshotEntry {
+  pid: number;
+  parentPid: number;
+  identity: ProcessIdentity;
+}
+
 export function createOutputCapture(): OutputCapture {
   const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "autotune-runner-output-")));
   const stdoutPath = path.join(directory, "stdout.fifo");
@@ -328,24 +334,13 @@ function linuxProcessHoldsCapture(
 export function readProcessIdentity(pid: number, deadline: number): ProcessIdentity | undefined {
   if (performance.now() >= deadline) return undefined;
   if (process.platform === "linux") {
-    try {
-      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-      const status = readFileSync(`/proc/${pid}/status`, "utf8");
-      const statFields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-      const uid = Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]);
-      const pgid = Number(statFields[2]);
-      const startTime = statFields[19];
-      if (!Number.isInteger(uid) || !Number.isInteger(pgid) || !startTime) return undefined;
-      return { uid, pgid, generation: startTime };
-    } catch {
-      return undefined;
-    }
+    return readLinuxProcessSnapshotEntry(pid, deadline)?.identity;
   }
   const command = resolvePosixPsCommand();
   if (!command) return undefined;
   const result = spawnSync(
     command,
-    ["-o", "pid=,uid=,pgid=,lstart=,comm=", "-p", String(pid)],
+    ["-o", "pid=,uid=,pgid=,lstart=", "-p", String(pid)],
     {
       encoding: "utf8",
       env: { PATH: path.dirname(command), LC_ALL: "C" },
@@ -363,7 +358,37 @@ export function readProcessIdentity(pid: number, deadline: number): ProcessIdent
     || !Number.isInteger(Number(uidText))
     || !Number.isInteger(Number(pgidText))
   ) return undefined;
-  return { uid: Number(uidText), pgid: Number(pgidText), generation: line };
+  return {
+    uid: Number(uidText),
+    pgid: Number(pgidText),
+    generation: line.split(/\s+/).slice(0, 8).join(" ")
+  };
+}
+
+export function readLinuxProcessSnapshotEntry(
+  pid: number,
+  deadline: number
+): ProcessSnapshotEntry | undefined {
+  if (performance.now() >= deadline) return undefined;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const status = readFileSync(`/proc/${pid}/status`, "utf8");
+    const statFields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+    const parentPid = Number(statFields[1]);
+    const uid = Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]);
+    const pgid = Number(statFields[2]);
+    const startTime = statFields[19];
+    if (
+      !Number.isInteger(parentPid)
+      || parentPid < 0
+      || !Number.isInteger(uid)
+      || !Number.isInteger(pgid)
+      || !startTime
+    ) return undefined;
+    return { pid, parentPid, identity: { uid, pgid, generation: startTime } };
+  } catch {
+    return undefined;
+  }
 }
 
 export function sameProcessIdentity(
@@ -372,6 +397,7 @@ export function sameProcessIdentity(
 ): boolean {
   return actual !== undefined
     && actual.uid === expected.uid
+    && actual.pgid === expected.pgid
     && actual.generation === expected.generation;
 }
 

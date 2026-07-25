@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { readProcessIdentity, sameProcessIdentity } from "../src/runner-output.js";
-import { runPythonRunner } from "../src/runner.js";
+import {
+  descendantsFromPosixSnapshot,
+  parsePosixProcessSnapshot,
+  runPythonRunner,
+  signalWindowsRunnerTree
+} from "../src/runner.js";
 
 describe("runPythonRunner", () => {
   it.skipIf(process.platform === "win32")("reads stable process generations for signal fencing", () => {
@@ -11,6 +16,48 @@ describe("runPythonRunner", () => {
     const second = readProcessIdentity(process.pid, performance.now() + 500);
     expect(first).toMatchObject({ uid: process.getuid?.(), pgid: expect.any(Number) });
     expect(first && sameProcessIdentity(first, second)).toBe(true);
+  });
+
+  it("binds descendant identity to the ancestry snapshot", () => {
+    const [entry] = parsePosixProcessSnapshot(
+      "42 7 501 42 Sat Jul 25 18:00:00 2026 /usr/bin/python3"
+    );
+
+    expect(entry).toEqual({
+      pid: 42,
+      parentPid: 7,
+      identity: {
+        uid: 501,
+        pgid: 42,
+        generation: "42 501 42 Sat Jul 25 18:00:00 2026"
+      }
+    });
+    expect(sameProcessIdentity(entry.identity, {
+      ...entry.identity,
+      generation: "42 501 42 Sat Jul 25 18:00:01 2026"
+    })).toBe(false);
+  });
+
+  it("rejects descendants when the snapshot root is not the spawned runner", () => {
+    const rootIdentity = {
+      uid: 501,
+      pgid: 42,
+      generation: "42 501 42 Sat Jul 25 18:00:00 2026"
+    };
+    const snapshot = parsePosixProcessSnapshot([
+      `42 ${process.pid + 1} 501 42 Sat Jul 25 18:00:00 2026 /usr/bin/python3`,
+      "43 42 501 43 Sat Jul 25 18:00:01 2026 /usr/bin/python3"
+    ].join("\n"));
+
+    expect(descendantsFromPosixSnapshot(42, rootIdentity, snapshot)).toEqual([]);
+  });
+
+  it("uses one Windows tree termination without a POSIX identity", () => {
+    const terminate = vi.fn();
+
+    expect(signalWindowsRunnerTree(42, "win32", terminate)).toBe(true);
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(terminate).toHaveBeenCalledWith(42, "SIGKILL");
   });
 
   it("passes runner args without shell interpolation", async () => {
