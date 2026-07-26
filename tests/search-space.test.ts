@@ -1,7 +1,14 @@
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { parseSearchSpaceText, readSearchSpace, writeSearchSpace } from "../src/search-space.js";
+import {
+  correctSearchSpaceParameterLimit,
+  parseSearchSpaceText,
+  readSearchSpace,
+  validateSearchSpaceParameterLimit,
+  writeSearchSpace
+} from "../src/search-space.js";
+import type { SearchSpace } from "../src/types.js";
 
 const searchSpace = {
   parameters: [
@@ -15,6 +22,46 @@ const searchSpace = {
   direction: "maximize",
   reasoning: "accuracy"
 } as const;
+
+describe("search-space parameter limits", () => {
+  it("counts active parameters but not fixed parameters", () => {
+    expect(() => validateSearchSpaceParameterLimit({
+      ...searchSpace,
+      parameters: searchSpace.parameters.slice(0, 2),
+      fixed_parameters: [
+        { name: "epochs", cli_flag: "--epochs", value: 10 },
+        { name: "seed", cli_flag: "--seed", value: 0 }
+      ]
+    }, 2)).not.toThrow();
+
+    expect(() => validateSearchSpaceParameterLimit(searchSpace, 2)).toThrow(
+      /3 active parameters.*--max-parameters 2/i
+    );
+  });
+
+  it("requests one correction for an over-limit agent result", async () => {
+    const revise = vi.fn(async (_candidate: SearchSpace, _feedback: string) => ({
+      ...searchSpace,
+      parameters: searchSpace.parameters.slice(0, 2)
+    }));
+
+    const corrected = await correctSearchSpaceParameterLimit(searchSpace, 2, revise);
+
+    expect(corrected.parameters).toHaveLength(2);
+    expect(revise).toHaveBeenCalledOnce();
+    expect(revise.mock.calls[0]?.[1]).toContain("3 active parameters");
+    expect(revise.mock.calls[0]?.[1]).toContain("at most 2");
+  });
+
+  it("fails when the corrected agent result still exceeds the limit", async () => {
+    const revise = vi.fn(async (_candidate: SearchSpace, _feedback: string) => searchSpace);
+
+    await expect(correctSearchSpaceParameterLimit(searchSpace, 2, revise)).rejects.toThrow(
+      /3 active parameters.*--max-parameters 2/i
+    );
+    expect(revise).toHaveBeenCalledOnce();
+  });
+});
 
 describe("parseSearchSpaceText", () => {
   it("parses JSON search spaces", () => {

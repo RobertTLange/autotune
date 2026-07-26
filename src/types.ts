@@ -74,6 +74,7 @@ export interface RunOptions {
   agent: string;
   model?: string;
   agentGuidance?: string;
+  maxParameters?: number;
   reasoningEffort?: ReasoningEffort;
   command?: string;
   buildCommand?: string;

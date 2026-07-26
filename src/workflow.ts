@@ -15,7 +15,12 @@ import { writeOptunaRunner, type SeedTrial } from "./generate.js";
 import { runCommand } from "./process.js";
 import { readResults, renderResults, type StudyResult, type TrialResult } from "./results.js";
 import { runPythonRunner } from "./runner.js";
-import { readSearchSpace, writeSearchSpace } from "./search-space.js";
+import {
+  correctSearchSpaceParameterLimit,
+  readSearchSpace,
+  validateSearchSpaceParameterLimit,
+  writeSearchSpace
+} from "./search-space.js";
 import { styles, writeStatus } from "./terminal.js";
 import type { CentaurConfig, Direction, FixedParameter, HeadlessOptions, Pruner, RunOptions, Sampler, SearchBudget, SearchParameter, SearchSpace } from "./types.js";
 
@@ -28,11 +33,23 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   if (!Number.isInteger(options.trials) || options.trials < 1) {
     throw new Error("--trials must be a positive integer");
   }
+  validateMaxParametersOption(options.maxParameters);
   validateRefinementOptions(options);
   validateSamplerSeedOption(options);
 
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
+  const configuredSearchSpace = options.config
+    ? await loadConfiguredSearchSpace(options.config)
+    : undefined;
+  if (configuredSearchSpace) {
+    validateSearchSpaceParameterLimit(configuredSearchSpace, options.maxParameters);
+  }
+  const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
+  if (effectiveSampler === "centaur" && options.maxParameters !== undefined && options.maxParameters < 2) {
+    throw new Error("--max-parameters must be at least 2 with Centaur");
+  }
+
   const artifactLayout = resolveRunArtifactLayout(scriptPath, options.workDir);
   const workDir = artifactLayout.workDir;
   await mkdir(workDir, { recursive: true });
@@ -50,10 +67,9 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   const outputResultsPath = options.output ? path.resolve(options.output) : undefined;
   const studyName = options.studyName ?? defaultStudyName(scriptPath);
   const roundManifests: RoundManifest[] = [];
-  const configuredSearchSpace = options.config
-    ? await prepareSearchSpaceForRun(await loadConfiguredSearchSpace(options.config), options, scriptPath)
+  const preparedConfiguredSearchSpace = configuredSearchSpace
+    ? await prepareSearchSpaceForRun(configuredSearchSpace, options, scriptPath)
     : undefined;
-  const effectiveSampler = options.sampler ?? configuredSearchSpace?.optuna?.sampler;
   if (effectiveSampler === "centaur" && options.samplerSeed !== undefined) {
     throw new Error("Centaur uses --centaur-seed instead of --sampler-seed");
   }
@@ -66,7 +82,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     agent: options.agent,
     model: options.model,
     centaur: effectiveSampler === "centaur",
-    skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: configuredSearchSpace, options, refineRounds })
+    skipHeadless: shouldSkipHeadlessPrerequisite({ searchSpace: preparedConfiguredSearchSpace, options, refineRounds })
   });
   writeStatus(
     `python ${prerequisites.python}${prerequisites.managedPython ? " (managed control environment)" : ""}`,
@@ -79,8 +95,23 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   writeStatus(`headless ${prerequisites.headless}`, "success");
   writeStatus(`runtime ${prerequisites.runtime}`, "success");
 
-  const searchSpace = configuredSearchSpace ?? await prepareSearchSpaceForRun(
-    await runAnalysisPhase({ invocation, workDir, budget: initialBudget, agentGuidance: options.agentGuidance, ...headless }),
+  const searchSpace = preparedConfiguredSearchSpace ?? await prepareSearchSpaceForRun(
+    await correctAgentParameterLimit({
+      candidate: await runAnalysisPhase({
+        invocation,
+        workDir,
+        budget: initialBudget,
+        agentGuidance: options.agentGuidance,
+        maxParameters: options.maxParameters,
+        ...headless
+      }),
+      invocation,
+      workDir,
+      budget: initialBudget,
+      agentGuidance: options.agentGuidance,
+      maxParameters: options.maxParameters,
+      ...headless
+    }),
     options,
     scriptPath
   );
@@ -91,6 +122,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     filePath: initialSearchSpacePath,
     yes: options.yes,
     ask: options.ask,
+    validate: (candidate) => validateSearchSpaceParameterLimit(candidate, options.maxParameters),
     revise: async (current, feedback) => {
       writeStatus(`Phase 1b: revising search space with ${formatHeadlessLabel(headless)}...`);
       const revised = await reviseSearchSpace({
@@ -99,17 +131,27 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
         feedback,
         budget: initialBudget,
         agentGuidance: options.agentGuidance,
+        maxParameters: options.maxParameters,
         workDir,
         ...headless
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
-      return prepareSearchSpaceForRun(revised, options, scriptPath);
+      const corrected = await correctAgentParameterLimit({
+        candidate: revised,
+        invocation,
+        workDir,
+        budget: initialBudget,
+        agentGuidance: options.agentGuidance,
+        maxParameters: options.maxParameters,
+        ...headless
+      });
+      return prepareSearchSpaceForRun(corrected, options, scriptPath);
     }
   });
   if (confirmed.optuna?.sampler === "centaur" && !centaurAuthorized) {
     throw new Error("Centaur requires explicit --sampler centaur or a Centaur config");
   }
-  validateCentaurSearchSpace(confirmed);
+  validateCentaurSearchSpace(confirmed, options.maxParameters);
   validateSamplerSeededSearchSpace(confirmed, options.nJobs);
   await writeSearchSpace(searchSpacePath, confirmed);
 
@@ -208,15 +250,34 @@ export async function analyzeOnly(script: string, options: {
   workDir: string;
   command?: string;
   agentGuidance?: string;
+  maxParameters?: number;
 }): Promise<void> {
+  validateMaxParametersOption(options.maxParameters);
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
   const workDir = path.resolve(options.workDir);
   const invocation = detectInvocation(scriptPath, options.command);
+  const headless = pickHeadlessOptions(options);
+  const analyzed = await analyzeScript({
+    invocation,
+    workDir,
+    agentGuidance: options.agentGuidance,
+    maxParameters: options.maxParameters,
+    ...headless
+  });
   const searchSpace = withEffectiveOptunaSettings(
-    await analyzeScript({ invocation, workDir, agentGuidance: options.agentGuidance, ...pickHeadlessOptions(options) }),
+    await correctAgentParameterLimit({
+      candidate: analyzed,
+      invocation,
+      workDir,
+      agentGuidance: options.agentGuidance,
+      maxParameters: options.maxParameters,
+      ...headless
+    }),
     {}
   );
+  validateSearchSpaceParameterLimit(searchSpace, options.maxParameters);
+  validateCentaurSearchSpace(searchSpace, options.maxParameters);
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
@@ -286,9 +347,10 @@ export async function resumeStudy(options: {
 
 async function prepareSearchSpaceForRun(
   searchSpace: SearchSpace,
-  options: Pick<RunOptions, "direction" | "sampler" | "samplerSeed" | "pruner" | "nJobs">,
+  options: Pick<RunOptions, "direction" | "sampler" | "samplerSeed" | "pruner" | "nJobs" | "maxParameters">,
   scriptPath: string
 ): Promise<SearchSpace> {
+  validateSearchSpaceParameterLimit(searchSpace, options.maxParameters);
   const normalized = withEffectiveOptunaSettings(searchSpace, options);
   validateSamplerSeededSearchSpace(normalized, options.nJobs);
   if (await scriptContainsMetricOutput(scriptPath)) {
@@ -376,12 +438,22 @@ async function refineSearchSpaceForRound(input: {
     round: input.round,
     budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
     agentGuidance: input.options.agentGuidance,
+    maxParameters: input.options.maxParameters,
     workDir: input.workDir,
     ...input.headless
   });
   writeStatus(`Refinement complete: ${refined.parameters.length} parameter(s) proposed.`, "success");
-  const prepared = await prepareRefinedSearchSpaceForRun({
+  const correctedRefined = await correctAgentParameterLimit({
     candidate: refined,
+    invocation: input.invocation,
+    workDir: input.workDir,
+    budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
+    agentGuidance: input.options.agentGuidance,
+    maxParameters: input.options.maxParameters,
+    ...input.headless
+  });
+  const prepared = await prepareRefinedSearchSpaceForRun({
+    candidate: correctedRefined,
     previous: input.current,
     result: input.previousResult,
     options: input.options,
@@ -392,6 +464,7 @@ async function refineSearchSpaceForRound(input: {
     filePath: input.roundSearchSpacePath,
     yes: input.options.yes || input.options.refineMode === "auto",
     ask: input.options.ask,
+    validate: (candidate) => validateSearchSpaceParameterLimit(candidate, input.options.maxParameters),
     revise: async (current, feedback) => {
       writeStatus(`Phase 3b: revising refined space with ${formatHeadlessLabel(input.headless)}...`);
       const revised = await reviseSearchSpace({
@@ -400,12 +473,22 @@ async function refineSearchSpaceForRound(input: {
         feedback,
         budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
         agentGuidance: input.options.agentGuidance,
+        maxParameters: input.options.maxParameters,
         workDir: input.workDir,
         ...input.headless
       });
       writeStatus(`Revision complete: ${revised.parameters.length} parameter(s) proposed.`, "success");
-      return prepareRefinedSearchSpaceForRun({
+      const corrected = await correctAgentParameterLimit({
         candidate: revised,
+        invocation: input.invocation,
+        workDir: input.workDir,
+        budget: searchBudgetForOptions(input.options, input.options.refineRounds ?? 0, input.round),
+        agentGuidance: input.options.agentGuidance,
+        maxParameters: input.options.maxParameters,
+        ...input.headless
+      });
+      return prepareRefinedSearchSpaceForRun({
+        candidate: corrected,
         previous: input.current,
         result: input.previousResult,
         options: input.options,
@@ -414,6 +497,10 @@ async function refineSearchSpaceForRound(input: {
     }
   });
   validateSamplerSeededSearchSpace(confirmed, input.options.nJobs);
+  validateCentaurSearchSpace(confirmed, input.options.maxParameters);
+  if (confirmed.optuna?.sampler === "centaur") {
+    throw new Error("Centaur requires explicit --sampler centaur or a Centaur config");
+  }
   await writeSearchSpace(input.searchSpacePath, confirmed);
   return confirmed;
 }
@@ -674,6 +761,12 @@ function validateRefinementOptions(options: RunOptions): void {
   }
 }
 
+function validateMaxParametersOption(maxParameters: number | undefined): void {
+  if (maxParameters !== undefined && (!Number.isInteger(maxParameters) || maxParameters < 1)) {
+    throw new Error("--max-parameters must be a positive integer");
+  }
+}
+
 function validateSamplerSeedOption(options: RunOptions): void {
   if (options.samplerSeed === undefined) {
     return;
@@ -707,9 +800,12 @@ function validateCentaurOptions(options: RunOptions, sampler: Sampler | undefine
   }
 }
 
-function validateCentaurSearchSpace(searchSpace: SearchSpace): void {
+function validateCentaurSearchSpace(searchSpace: SearchSpace, maxParameters?: number): void {
   if (searchSpace.optuna?.sampler !== "centaur") {
     return;
+  }
+  if (maxParameters !== undefined && maxParameters < 2) {
+    throw new Error("--max-parameters must be at least 2 with Centaur");
   }
   const numericParameterCount = searchSpace.parameters.filter(
     (parameter) => parameter.type === "float" || parameter.type === "int"
@@ -893,12 +989,45 @@ async function runAnalysisPhase(input: {
   workDir: string;
   budget?: SearchBudget;
   agentGuidance?: string;
+  maxParameters?: number;
 } & HeadlessOptions): Promise<SearchSpace> {
   writeStatus(`Phase 1: analyzing ${styles.dim(input.invocation.script)} with ${formatHeadlessLabel(input)}...`);
   writeStatus("This can take a minute on first run.");
   const searchSpace = await analyzeScript(input);
   writeStatus(`Analysis complete: ${searchSpace.parameters.length} parameter(s) proposed.`, "success");
   return searchSpace;
+}
+
+async function correctAgentParameterLimit(input: {
+  candidate: SearchSpace;
+  invocation: ReturnType<typeof detectInvocation>;
+  workDir: string;
+  budget?: SearchBudget;
+  agentGuidance?: string;
+  maxParameters?: number;
+} & HeadlessOptions): Promise<SearchSpace> {
+  return correctSearchSpaceParameterLimit(
+    input.candidate,
+    input.maxParameters,
+    async (current, feedback) => {
+      writeStatus(
+        `Search space exceeds --max-parameters; requesting one correction with ${formatHeadlessLabel(input)}...`,
+        "warning"
+      );
+      return reviseSearchSpace({
+        invocation: input.invocation,
+        searchSpace: current,
+        feedback,
+        workDir: input.workDir,
+        budget: input.budget,
+        agentGuidance: input.agentGuidance,
+        maxParameters: input.maxParameters,
+        agent: input.agent,
+        model: input.model,
+        reasoningEffort: input.reasoningEffort
+      });
+    }
+  );
 }
 
 function searchBudgetForOptions(options: RunOptions, refineRounds: number, currentRefinementRound?: number): SearchBudget {

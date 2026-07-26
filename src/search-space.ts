@@ -156,3 +156,33 @@ export async function writeSearchSpace(filePath: string, searchSpace: SearchSpac
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, YAML.stringify(validated), "utf8");
 }
+
+export function validateSearchSpaceParameterLimit(
+  searchSpace: SearchSpace,
+  maxParameters: number | undefined
+): void {
+  if (maxParameters === undefined || searchSpace.parameters.length <= maxParameters) {
+    return;
+  }
+  throw new Error(
+    `Search space has ${searchSpace.parameters.length} active parameters, exceeding --max-parameters ${maxParameters}`
+  );
+}
+
+export async function correctSearchSpaceParameterLimit(
+  searchSpace: SearchSpace,
+  maxParameters: number | undefined,
+  revise: (searchSpace: SearchSpace, feedback: string) => Promise<SearchSpace>
+): Promise<SearchSpace> {
+  if (maxParameters === undefined || searchSpace.parameters.length <= maxParameters) {
+    return searchSpace;
+  }
+  const corrected = await revise(
+    searchSpace,
+    `The proposed search space has ${searchSpace.parameters.length} active parameters. ` +
+      `Reduce the parameters array to at most ${maxParameters} highest-impact active parameters. ` +
+      "The fixed_parameters array does not count toward this limit."
+  );
+  validateSearchSpaceParameterLimit(corrected, maxParameters);
+  return corrected;
+}

@@ -16,12 +16,18 @@ export async function analyzeScript(input: {
   workDir: string;
   budget?: SearchBudget;
   agentGuidance?: string;
+  maxParameters?: number;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "analyze_prompt.md");
   await writeFile(
     promptPath,
-    renderAnalyzePrompt({ invocation: input.invocation, budget: input.budget, agentGuidance: input.agentGuidance }),
+    renderAnalyzePrompt({
+      invocation: input.invocation,
+      budget: input.budget,
+      agentGuidance: input.agentGuidance,
+      maxParameters: input.maxParameters
+    }),
     "utf8"
   );
   const output = await retryHeadless(buildHeadlessArgs(input, promptPath));
@@ -35,6 +41,7 @@ export async function reviseSearchSpace(input: {
   workDir: string;
   budget?: SearchBudget;
   agentGuidance?: string;
+  maxParameters?: number;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, "revise_prompt.md");
@@ -45,7 +52,8 @@ export async function reviseSearchSpace(input: {
       searchSpace: input.searchSpace,
       feedback: input.feedback,
       budget: input.budget,
-      agentGuidance: input.agentGuidance
+      agentGuidance: input.agentGuidance,
+      maxParameters: input.maxParameters
     }),
     "utf8"
   );
@@ -61,6 +69,7 @@ export async function refineSearchSpaceFromTrials(input: {
   workDir: string;
   budget?: SearchBudget;
   agentGuidance?: string;
+  maxParameters?: number;
 } & HeadlessOptions): Promise<SearchSpace> {
   await mkdir(input.workDir, { recursive: true });
   const promptPath = path.join(input.workDir, `refine_prompt.round_${input.round}.md`);
@@ -72,7 +81,8 @@ export async function refineSearchSpaceFromTrials(input: {
       trialSummary: input.trialSummary,
       round: input.round,
       budget: input.budget,
-      agentGuidance: input.agentGuidance
+      agentGuidance: input.agentGuidance,
+      maxParameters: input.maxParameters
     }),
     "utf8"
   );

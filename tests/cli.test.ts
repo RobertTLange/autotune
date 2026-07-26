@@ -188,11 +188,27 @@ describe("CLI option normalization", () => {
     const analyzeCommand = program.commands.find((command) => command.name() === "analyze");
 
     expect(runCommand?.options.map((option) => option.long)).toEqual(
-      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file"])
+      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file", "--max-parameters"])
     );
     expect(analyzeCommand?.options.map((option) => option.long)).toEqual(
-      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file"])
+      expect.arrayContaining(["--agent-guidance", "--agent-guidance-file", "--max-parameters"])
     );
+  });
+
+  it("normalizes an explicit maximum parameter count", () => {
+    const command = new Command().option("--max-parameters <n>", "maximum active parameters", parsePositiveInt);
+    command.parse(["--max-parameters", "3"], { from: "user" });
+
+    expect(normalizeRunOptions({
+      trials: 3,
+      nJobs: 1,
+      agent: "claude",
+      refineRounds: 0,
+      refineMode: "ask",
+      json: false,
+      yes: true,
+      ...command.opts()
+    }, command)).toMatchObject({ maxParameters: 3 });
   });
 
   it("exposes model selection on doctor", () => {
