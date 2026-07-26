@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [TBD] - TBD
 
+## [0.2.0] - 2026-07-26
+
 ### Added
 
 - Zero-install npx execution for Autotune and integrity-locked Headless fallback execution.
@@ -36,5 +38,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Private run artifacts, allowlisted agent environments, immutable nanochat data snapshots, and supervised BBOB process cleanup.
 - Cross-platform release gates for Node.js 22 and 24 on Linux and macOS.
 
-[TBD]: https://github.com/RobertTLange/autotune/compare/v0.1.0...HEAD
+[TBD]: https://github.com/RobertTLange/autotune/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/RobertTLange/autotune/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/RobertTLange/autotune/releases/tag/v0.1.0
