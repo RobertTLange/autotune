@@ -11,6 +11,19 @@ const EXAMPLES = {
   nanochatCache: path.join("examples", "nanochat", "prepare_nanochat_cache.py")
 } as const;
 
+describe("project README", () => {
+  it("links to the Autotune blog post from the header and demo", async () => {
+    const readme = await readFile("README.md", "utf8");
+    const blogUrl = "https://roberttlange.com/blog/07-autotune";
+
+    expect(readme).toContain(`<p align="center">\n  <a href="${blogUrl}">`);
+    expect(readme).toContain(
+      `<p align="center"><em><a href="${blogUrl}">Read more about autotune in the blog.</a></em></p>`
+    );
+    expect(readme.match(new RegExp(blogUrl, "g"))).toHaveLength(2);
+  });
+});
+
 describe("packaged examples", () => {
   it("documents the task-based example layout", async () => {
     const readme = await readFile("README.md", "utf8");

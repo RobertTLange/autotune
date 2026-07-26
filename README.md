@@ -2,6 +2,12 @@
   <img src="docs/logo.png" alt="Autotune hyperparameter optimization flow" width="200" style="border-radius: 24px;" />
 </p>
 
+<p align="center">
+  <a href="https://roberttlange.com/blog/07-autotune">
+    <img alt="Autotune blog post" src="https://img.shields.io/badge/Blog-Read%20the%20post-8A2BE2" />
+  </a>
+</p>
+
 <h1 align="center">Autotune</h1>
 
 <p align="center">
@@ -17,6 +23,8 @@
 Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
 
 https://github.com/user-attachments/assets/027e679f-01d1-4e03-ab5f-39022c6a477b
+
+<p align="center"><em><a href="https://roberttlange.com/blog/07-autotune">Read more about autotune in the blog.</a></em></p>
 
 ## How It Works
 
