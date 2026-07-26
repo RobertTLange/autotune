@@ -50,18 +50,12 @@ npx -y @roberttlange/autotune doctor --agent codex
 npx -y @roberttlange/autotune run train.py --trials 20 --agent codex
 ```
 
-`@latest` is optional in normal use: npm fetches the `latest` dist-tag when no matching local package is available. Inside an Autotune checkout or project that already provides the package, npx may reuse that local version; use `@latest` when registry resolution must be forced. `-y` accepts npx's install prompt; it does not select a package version.
-
-Unless `AUTOTUNE_HEADLESS_BIN` explicitly selects an executable, Autotune installs the pinned Headless dependency tree from a shipped integrity lock in a private temporary directory. npm receives runtime and registry settings but no provider credentials, lifecycle scripts stay disabled, and only the verified Headless CLI receives credentials for the selected agent/provider. Set `AUTOTUNE_HEADLESS_ENV` to a comma-separated list of additional credential or config variable names when a custom provider needs them. Multiprovider agents such as `opencode` require a provider-qualified `--model` or this explicit allowlist. Autotune also reuses a compatible Optuna installation when available, or creates a hash-locked controller environment under `${XDG_CACHE_HOME:-~/.cache}/autotune/python` on Unix and `%LOCALAPPDATA%\autotune\python` on Windows. The controller environment is not activated and does not modify the training process's `PATH`, `VIRTUAL_ENV`, or `PYTHON*` variables. Your training script therefore keeps its original Python environment and dependencies.
-
 Optional global CLI installation:
 
 ```bash
 npm install -g @roberttlange/autotune
 autotune --help
 ```
-
-Set `AUTOTUNE_PYTHON` to choose the controller bootstrap interpreter or `AUTOTUNE_HEADLESS_BIN` to require a specific Headless executable. Non-empty explicit overrides fail rather than silently falling back.
 
 ### Agent Skill
 
@@ -103,40 +97,6 @@ When `--direction`, `--sampler`, or `--pruner` are omitted, Autotune uses the ag
 Use `--agent-guidance <text>` or `--agent-guidance-file <file>` to add advisory instructions for search-space generation and refinement, such as parameters to prefer or avoid. If both are provided, file guidance is applied first and inline guidance is appended. Guidance does not apply to modified-script generation and cannot override schema, metric comparability, or objective-measurement constraints. Guidance is sent to the agent and stored in prompt artifacts; guidance files must be regular files no larger than 65536 bytes.
 
 Use `--max-parameters <n>` with `run` or `analyze` to cap the number of active Optuna search parameters. Fixed parameters do not count toward the cap. Autotune asks the agent to prioritize the highest-impact parameters; if an agent response exceeds the cap, it requests one correction and then fails if the corrected response is still over the limit. Predefined configs and manually edited spaces fail immediately when they exceed the cap.
-
-By default, each run gets its own timestamped artifact directory next to the target script:
-
-```text
-autotune/
-  latest.json
-  <script-name>/
-    latest.json
-    runs/
-      2026-06-27T181650000Z-<run-id>/
-        analyze_prompt.md
-        search_space.yaml
-        train_optuna.py
-        rounds.json
-        results.json
-```
-
-`latest.json` points at the newest run, so `autotune results` can read the latest run from an `autotune/` directory. If the script lives in a subdirectory, run `autotune results <script-dir>/autotune` or run the command from that script directory. The script name keeps its extension, such as `train.py`, so sibling scripts do not share artifact roots. Pass `--work-dir <dir>` when you want an exact artifact directory instead of the timestamped default. Pass `--output <file>` when you want to copy the final JSON results to a specific file.
-
-During trials, Autotune prints a compact colored progress table to stderr. The generated runner refreshes its run-local `results.json` after every completed trial, so `autotune results <run-dir>` can inspect long runs before they finish.
-
-By default, `run` pauses after analysis and asks whether to run, revise, edit, or abort:
-
-```text
-Run search with this space? [Y/feedback/edit/n]
-```
-
-- `Y` or Enter: run the search
-- `feedback`: enter free-form feedback; the configured headless agent revises the search space and asks again
-- any other non-empty text: treated directly as feedback
-- `edit`: edit the generated `search_space.yaml` manually
-- `n`: abort
-
-Use `--yes` only when you want to accept the first proposed search space without review.
 
 ## Commands
 
@@ -228,14 +188,3 @@ Parameters may be `float`, `int`, or `categorical`. Use `fixed_parameters` for C
 ## Examples
 
 See [`examples/README.md`](examples/README.md) for runnable examples, benchmark setup, dataset and cache controls, and smoke-versus-full run guidance.
-
-## Development
-
-```bash
-npm ci
-npm run lint
-npm test
-npm run build
-```
-
-The test suite uses fake Python, Headless, and npx executables for deterministic workflow coverage. Slurm launcher tests run only on Linux; portable manifest, cache, and local-launcher tests run on every supported platform.
