@@ -16,16 +16,7 @@
 
 Autotune combines `headless` agents with Optuna. It analyzes your script, proposes a search space, asks for confirmation, generates a safe trial runner, and executes trials without modifying the original script. If your script is missing CLI parsing or metric output, Autotune can ask the agent to generate a compatible copy for the run.
 
-<table>
-  <tr>
-    <td align="center"><strong>CIFAR-10 speedrun</strong></td>
-    <td align="center"><strong>Nanochat nanobench</strong></td>
-  </tr>
-  <tr>
-    <td><img src="docs/cifar10_speedrun_progress.svg" alt="CIFAR-10 speedrun ablation progress plot" /></td>
-    <td><img src="docs/nanobench_progress.svg" alt="Nanochat nanobench ablation progress plot" /></td>
-  </tr>
-</table>
+https://github.com/user-attachments/assets/027e679f-01d1-4e03-ab5f-39022c6a477b
 
 ## How It Works
 
@@ -186,5 +177,16 @@ optuna:
 Parameters may be `float`, `int`, or `categorical`. Use `fixed_parameters` for CLI values that should remain constant.
 
 ## Examples
+
+<table>
+  <tr>
+    <td align="center"><strong>CIFAR-10 speedrun</strong></td>
+    <td align="center"><strong>Nanochat nanobench</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/cifar10_speedrun_progress.svg" alt="CIFAR-10 speedrun ablation progress plot" /></td>
+    <td><img src="docs/nanobench_progress.svg" alt="Nanochat nanobench ablation progress plot" /></td>
+  </tr>
+</table>
 
 See [`examples/README.md`](examples/README.md) for runnable examples, benchmark setup, dataset and cache controls, and smoke-versus-full run guidance.
