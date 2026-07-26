@@ -16,7 +16,10 @@ describe("project README", () => {
     const readme = await readFile("README.md", "utf8");
     const blogUrl = "https://roberttlange.com/blog/07-autotune";
 
-    expect(readme).toContain(`<p align="center">\n  <a href="${blogUrl}">`);
+    expect(readme).toContain(
+      `<img alt="Optuna" src="https://img.shields.io/badge/Optuna-powered-214478" />\n` +
+        `  <a href="${blogUrl}">`
+    );
     expect(readme).toContain(
       `<p align="center"><em><a href="${blogUrl}">Read more about autotune in the blog.</a></em></p>`
     );
