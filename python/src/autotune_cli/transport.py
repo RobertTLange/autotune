@@ -359,8 +359,6 @@ def _terminate_process_tree(
         else ()
     )
     leader_running = process.poll() is None
-    if not leader_running:
-        group_members = ()
     if leader_running:
         signal_processes(group_members, signal.SIGTERM)
         try:

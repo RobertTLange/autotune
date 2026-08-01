@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -64,6 +65,29 @@ def test_transport_timeout_bounds_post_termination_wait(
         )
 
     assert wait_timeouts == [transport_module.TERMINATE_GRACE_SECONDS]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process cleanup")
+def test_process_tree_cleanup_keeps_members_when_leader_exits_after_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock(pid=1234)
+    process.poll.side_effect = [None, 0]
+    member = MagicMock()
+    terminate_members = MagicMock()
+    monkeypatch.setattr(
+        transport_module,
+        "capture_process_group_members",
+        lambda _pid, _excluded: (member,),
+    )
+    monkeypatch.setattr(
+        transport_module, "terminate_process_group_members", terminate_members
+    )
+
+    transport_module._terminate_process_tree(process)
+
+    terminate_members.assert_called_once_with((member,))
+    process.terminate.assert_not_called()
 
 
 def test_transport_rejects_stdout_overflow(fake_binary: Path) -> None:
