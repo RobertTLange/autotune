@@ -11,10 +11,59 @@ import {
   parseProbability,
   parseNonNegativeInt,
   parsePositiveInt,
-  parseSamplerSeed
+  parseSamplerSeed,
+  configureExecutableProgram,
+  usesSdkFormat
 } from "../src/cli.js";
+import { SDK_PROTOCOL_VERSION } from "../src/sdk.js";
 
 describe("CLI option normalization", () => {
+  it("exposes versioned SDK capabilities", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await createProgram().parseAsync(["node", "autotune", "capabilities", "--sdk-format", "json"]);
+
+    expect(JSON.parse(String(output.mock.calls[0]?.[0]))).toEqual({
+      protocolVersion: SDK_PROTOCOL_VERSION,
+      type: "result",
+      command: "capabilities",
+      exitCode: 0,
+      data: {
+        protocolVersion: SDK_PROTOCOL_VERSION,
+        commands: ["analyze", "doctor", "plot-progress", "results", "resume", "run"]
+      }
+    });
+    output.mockRestore();
+  });
+
+  it("exposes the SDK format on supported commands", () => {
+    const sdkCommands = ["analyze", "doctor", "plot-progress", "results", "resume", "run"];
+    expect(createProgram().commands.filter((command) => sdkCommands.includes(command.name())).every((command) =>
+      command.options.some((option) => option.long === "--sdk-format")
+    )).toBe(true);
+  });
+
+  it("requires explicit run confirmation for SDK calls", async () => {
+    await expect(
+      createProgram().parseAsync(["node", "autotune", "run", "train.py", "--trials", "1", "--sdk-format", "json"])
+    ).rejects.toThrow("--sdk-format run requires --yes");
+  });
+
+  it("recognizes both SDK flag forms in parser errors", () => {
+    expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format", "json"])).toBe(true);
+    expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format=json"])).toBe(true);
+    expect(usesSdkFormat(["node", "autotune", "run"])).toBe(false);
+  });
+
+  it("routes SDK subcommand parser failures to the caller", async () => {
+    const program = createProgram();
+    configureExecutableProgram(program, true);
+
+    await expect(
+      program.parseAsync(["node", "autotune", "run", "--sdk-format=json"])
+    ).rejects.toThrow("required option '--trials <n>' not specified");
+  });
+
   it("uses package.json as the CLI version source of truth", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
       version: string;

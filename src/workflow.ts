@@ -29,7 +29,7 @@ const DEFAULT_SAMPLER: Sampler = "tpe";
 const DEFAULT_PRUNER: Pruner = "none";
 const DEFAULT_CENTAUR_CONFIG: CentaurConfig = { llm_probability: 0.3, warmup_trials: 10, seed: 0 };
 
-export async function runAutotune(script: string, options: RunOptions): Promise<void> {
+export async function runAutotune(script: string, options: RunOptions): Promise<StudyResult> {
   if (!Number.isInteger(options.trials) || options.trials < 1) {
     throw new Error("--trials must be a positive integer");
   }
@@ -232,13 +232,16 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
     await mkdir(path.dirname(outputResultsPath), { recursive: true });
     await copyFile(finalResultsPath, outputResultsPath);
   }
-  if (options.json) {
-    console.log(JSON.stringify(result, null, 2));
-  } else {
-    console.log(renderResults(result));
-    writeStatus(`Results saved to ${styles.dim(outputResultsPath ?? finalResultsPath)}`, "success");
+  if (!options.silent) {
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(renderResults(result));
+      writeStatus(`Results saved to ${styles.dim(outputResultsPath ?? finalResultsPath)}`, "success");
+    }
   }
   await writeLatestRun(artifactLayout);
+  return result;
 }
 
 export async function analyzeOnly(script: string, options: {
@@ -251,7 +254,8 @@ export async function analyzeOnly(script: string, options: {
   command?: string;
   agentGuidance?: string;
   maxParameters?: number;
-}): Promise<void> {
+  silent?: boolean;
+}): Promise<SearchSpace> {
   validateMaxParametersOption(options.maxParameters);
   const scriptPath = path.resolve(script);
   await access(scriptPath, constants.R_OK);
@@ -281,7 +285,10 @@ export async function analyzeOnly(script: string, options: {
   if (options.output) {
     await writeSearchSpace(path.resolve(options.output), searchSpace);
   }
-  console.log(options.json ? JSON.stringify(searchSpace, null, 2) : renderSearchSpaceSummary(searchSpace));
+  if (!options.silent) {
+    console.log(options.json ? JSON.stringify(searchSpace, null, 2) : renderSearchSpaceSummary(searchSpace));
+  }
+  return searchSpace;
 }
 
 export async function doctorAutotune(options: {
@@ -289,24 +296,31 @@ export async function doctorAutotune(options: {
   agent: string;
   model?: string;
   command?: string;
-}): Promise<void> {
+  silent?: boolean;
+}): Promise<DoctorCheck[]> {
   const invocation = options.script
     ? detectInvocation(await resolveReadableScript(options.script), options.command)
     : undefined;
   const checks = await checkDoctorPrerequisites({ invocation, agent: options.agent, model: options.model });
-  console.log("autotune doctor");
-  for (const check of checks) {
-    console.log(formatDoctorCheck(check));
+  if (!options.silent) {
+    console.log("autotune doctor");
+    for (const check of checks) {
+      console.log(formatDoctorCheck(check));
+    }
   }
   const failures = checks.filter((check) => check.status === "fail");
   if (failures.length > 0) {
     throw new Error(`${failures.length} prerequisite check failed`);
   }
+  return checks;
 }
 
-export async function showResults(options: { dir: string; json: boolean; top: number }): Promise<void> {
+export async function showResults(options: { dir: string; json: boolean; top: number; silent?: boolean }): Promise<StudyResult> {
   const result = await readResults(path.resolve(options.dir));
-  console.log(options.json ? JSON.stringify(result, null, 2) : renderResults(result, options.top));
+  if (!options.silent) {
+    console.log(options.json ? JSON.stringify(result, null, 2) : renderResults(result, options.top));
+  }
+  return result;
 }
 
 export async function resumeStudy(options: {
@@ -316,7 +330,8 @@ export async function resumeStudy(options: {
   nJobs: number;
   direction: "maximize" | "minimize";
   studyName?: string;
-}): Promise<void> {
+  silent?: boolean;
+}): Promise<StudyResult> {
   const workDir = await resolveRunDirectory(options.workDir);
   const manifest = await readLatestRoundManifest(workDir);
   const searchSpacePath = manifest?.search_space_path
@@ -342,7 +357,11 @@ export async function resumeStudy(options: {
       studyName: options.studyName ?? manifest?.study_name,
       output: resultsPath
   });
-  console.log(renderResults(await readResults(resultsPath)));
+  const result = await readResults(resultsPath);
+  if (!options.silent) {
+    console.log(renderResults(result));
+  }
+  return result;
 }
 
 async function prepareSearchSpaceForRun(
