@@ -48,6 +48,8 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
+parallel = true
+relative_files = true
 source = ["autotune_cli"]
 
 [tool.coverage.report]
