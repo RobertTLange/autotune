@@ -150,7 +150,7 @@ def _process_group_pids(pgid: int, deadline: float) -> list[int]:
             entries = os.scandir("/proc")
         except OSError:
             return []
-        members: list[int] = []
+        linux_members: list[int] = []
         with entries:
             for entry in entries:
                 if time.monotonic() >= deadline:
@@ -158,8 +158,8 @@ def _process_group_pids(pgid: int, deadline: float) -> list[int]:
                 if entry.name.isdigit() and _process_group_matches(
                     int(entry.name), pgid
                 ):
-                    members.append(int(entry.name))
-        return members
+                    linux_members.append(int(entry.name))
+        return linux_members
 
     ps = _trusted_command("/bin/ps", "/usr/bin/ps")
     if ps is None:
