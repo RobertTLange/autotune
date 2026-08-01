@@ -1,6 +1,6 @@
 # Releasing Autotune
 
-Releases publish `@roberttlange/autotune` to npm from `.github/workflows/release.yml`. The package version in `package.json`, changelog section, annotated Git tag, npm version, and GitHub Release must agree.
+Releases publish `@roberttlange/autotune` to npm and `autotune-cli` to PyPI from `.github/workflows/release.yml`. The versions in `package.json`, `python/pyproject.toml`, changelog section, annotated Git tag, registries, and GitHub Release must agree.
 
 ## Prerequisites
 
@@ -8,6 +8,7 @@ Releases publish `@roberttlange/autotune` to npm from `.github/workflows/release
 - The npm account owns the `@roberttlange` scope and has two-factor authentication enabled.
 - A GitHub ruleset protects tags matching `v*` from deletion and non-release updates.
 - A protected GitHub environment named `npm` exists and requires reviewer approval before deployment.
+- A protected GitHub environment named `pypi` exists and is configured as the PyPI trusted publisher for `RobertTLange/autotune`'s `release.yml` workflow.
 
 ## First Publication
 

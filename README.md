@@ -53,6 +53,10 @@ npm install -g @roberttlange/autotune
 autotune --help
 ```
 
+### Python SDK
+
+Install the typed SDK separately with `pip install autotune-cli`; it delegates to the installed `autotune` executable. See the [Python SDK guide](python/README.md) for sync and async usage.
+
 ### Agent Skill
 
 The optional Autotune agent skill is maintained in this repository rather than bundled in the npm package. Install it globally for Codex from GitHub:
