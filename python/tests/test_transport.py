@@ -28,6 +28,21 @@ def test_transport_terminates_the_process_group_on_timeout(fake_binary: Path, tm
     assert not marker.exists()
 
 
+def test_transport_timeout_redacts_sensitive_arguments(
+    fake_binary: Path, tmp_path: Path
+) -> None:
+    marker = tmp_path / "redacted-timeout"
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        SubprocessTransport(fake_binary).invoke(
+            ["leader", str(marker), "--storage=postgres://user:secret@db"],
+            timeout=0.1,
+        )
+
+    assert "secret" not in str(raised.value)
+    assert "[REDACTED]" in str(raised.value.cmd)
+
+
 def test_transport_rejects_stdout_overflow(fake_binary: Path) -> None:
     with pytest.raises(AutotuneError, match="stdout exceeded"):
         SubprocessTransport(fake_binary, max_output_bytes=128).invoke(["overflow"])
@@ -248,6 +263,23 @@ def test_async_transport_rejects_stdout_overflow(fake_binary: Path) -> None:
     async def exercise() -> None:
         with pytest.raises(AutotuneError, match="stdout exceeded"):
             await AsyncSubprocessTransport(fake_binary, max_output_bytes=128).invoke(["overflow"])
+
+    asyncio.run(exercise())
+
+
+def test_async_transport_timeout_redacts_sensitive_arguments(
+    fake_binary: Path, tmp_path: Path
+) -> None:
+    marker = tmp_path / "async-redacted-timeout"
+
+    async def exercise() -> None:
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            await AsyncSubprocessTransport(fake_binary).invoke(
+                ["leader", str(marker), "--agent-guidance", "api-key"],
+                timeout=0.1,
+            )
+        assert "api-key" not in str(raised.value)
+        assert "[REDACTED]" in str(raised.value.cmd)
 
     asyncio.run(exercise())
 

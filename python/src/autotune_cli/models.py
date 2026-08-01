@@ -1,10 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 Direction = Literal["maximize", "minimize"]
 ParameterType = Literal["float", "int", "categorical"]
+
+_SENSITIVE_FLAGS = {
+    "--agent-guidance",
+    "--build-command",
+    "--command",
+    "--storage",
+}
+_SENSITIVE_FLAG_SUFFIXES = (
+    "-access-key",
+    "-api-key",
+    "-auth-token",
+    "-authorization",
+    "-client-secret",
+    "-credential",
+    "-credentials",
+    "-passphrase",
+    "-password",
+    "-private-key",
+    "-secret",
+    "-secret-key",
+    "-token",
+)
 
 
 @dataclass(frozen=True)
@@ -17,17 +40,30 @@ class CommandResult:
     def __repr__(self) -> str:
         return (
             f"CommandResult(returncode={self.returncode!r}, stdout={self.stdout!r}, "
-            f"stderr={self.stderr!r}, argv={_redacted_argv(self.argv)!r})"
+            f"stderr={self.stderr!r}, argv={redacted_argv(self.argv)!r})"
         )
 
 
-def _redacted_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
-    sensitive_flags = {"--agent-guidance", "--storage"}
+def redacted_argv(argv: Sequence[str]) -> tuple[str, ...]:
     values = list(argv)
-    for index, value in enumerate(values[:-1]):
-        if value in sensitive_flags:
+    for index, value in enumerate(values):
+        flag, separator, _ = value.partition("=")
+        if not _is_sensitive_flag(flag):
+            continue
+        if separator:
+            values[index] = f"{flag}=[REDACTED]"
+        elif index + 1 < len(values):
             values[index + 1] = "[REDACTED]"
     return tuple(values)
+
+
+def _is_sensitive_flag(flag: str) -> bool:
+    normalized = flag.lower().replace("_", "-")
+    if not normalized.startswith("--"):
+        return False
+    return normalized in _SENSITIVE_FLAGS or normalized.endswith(
+        _SENSITIVE_FLAG_SUFFIXES
+    )
 
 
 @dataclass(frozen=True)

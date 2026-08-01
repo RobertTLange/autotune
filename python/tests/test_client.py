@@ -104,6 +104,57 @@ def test_command_result_repr_redacts_sensitive_argument_values() -> None:
     assert "api-key" not in repr(result)
 
 
+def test_command_result_repr_redacts_equals_form_without_mutating_argv() -> None:
+    result = CommandResult(
+        1,
+        "",
+        "",
+        (
+            "autotune",
+            "run",
+            "--storage=postgres://user:secret@db",
+            "--agent-guidance=api-key",
+        ),
+    )
+
+    assert "secret" not in repr(result)
+    assert "api-key" not in repr(result)
+    assert result.argv[-1] == "--agent-guidance=api-key"
+
+
+def test_command_result_repr_redacts_qualified_secret_flags() -> None:
+    result = CommandResult(
+        1,
+        "",
+        "",
+        (
+            "autotune",
+            "invoke",
+            "--openai-api-key",
+            "sk-secret",
+            "--github_token=ghp_secret",
+            "--client-secret",
+            "client-sensitive-value",
+            "--token-budget=1000",
+            "--command",
+            "python train.py --openai-api-key nested-secret",
+            "--build-command=curl https://user:pass@host",
+            "dataset-token",
+            "visible-next-value",
+        ),
+    )
+
+    rendered = repr(result)
+    assert "sk-secret" not in rendered
+    assert "ghp_secret" not in rendered
+    assert "client-sensitive-value" not in rendered
+    assert "nested-secret" not in rendered
+    assert "user:pass" not in rendered
+    assert "--token-budget=1000" in rendered
+    assert "dataset-token" in rendered
+    assert "visible-next-value" in rendered
+
+
 def test_protocol_rejects_exit_code_mismatches() -> None:
     command = CommandResult(
         1,

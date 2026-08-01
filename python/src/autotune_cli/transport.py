@@ -11,7 +11,7 @@ from os import PathLike
 from typing import IO, Any, BinaryIO
 
 from .errors import AutotuneError, AutotuneNotFoundError
-from .models import CommandResult
+from .models import CommandResult, redacted_argv
 from .pipe_capture import OutputPipeCapture
 from .processes import (
     READER_CLEANUP_SECONDS,
@@ -193,7 +193,12 @@ class SubprocessTransport:
         if cancelled:
             raise _InvocationCancelled
         if timed_out:
-            raise subprocess.TimeoutExpired(argv, timeout or 0.0, output=result.stdout, stderr=result.stderr)
+            raise subprocess.TimeoutExpired(
+                redacted_argv(argv),
+                timeout or 0.0,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
         if stdout.overflowed:
             raise AutotuneError(
                 f"autotune stdout exceeded the {self._max_output_bytes} byte capture limit", result
