@@ -77,12 +77,10 @@ async def _finish_cancelled_invocation(
             await asyncio.shield(future)
         except asyncio.CancelledError:
             continue
-        except BaseException:
+        except BaseException:  # noqa: BLE001 - cancellation must win over worker failures
             return
-    try:
-        future.result()
-    except (BaseException, asyncio.InvalidStateError):
-        pass
+    if not future.cancelled():
+        future.exception()
 
 
 def _run_in_daemon_thread(
@@ -94,7 +92,7 @@ def _run_in_daemon_thread(
     def run() -> None:
         try:
             result = function(*args)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - always complete the future
             try:
                 loop.call_soon_threadsafe(_set_future_exception, future, error)
             except RuntimeError:

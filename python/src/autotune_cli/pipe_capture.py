@@ -64,7 +64,7 @@ class OutputPipeCapture:
     def _capture(self) -> None:
         try:
             self._output_pipes = processes.capture_output_pipes(self._pipe_fds)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - cleanup must preserve interrupts
             self._error = error
         finally:
             for descriptor in self._pipe_fds:

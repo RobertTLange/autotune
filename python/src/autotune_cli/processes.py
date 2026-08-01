@@ -63,6 +63,7 @@ def capture_output_pipes(pipe_fds: Sequence[int]) -> OutputPipes:
             text=True,
             timeout=0.5,
             env={"PATH": str(Path(lsof).parent), "LC_ALL": "C"},
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return OutputPipes()
@@ -171,6 +172,7 @@ def _process_group_pids(pgid: int, deadline: float) -> list[int]:
             text=True,
             timeout=max(0.01, deadline - time.monotonic()),
             env={"PATH": str(Path(ps).parent), "LC_ALL": "C"},
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -225,6 +227,7 @@ def _output_holder_pids(output_pipes: OutputPipes, deadline: float) -> list[int]
             text=True,
             timeout=max(0.01, deadline - time.monotonic()),
             env={"PATH": str(Path(lsof).parent), "LC_ALL": "C"},
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -321,6 +324,7 @@ def _process_holds_output(
             text=True,
             timeout=max(0.01, deadline - time.monotonic()),
             env={"PATH": str(Path(lsof).parent), "LC_ALL": "C"},
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -400,6 +404,7 @@ def _process_identity(pid: int, deadline: float) -> tuple[int, str] | None:
             text=True,
             timeout=max(0.01, deadline - time.monotonic()),
             env={"PATH": str(Path(ps).parent), "LC_ALL": "C"},
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

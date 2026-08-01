@@ -373,6 +373,7 @@ def assert_process_stopped(pid: int) -> None:
             capture_output=True,
             text=True,
             timeout=0.2,
+            check=False,
         )
         status = result.stdout.strip()
         if result.returncode != 0 or not status or status.startswith("Z"):

@@ -298,7 +298,7 @@ def _terminate_process_tree(
 def _captured_output_pipes(capture: OutputPipeCapture) -> OutputPipes:
     try:
         return capture.result(READER_CLEANUP_SECONDS)
-    except BaseException:
+    except BaseException:  # noqa: BLE001 - cleanup must preserve interrupts
         return OutputPipes()
 
 
