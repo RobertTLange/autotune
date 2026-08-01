@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, real
 import { fileURLToPath } from "node:url";
 import { plotProgress } from "./progress-plot.js";
 import type { ProgressXAxis } from "./progress-plot.js";
-import { SDK_PROTOCOL_VERSION, renderSdkError, renderSdkResult } from "./sdk.js";
+import { SDK_PROTOCOL_VERSION, redactSdkErrorMessage, renderSdkError, renderSdkResult } from "./sdk.js";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
@@ -200,7 +200,11 @@ if (isMainModule()) {
     const message = error instanceof Error ? error.message : String(error);
     const exitCode = existingOrErrorExitCode(error);
     if (usesSdkFormat(process.argv)) {
-      console.log(renderSdkError(message, exitCode, sdkCommandFromArgv(process.argv)));
+      console.log(renderSdkError(
+        redactSdkErrorMessage(message, process.argv),
+        exitCode,
+        sdkCommandFromArgv(process.argv)
+      ));
     } else {
       console.error(message);
     }
