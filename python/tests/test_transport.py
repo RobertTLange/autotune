@@ -50,6 +50,11 @@ def test_async_transport_rejects_stdout_overflow(fake_binary: Path) -> None:
     asyncio.run(exercise())
 
 
+def test_transport_preserves_invalid_working_directory_errors(fake_binary: Path, tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        SubprocessTransport(fake_binary).invoke([], cwd=tmp_path / "missing")
+
+
 @pytest.fixture
 def fake_binary(tmp_path: Path) -> Path:
     binary = tmp_path / "noisy-cli"

@@ -116,6 +116,18 @@ def test_protocol_rejects_exit_code_mismatches() -> None:
         parse_sdk_envelope(command)
 
 
+def test_protocol_rejects_boolean_protocol_versions() -> None:
+    command = CommandResult(
+        0,
+        json.dumps({"protocolVersion": True, "type": "result", "command": "results", "exitCode": 0, "data": {}}),
+        "",
+        ("autotune", "results"),
+    )
+
+    with pytest.raises(AutotuneError, match="incompatible"):
+        parse_sdk_envelope(command)
+
+
 @pytest.fixture
 def fake_autotune(tmp_path: Path) -> Path:
     binary = tmp_path / "autotune"
