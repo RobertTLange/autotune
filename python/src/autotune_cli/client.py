@@ -264,7 +264,7 @@ def _trial_result(value: Any, result: CommandResult) -> TrialResult | None:
 
 
 def _doctor_check(value: Any, result: CommandResult) -> DoctorCheck:
-    if not isinstance(value, dict) or value.get("status") not in {"pass", "fail"}:
+    if not isinstance(value, dict) or value.get("status") not in {"ok", "fail", "skip"}:
         raise AutotuneProtocolError("doctor check is invalid", result)
     return DoctorCheck(_string(value, "name", result), value["status"], _string(value, "detail", result))
 

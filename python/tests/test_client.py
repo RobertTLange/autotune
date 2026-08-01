@@ -56,7 +56,7 @@ def test_core_commands_return_typed_values(fake_autotune: Path) -> None:
     resumed = client.resume(storage="sqlite:///study.db", trials=1)
     plot = client.plot_progress("ablation", output="progress.svg")
 
-    assert checks[0].status == "pass"
+    assert checks[0].status == "ok"
     assert resumed.n_trials == 1
     assert plot.name == "progress.svg"
 
@@ -133,7 +133,7 @@ elif command == "analyze":
 elif command == "run":
     data = {"study_name": "example", "direction": "maximize", "n_trials": 2, "best_trial": {"number": 0, "value": 1.0, "params": {}}, "all_trials": []}
 elif command == "doctor":
-    data = [{"name": "python", "status": "pass", "detail": "3.12"}]
+    data = [{"name": "python", "status": "ok", "detail": "3.12"}]
 elif command == "plot-progress":
     data = {"output": "progress.svg"}
 elif command == "resume":

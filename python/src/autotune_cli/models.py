@@ -84,7 +84,7 @@ class StudyResult:
 @dataclass(frozen=True)
 class DoctorCheck:
     name: str
-    status: Literal["pass", "fail"]
+    status: Literal["ok", "fail", "skip"]
     detail: str
 
 
