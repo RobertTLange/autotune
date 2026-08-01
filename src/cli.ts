@@ -236,9 +236,12 @@ export function usesSdkFormat(argv: string[]): boolean {
   return argv.some((value) => value === "--sdk-format" || value.startsWith("--sdk-format="));
 }
 
-function sdkCommandFromArgv(argv: string[]): string {
-  return ["analyze", "capabilities", "doctor", "plot-progress", "results", "resume", "run"]
-    .find((command) => argv.includes(command)) ?? "cli";
+export function sdkCommandFromArgv(argv: string[]): string {
+  const command = argv[2];
+  return command !== undefined &&
+    ["analyze", "capabilities", "doctor", "plot-progress", "results", "resume", "run"].includes(command)
+    ? command
+    : "cli";
 }
 
 function errorExitCode(error: unknown): number {

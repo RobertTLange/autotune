@@ -13,6 +13,7 @@ import {
   parsePositiveInt,
   parseSamplerSeed,
   configureExecutableProgram,
+  sdkCommandFromArgv,
   usesSdkFormat
 } from "../src/cli.js";
 import { SDK_PROTOCOL_VERSION } from "../src/sdk.js";
@@ -92,6 +93,12 @@ describe("CLI option normalization", () => {
     expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format", "json"])).toBe(true);
     expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format=json"])).toBe(true);
     expect(usesSdkFormat(["node", "autotune", "run"])).toBe(false);
+  });
+
+  it("derives SDK error commands from the subcommand position", () => {
+    expect(sdkCommandFromArgv([
+      "node", "autotune", "run", "analyze", "--trials", "1", "--sdk-format", "json"
+    ])).toBe("run");
   });
 
   it("routes SDK subcommand parser failures to the caller", async () => {
