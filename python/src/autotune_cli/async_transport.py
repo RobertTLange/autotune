@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
-import subprocess
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 from os import PathLike
+from typing import Any, TypeVar
 
-from .errors import AutotuneError, AutotuneNotFoundError
 from .models import CommandResult
 from .transport import (
     DEFAULT_MAX_OUTPUT_BYTES,
-    TERMINATE_GRACE_SECONDS,
-    _BoundedBytes,
-    _windows_creation_flags,
-    _windows_terminate_tree,
+    SubprocessTransport,
     discover_binary,
     merged_environment,
 )
+
+ResultT = TypeVar("ResultT")
 
 
 class AsyncSubprocessTransport:
@@ -29,71 +26,94 @@ class AsyncSubprocessTransport:
         self._max_output_bytes = max_output_bytes
 
     async def invoke(self, args: Sequence[str], *, cwd: str | PathLike[str] | None = None, env: Mapping[str, str] | None = None, timeout: float | None = None, check: bool = True) -> CommandResult:
-        argv = (self.binary, *(str(value) for value in args))
+        cancel_event = threading.Event()
+        transport = SubprocessTransport(
+            self.binary,
+            env=self._env,
+            max_output_bytes=self._max_output_bytes,
+        )
+        future = _run_in_daemon_thread(
+            _invoke_sync,
+            transport,
+            tuple(args),
+            cwd,
+            env,
+            timeout,
+            check,
+            cancel_event,
+        )
         try:
-            process = await asyncio.create_subprocess_exec(
-                *argv, cwd=cwd, env=merged_environment(self._env, env), stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix",
-                creationflags=_windows_creation_flags(),
-            )
-        except FileNotFoundError as error:
-            if error.filename != self.binary:
-                raise
-            raise AutotuneNotFoundError(f"autotune executable not found: {self.binary}", CommandResult(127, "", "", argv)) from error
-        stdout = _BoundedBytes(self._max_output_bytes)
-        stderr = _BoundedBytes(self._max_output_bytes, tail=True)
-        overflow = asyncio.Event()
-        readers = [asyncio.create_task(_read_stream(process.stdout, stdout, overflow)), asyncio.create_task(_read_stream(process.stderr, stderr, overflow))]
-        waiter = asyncio.create_task(process.wait())
-        overflow_waiter = asyncio.create_task(overflow.wait())
-        timed_out = False
-        try:
-            done, _ = await asyncio.wait([waiter, overflow_waiter], timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-            if not done:
-                timed_out = True
-                await _terminate_process_tree(process)
-            elif overflow.is_set():
-                await _terminate_process_tree(process)
-            await waiter
+            return await asyncio.shield(future)
         except asyncio.CancelledError:
-            await _terminate_process_tree(process)
+            cancel_event.set()
+            await _finish_cancelled_invocation(future)
             raise
-        finally:
-            overflow_waiter.cancel()
-            await asyncio.gather(*readers, return_exceptions=True)
-        result = CommandResult(process.returncode or 0, stdout.text(), stderr.text(), argv)
-        if timed_out:
-            raise subprocess.TimeoutExpired(argv, timeout or 0.0, output=result.stdout, stderr=result.stderr)
-        if stdout.overflowed:
-            raise AutotuneError(f"autotune stdout exceeded the {self._max_output_bytes} byte capture limit", result)
-        if stderr.overflowed:
-            raise AutotuneError(f"autotune stderr exceeded the {self._max_output_bytes} byte capture limit", result)
-        if check and result.returncode != 0:
-            raise AutotuneError("autotune command failed", result)
-        return result
 
 
-async def _read_stream(stream: asyncio.StreamReader | None, destination: _BoundedBytes, overflow: asyncio.Event) -> None:
-    if stream is None:
-        return
-    while chunk := await stream.read(65536):
-        destination.append(chunk)
-        if destination.overflowed:
-            overflow.set()
+def _invoke_sync(
+    transport: SubprocessTransport,
+    args: Sequence[str],
+    cwd: str | PathLike[str] | None,
+    env: Mapping[str, str] | None,
+    timeout: float | None,
+    check: bool,
+    cancel_event: threading.Event,
+) -> CommandResult:
+    return transport._invoke(
+        args,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        check=check,
+        cancel_event=cancel_event,
+    )
 
 
-async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    if os.name == "posix":
-        os.killpg(process.pid, signal.SIGTERM)
-    else:
-        _windows_terminate_tree(process.pid)
+async def _finish_cancelled_invocation(
+    future: asyncio.Future[CommandResult],
+) -> None:
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:
+            return
     try:
-        await asyncio.wait_for(process.wait(), timeout=TERMINATE_GRACE_SECONDS)
-    except TimeoutError:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGKILL)
+        future.result()
+    except (BaseException, asyncio.InvalidStateError):
+        pass
+
+
+def _run_in_daemon_thread(
+    function: Callable[..., ResultT], *args: object
+) -> asyncio.Future[ResultT]:
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future[ResultT] = loop.create_future()
+
+    def run() -> None:
+        try:
+            result = function(*args)
+        except BaseException as error:
+            try:
+                loop.call_soon_threadsafe(_set_future_exception, future, error)
+            except RuntimeError:
+                pass
         else:
-            _windows_terminate_tree(process.pid)
-        await process.wait()
+            try:
+                loop.call_soon_threadsafe(_set_future_result, future, result)
+            except RuntimeError:
+                pass
+
+    threading.Thread(target=run, daemon=True).start()
+    return future
+
+
+def _set_future_result(future: asyncio.Future[ResultT], result: ResultT) -> None:
+    if not future.done():
+        future.set_result(result)
+
+
+def _set_future_exception(future: asyncio.Future[Any], error: BaseException) -> None:
+    if not future.done():
+        future.set_exception(error)

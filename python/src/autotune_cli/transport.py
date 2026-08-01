@@ -12,9 +12,18 @@ from typing import IO, Any, BinaryIO
 
 from .errors import AutotuneError, AutotuneNotFoundError
 from .models import CommandResult
+from .pipe_capture import OutputPipeCapture
+from .processes import (
+    READER_CLEANUP_SECONDS,
+    OutputPipes,
+    capture_process_group_members,
+    signal_processes,
+    terminate_output_holders,
+    terminate_process_group_members,
+)
 
 DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
-TERMINATE_GRACE_SECONDS = 1.0
+TERMINATE_GRACE_SECONDS = 4.0
 
 
 def discover_binary(
@@ -73,6 +82,27 @@ class SubprocessTransport:
         timeout: float | None = None,
         check: bool = True,
     ) -> CommandResult:
+        return self._invoke(
+            args,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            check=check,
+            cancel_event=None,
+        )
+
+    def _invoke(
+        self,
+        args: Sequence[str],
+        *,
+        cwd: str | PathLike[str] | None,
+        env: Mapping[str, str] | None,
+        timeout: float | None,
+        check: bool,
+        cancel_event: threading.Event | None,
+    ) -> CommandResult:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _InvocationCancelled
         argv = (self.binary, *(str(value) for value in args))
         try:
             process = subprocess.Popen(
@@ -91,37 +121,77 @@ class SubprocessTransport:
             result = CommandResult(127, "", "", argv)
             raise AutotuneNotFoundError(f"autotune executable not found: {self.binary}", result) from error
 
+        started_at = time.monotonic()
+        output_pipes = OutputPipes()
         stdout = _BoundedBytes(self._max_output_bytes)
         stderr = _BoundedBytes(self._max_output_bytes, tail=True)
-        threads = [
-            threading.Thread(target=_read_pipe, args=(process.stdout, stdout), daemon=True),
-            threading.Thread(target=_read_pipe, args=(process.stderr, stderr), daemon=True),
-        ]
-        for thread in threads:
-            thread.start()
+        reader_stop = threading.Event()
+        threads: list[threading.Thread] = []
+        pipe_capture = OutputPipeCapture(())
         timed_out = False
-        started_at = time.monotonic()
+        cancelled = False
         try:
-            while process.poll() is None:
-                if stdout.overflowed or stderr.overflowed:
-                    _terminate_process_tree(process)
+            pipe_fds = tuple(
+                pipe.fileno()
+                for pipe in (process.stdout, process.stderr)
+                if pipe is not None
+            )
+            pipe_capture = OutputPipeCapture(pipe_fds)
+            pipe_capture.start()
+            for pipe, destination in (
+                (process.stdout, stdout),
+                (process.stderr, stderr),
+            ):
+                thread = threading.Thread(
+                    target=_read_pipe,
+                    args=(pipe, destination, reader_stop),
+                    daemon=True,
+                )
+                thread.start()
+                threads.append(thread)
+            output_pipes = pipe_capture.result(READER_CLEANUP_SECONDS, cancel_event)
+            deadline = started_at + timeout if timeout is not None else None
+            timed_out = deadline is not None and time.monotonic() >= deadline
+            while process.poll() is None and not timed_out:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
                     break
-                if timeout is not None and time.monotonic() - started_at >= timeout:
+                if stdout.overflowed or stderr.overflowed:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
                     timed_out = True
-                    _terminate_process_tree(process)
                     break
                 time.sleep(0.01)
         except BaseException:
-            _terminate_process_tree(process)
+            output_pipes = _captured_output_pipes(pipe_capture)
+            _terminate_process_tree(process, output_pipes)
             raise
         finally:
+            if cancelled or timed_out or stdout.overflowed or stderr.overflowed:
+                output_pipes = _captured_output_pipes(pipe_capture)
+                _terminate_process_tree(process, output_pipes)
             process.wait()
-            for thread in threads:
-                thread.join(timeout=TERMINATE_GRACE_SECONDS)
+            drain_deadline = (
+                started_at + timeout
+                if timeout is not None
+                else time.monotonic() + TERMINATE_GRACE_SECONDS
+            )
+            cancelled = cancelled or _join_threads_until(
+                threads, drain_deadline, cancel_event
+            )
+            if any(thread.is_alive() for thread in threads):
+                timed_out = timeout is not None
+                _terminate_process_tree(process, output_pipes)
+                _join_threads_until(threads, time.monotonic() + READER_CLEANUP_SECONDS)
+            if any(thread.is_alive() for thread in threads):
+                reader_stop.set()
+                _join_threads_until(threads, time.monotonic() + READER_CLEANUP_SECONDS)
             _close_pipe(process.stdout)
             _close_pipe(process.stderr)
 
         result = CommandResult(process.returncode, stdout.text(), stderr.text(), argv)
+        if cancelled:
+            raise _InvocationCancelled
         if timed_out:
             raise subprocess.TimeoutExpired(argv, timeout or 0.0, output=result.stdout, stderr=result.stderr)
         if stdout.overflowed:
@@ -135,6 +205,10 @@ class SubprocessTransport:
         if check and result.returncode != 0:
             raise AutotuneError("autotune command failed", result)
         return result
+
+
+class _InvocationCancelled(Exception):
+    pass
 
 
 class _BoundedBytes:
@@ -166,32 +240,80 @@ class _BoundedBytes:
             return bytes(self._data).decode("utf-8", errors="replace")
 
 
-def _read_pipe(pipe: BinaryIO | None, destination: _BoundedBytes) -> None:
+def _read_pipe(
+    pipe: BinaryIO | None, destination: _BoundedBytes, stop: threading.Event
+) -> None:
     if pipe is None:
         return
+    descriptor = pipe.fileno()
+    if os.name == "posix":
+        os.set_blocking(descriptor, False)
     try:
-        while chunk := os.read(pipe.fileno(), 65536):
+        while not stop.is_set():
+            try:
+                chunk = os.read(descriptor, 65536)
+            except BlockingIOError:
+                stop.wait(0.01)
+                continue
+            if not chunk:
+                break
             destination.append(chunk)
     finally:
         _close_pipe(pipe)
 
 
-def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "posix":
-        os.killpg(process.pid, signal.SIGTERM)
-    else:
+def _terminate_process_tree(
+    process: subprocess.Popen[bytes], output_pipes: OutputPipes | None = None
+) -> None:
+    if os.name != "posix":
+        if process.poll() is not None:
+            return
         _windows_terminate_tree(process.pid)
+        return
+
+    leader_running = process.poll() is None
+    group_members = (
+        capture_process_group_members(process.pid, process.pid)
+        if leader_running
+        else ()
+    )
+    leader_running = process.poll() is None
+    if not leader_running:
+        group_members = ()
+    if leader_running:
+        signal_processes(group_members, signal.SIGTERM)
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=TERMINATE_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    terminate_process_group_members(group_members)
+    if output_pipes is not None:
+        terminate_output_holders(output_pipes, process.pid)
+
+
+def _captured_output_pipes(capture: OutputPipeCapture) -> OutputPipes:
     try:
-        process.wait(timeout=TERMINATE_GRACE_SECONDS)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    if os.name == "posix":
-        os.killpg(process.pid, signal.SIGKILL)
-    else:
-        _windows_terminate_tree(process.pid)
+        return capture.result(READER_CLEANUP_SECONDS)
+    except BaseException:
+        return OutputPipes()
+
+
+def _join_threads_until(
+    threads: Sequence[threading.Thread],
+    deadline: float,
+    cancel_event: threading.Event | None = None,
+) -> bool:
+    for thread in threads:
+        while thread.is_alive() and time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            thread.join(timeout=min(0.05, remaining))
+            if cancel_event is not None and cancel_event.is_set():
+                return True
+    return False
 
 
 def _close_pipe(pipe: IO[Any] | None) -> None:
