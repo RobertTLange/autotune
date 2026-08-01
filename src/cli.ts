@@ -259,11 +259,12 @@ function existingOrErrorExitCode(error: unknown): number {
 }
 
 export function configureExecutableProgram(program: Command, sdk: boolean): void {
+  if (!sdk) {
+    return;
+  }
   for (const command of [program, ...program.commands]) {
     command.exitOverride();
-    if (sdk) {
-      command.configureOutput({ writeErr: () => undefined });
-    }
+    command.configureOutput({ writeErr: () => undefined });
   }
 }
 

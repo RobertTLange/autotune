@@ -64,6 +64,22 @@ describe("CLI option normalization", () => {
     ).rejects.toThrow("required option '--trials <n>' not specified");
   });
 
+  it("preserves successful version exits for the human CLI", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`process exited with ${String(code)}`);
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const program = createProgram();
+    configureExecutableProgram(program, false);
+
+    await expect(program.parseAsync(["node", "autotune", "--version"]))
+      .rejects.toThrow("process exited with 0");
+
+    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(output).toHaveBeenCalledWith(`${PACKAGE_VERSION}\n`);
+  });
+
   it("uses package.json as the CLI version source of truth", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
       version: string;
