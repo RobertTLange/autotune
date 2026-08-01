@@ -300,6 +300,8 @@ def _number_or_none(value: Any, result: CommandResult) -> float | int | None:
 
 def _direction(data: dict[str, Any], result: CommandResult) -> Direction:
     value = data.get("direction")
-    if value == "maximize" or value == "minimize":
-        return value
+    if value == "maximize":
+        return "maximize"
+    if value == "minimize":
+        return "minimize"
     raise AutotuneProtocolError("SDK data direction is invalid", result)
