@@ -196,11 +196,16 @@ class SubprocessTransport:
                 time.sleep(0.01)
         except BaseException as error:
             primary_error = error
-            output_pipes = _captured_output_pipes(pipe_capture)
-            _terminate_process_tree(process, output_pipes, windows_job)
             raise
         finally:
-            if cancelled or timed_out or stdout.overflowed or stderr.overflowed:
+            cleanup_requested = (
+                primary_error is not None
+                or cancelled
+                or timed_out
+                or stdout.overflowed
+                or stderr.overflowed
+            )
+            if cleanup_requested:
                 output_pipes = _captured_output_pipes(pipe_capture)
                 _terminate_process_tree(process, output_pipes, windows_job)
             wait_error: RuntimeError | None = None
@@ -210,7 +215,7 @@ class SubprocessTransport:
                     timeout=(
                         WINDOWS_TERMINATE_TIMEOUT_SECONDS
                         if os.name == "nt"
-                        else None
+                        else TERMINATE_GRACE_SECONDS if cleanup_requested else None
                     ),
                 )
             except RuntimeError as error:

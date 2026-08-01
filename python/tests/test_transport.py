@@ -43,6 +43,29 @@ def test_transport_timeout_redacts_sensitive_arguments(
     assert "[REDACTED]" in str(raised.value.cmd)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process cleanup")
+def test_transport_timeout_bounds_post_termination_wait(
+    fake_binary: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "bounded-wait-leader"
+    wait_timeouts: list[float | None] = []
+
+    def fail_reap(
+        _process: subprocess.Popen[bytes], *, timeout: float | None
+    ) -> None:
+        wait_timeouts.append(timeout)
+        raise RuntimeError("process did not exit")
+
+    monkeypatch.setattr(transport_module, "_wait_for_process_exit", fail_reap)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        SubprocessTransport(fake_binary).invoke(
+            ["leader", str(marker)], timeout=0.1
+        )
+
+    assert wait_timeouts == [transport_module.TERMINATE_GRACE_SECONDS]
+
+
 def test_transport_rejects_stdout_overflow(fake_binary: Path) -> None:
     with pytest.raises(AutotuneError, match="stdout exceeded"):
         SubprocessTransport(fake_binary, max_output_bytes=128).invoke(["overflow"])
