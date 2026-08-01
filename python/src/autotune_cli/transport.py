@@ -86,6 +86,8 @@ class SubprocessTransport:
                 creationflags=_windows_creation_flags(),
             )
         except FileNotFoundError as error:
+            if error.filename != self.binary:
+                raise
             result = CommandResult(127, "", "", argv)
             raise AutotuneNotFoundError(f"autotune executable not found: {self.binary}", result) from error
 
@@ -180,7 +182,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "posix":
         os.killpg(process.pid, signal.SIGTERM)
     else:
-        process.terminate()
+        _windows_terminate_tree(process.pid)
     try:
         process.wait(timeout=TERMINATE_GRACE_SECONDS)
         return
@@ -189,7 +191,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     if os.name == "posix":
         os.killpg(process.pid, signal.SIGKILL)
     else:
-        process.kill()
+        _windows_terminate_tree(process.pid)
 
 
 def _close_pipe(pipe: IO[Any] | None) -> None:
@@ -199,3 +201,7 @@ def _close_pipe(pipe: IO[Any] | None) -> None:
 
 def _windows_creation_flags() -> int:
     return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if os.name == "nt" else 0
+
+
+def _windows_terminate_tree(pid: int) -> None:
+    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)

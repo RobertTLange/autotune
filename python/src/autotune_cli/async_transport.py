@@ -13,6 +13,8 @@ from .transport import (
     DEFAULT_MAX_OUTPUT_BYTES,
     TERMINATE_GRACE_SECONDS,
     _BoundedBytes,
+    _windows_creation_flags,
+    _windows_terminate_tree,
     discover_binary,
     merged_environment,
 )
@@ -32,8 +34,11 @@ class AsyncSubprocessTransport:
             process = await asyncio.create_subprocess_exec(
                 *argv, cwd=cwd, env=merged_environment(self._env, env), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=os.name == "posix",
+                creationflags=_windows_creation_flags(),
             )
         except FileNotFoundError as error:
+            if error.filename != self.binary:
+                raise
             raise AutotuneNotFoundError(f"autotune executable not found: {self.binary}", CommandResult(127, "", "", argv)) from error
         stdout = _BoundedBytes(self._max_output_bytes)
         stderr = _BoundedBytes(self._max_output_bytes, tail=True)
@@ -83,12 +88,12 @@ async def _terminate_process_tree(process: asyncio.subprocess.Process) -> None:
     if os.name == "posix":
         os.killpg(process.pid, signal.SIGTERM)
     else:
-        process.terminate()
+        _windows_terminate_tree(process.pid)
     try:
         await asyncio.wait_for(process.wait(), timeout=TERMINATE_GRACE_SECONDS)
     except TimeoutError:
         if os.name == "posix":
             os.killpg(process.pid, signal.SIGKILL)
         else:
-            process.kill()
+            _windows_terminate_tree(process.pid)
         await process.wait()

@@ -14,7 +14,8 @@ def parse_sdk_envelope(result: CommandResult) -> SdkResult | SdkError:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise AutotuneProtocolError("autotune returned invalid SDK JSON", result) from error
-    if not isinstance(payload, dict) or payload.get("protocolVersion") != SDK_PROTOCOL_VERSION:
+    protocol_version = payload.get("protocolVersion") if isinstance(payload, dict) else None
+    if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version != SDK_PROTOCOL_VERSION:
         raise AutotuneVersionError(
             f"incompatible autotune SDK protocol; expected {SDK_PROTOCOL_VERSION}", result
         )

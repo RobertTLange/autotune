@@ -249,7 +249,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: publish
+    needs: publish-python
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -257,7 +257,7 @@ jobs:
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.publish.outputs.version }}
+          RELEASE_VERSION: ${{ needs.publish-python.outputs.version }}
         run: |
           set -euo pipefail
           tag="v$RELEASE_VERSION"
@@ -266,7 +266,9 @@ jobs:
 
   publish-python:
     name: Publish to PyPI
-    needs: package
+    needs: publish
+    outputs:
+      version: ${{ needs.publish.outputs.version }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -274,6 +276,6 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: pypi-release-${{ needs.package.outputs.version }}
+          name: pypi-release-${{ needs.publish.outputs.version }}
           path: dist
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
