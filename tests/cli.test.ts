@@ -17,6 +17,16 @@ import {
 } from "../src/cli.js";
 import { SDK_PROTOCOL_VERSION } from "../src/sdk.js";
 
+vi.mock("../src/check.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/check.js")>();
+  return {
+    ...actual,
+    checkDoctorPrerequisites: vi.fn(async () => [
+      { name: "headless", status: "fail", detail: "configured headless executable must not be empty" }
+    ])
+  };
+});
+
 describe("CLI option normalization", () => {
   it("exposes versioned SDK capabilities", async () => {
     const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -41,6 +51,35 @@ describe("CLI option normalization", () => {
     expect(createProgram().commands.filter((command) => sdkCommands.includes(command.name())).every((command) =>
       command.options.some((option) => option.long === "--sdk-format")
     )).toBe(true);
+  });
+
+  it("returns typed doctor failures to SDK callers", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      await createProgram().parseAsync(["node", "autotune", "doctor", "--sdk-format", "json"]);
+      const response = JSON.parse(String(output.mock.calls.at(-1)?.[0])) as {
+        type: string;
+        exitCode: number;
+        data: Array<{ name: string; status: string; detail: string }>;
+      };
+      expect(response.type).toBe("result");
+      expect(response.exitCode).toBe(0);
+      expect(response.data).toContainEqual(expect.objectContaining({ name: "headless", status: "fail" }));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("keeps doctor failures nonzero for human callers", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      await expect(createProgram().parseAsync(["node", "autotune", "doctor"]))
+        .rejects.toThrow("prerequisite check failed");
+    } finally {
+      output.mockRestore();
+    }
   });
 
   it("requires explicit run confirmation for SDK calls", async () => {

@@ -309,7 +309,7 @@ export async function doctorAutotune(options: {
     }
   }
   const failures = checks.filter((check) => check.status === "fail");
-  if (failures.length > 0) {
+  if (!options.silent && failures.length > 0) {
     throw new Error(`${failures.length} prerequisite check failed`);
   }
   return checks;
