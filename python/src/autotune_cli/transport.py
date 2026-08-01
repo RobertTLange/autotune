@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from os import PathLike
-from typing import IO, Any, BinaryIO
+from typing import IO, Any, BinaryIO, NoReturn
 
 from .errors import AutotuneError, AutotuneNotFoundError
 from .models import CommandResult, redacted_argv
@@ -20,6 +20,12 @@ from .processes import (
     signal_processes,
     terminate_output_holders,
     terminate_process_group_members,
+)
+from .windows_job import (
+    WINDOWS_TERMINATE_TIMEOUT_SECONDS,
+    WindowsJob,
+    prepare_windows_process,
+    terminate_windows_process_tree,
 )
 
 DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
@@ -121,6 +127,30 @@ class SubprocessTransport:
             result = CommandResult(127, "", "", argv)
             raise AutotuneNotFoundError(f"autotune executable not found: {self.binary}", result) from error
 
+        windows_job = prepare_windows_process(process)
+        try:
+            return self._supervise_process(
+                process,
+                argv,
+                timeout=timeout,
+                check=check,
+                cancel_event=cancel_event,
+                windows_job=windows_job,
+            )
+        finally:
+            if windows_job is not None:
+                windows_job.close()
+
+    def _supervise_process(
+        self,
+        process: subprocess.Popen[bytes],
+        argv: tuple[str, ...],
+        *,
+        timeout: float | None,
+        check: bool,
+        cancel_event: threading.Event | None,
+        windows_job: WindowsJob | None,
+    ) -> CommandResult:
         started_at = time.monotonic()
         output_pipes = OutputPipes()
         stdout = _BoundedBytes(self._max_output_bytes)
@@ -130,6 +160,8 @@ class SubprocessTransport:
         pipe_capture = OutputPipeCapture(())
         timed_out = False
         cancelled = False
+        primary_error: BaseException | None = None
+        cleanup_error: RuntimeError | None = None
         try:
             pipe_fds = tuple(
                 pipe.fileno()
@@ -162,15 +194,27 @@ class SubprocessTransport:
                     timed_out = True
                     break
                 time.sleep(0.01)
-        except BaseException:
+        except BaseException as error:
+            primary_error = error
             output_pipes = _captured_output_pipes(pipe_capture)
-            _terminate_process_tree(process, output_pipes)
+            _terminate_process_tree(process, output_pipes, windows_job)
             raise
         finally:
             if cancelled or timed_out or stdout.overflowed or stderr.overflowed:
                 output_pipes = _captured_output_pipes(pipe_capture)
-                _terminate_process_tree(process, output_pipes)
-            process.wait()
+                _terminate_process_tree(process, output_pipes, windows_job)
+            wait_error: RuntimeError | None = None
+            try:
+                _wait_for_process_exit(
+                    process,
+                    timeout=(
+                        WINDOWS_TERMINATE_TIMEOUT_SECONDS
+                        if os.name == "nt"
+                        else None
+                    ),
+                )
+            except RuntimeError as error:
+                wait_error = error
             drain_deadline = (
                 started_at + timeout
                 if timeout is not None
@@ -181,32 +225,59 @@ class SubprocessTransport:
             )
             if any(thread.is_alive() for thread in threads):
                 timed_out = timeout is not None
-                _terminate_process_tree(process, output_pipes)
+                _terminate_process_tree(process, output_pipes, windows_job)
                 _join_threads_until(threads, time.monotonic() + READER_CLEANUP_SECONDS)
             if any(thread.is_alive() for thread in threads):
                 reader_stop.set()
                 _join_threads_until(threads, time.monotonic() + READER_CLEANUP_SECONDS)
             _close_pipe(process.stdout)
             _close_pipe(process.stderr)
+            if windows_job is not None and wait_error is not None:
+                windows_job.terminate()
+                try:
+                    _wait_for_process_exit(
+                        process, timeout=WINDOWS_TERMINATE_TIMEOUT_SECONDS
+                    )
+                except RuntimeError as error:
+                    wait_error = error
+                else:
+                    wait_error = None
+            if wait_error is not None:
+                if primary_error is not None:
+                    _raise_cleanup_error(wait_error, primary_error)
+                cleanup_error = wait_error
 
         result = CommandResult(process.returncode, stdout.text(), stderr.text(), argv)
         if cancelled:
-            raise _InvocationCancelled
+            _raise_invocation_error(_InvocationCancelled(), cleanup_error)
         if timed_out:
-            raise subprocess.TimeoutExpired(
-                redacted_argv(argv),
-                timeout or 0.0,
-                output=result.stdout,
-                stderr=result.stderr,
+            _raise_invocation_error(
+                subprocess.TimeoutExpired(
+                    redacted_argv(argv),
+                    timeout or 0.0,
+                    output=result.stdout,
+                    stderr=result.stderr,
+                ),
+                cleanup_error,
             )
         if stdout.overflowed:
-            raise AutotuneError(
-                f"autotune stdout exceeded the {self._max_output_bytes} byte capture limit", result
+            _raise_invocation_error(
+                AutotuneError(
+                    f"autotune stdout exceeded the {self._max_output_bytes} byte capture limit",
+                    result,
+                ),
+                cleanup_error,
             )
         if stderr.overflowed:
-            raise AutotuneError(
-                f"autotune stderr exceeded the {self._max_output_bytes} byte capture limit", result
+            _raise_invocation_error(
+                AutotuneError(
+                    f"autotune stderr exceeded the {self._max_output_bytes} byte capture limit",
+                    result,
+                ),
+                cleanup_error,
             )
+        if cleanup_error is not None:
+            raise cleanup_error
         if check and result.returncode != 0:
             raise AutotuneError("autotune command failed", result)
         return result
@@ -268,12 +339,12 @@ def _read_pipe(
 
 
 def _terminate_process_tree(
-    process: subprocess.Popen[bytes], output_pipes: OutputPipes | None = None
+    process: subprocess.Popen[bytes],
+    output_pipes: OutputPipes | None = None,
+    windows_job: WindowsJob | None = None,
 ) -> None:
     if os.name != "posix":
-        if process.poll() is not None:
-            return
-        _windows_terminate_tree(process.pid)
+        terminate_windows_process_tree(process, windows_job)
         return
 
     leader_running = process.poll() is None
@@ -327,8 +398,43 @@ def _close_pipe(pipe: IO[Any] | None) -> None:
 
 
 def _windows_creation_flags() -> int:
-    return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) if os.name == "nt" else 0
+    if os.name != "nt":
+        return 0
+    return int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
+        getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
+    )
 
 
-def _windows_terminate_tree(pid: int) -> None:
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)
+def _wait_for_process_exit(
+    process: subprocess.Popen[bytes], *, timeout: float | None
+) -> None:
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"autotune process {process.pid} did not exit after termination"
+        ) from error
+
+
+def _raise_cleanup_error(
+    cleanup_error: RuntimeError, primary_error: BaseException | None
+) -> None:
+    if primary_error is None:
+        raise cleanup_error
+    _annotate_cleanup_error(primary_error, cleanup_error)
+
+
+def _raise_invocation_error(
+    invocation_error: BaseException, cleanup_error: RuntimeError | None
+) -> NoReturn:
+    if cleanup_error is not None:
+        _annotate_cleanup_error(invocation_error, cleanup_error)
+    raise invocation_error
+
+
+def _annotate_cleanup_error(
+    primary_error: BaseException, cleanup_error: RuntimeError
+) -> None:
+    add_note = getattr(primary_error, "add_note", None)
+    if add_note is not None:
+        add_note(f"Cleanup also failed: {cleanup_error}")
