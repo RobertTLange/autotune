@@ -36,12 +36,16 @@ jobs:
       - run: npm test
 
   python-sdk:
-    name: Python SDK / Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    name: Python SDK / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.12"]
+        os: [ubuntu-latest]
+        python: ["3.10", "3.12", "3.14"]
+        include:
+          - os: macos-latest
+            python: "3.14"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -52,18 +56,25 @@ jobs:
       - run: python -m pip install ./python[test]
       - run: python -m mypy python/src
       - run: python -m ruff check python/src python/tests
-      - run: cd python && python -m pytest --cov=autotune_cli --cov-report=term-missing
+      - if: runner.os == 'Linux'
+        run: cd python && python -m pytest --cov=autotune_cli --cov-report=term-missing
+      - if: runner.os == 'macOS'
+        run: cd python && python -m pytest
       - run: python -m build --outdir /tmp/autotune-python-dist python
 
   python-sdk-windows:
-    name: Python SDK / Windows
+    name: Python SDK / Windows / Python ${{ matrix.python }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - run: python -m pip install ./python[test]
       - run: python -m pytest python/tests/test_windows_transport.py
