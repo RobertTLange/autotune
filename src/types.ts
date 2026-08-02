@@ -92,6 +92,7 @@ export interface RunOptions {
   yes: boolean;
   config?: string;
   ask?: (prompt: string) => Promise<string>;
+  silent?: boolean;
 }
 
 export interface SearchBudget {

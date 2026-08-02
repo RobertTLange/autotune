@@ -11,10 +11,160 @@ import {
   parseProbability,
   parseNonNegativeInt,
   parsePositiveInt,
-  parseSamplerSeed
+  parseSamplerSeed,
+  configureExecutableProgram,
+  runCli,
+  sdkCommandFromArgv,
+  usesSdkFormat
 } from "../src/cli.js";
+import { SDK_PROTOCOL_VERSION } from "../src/sdk.js";
+
+vi.mock("../src/check.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/check.js")>();
+  return {
+    ...actual,
+    checkDoctorPrerequisites: vi.fn(async () => [
+      { name: "headless", status: "fail", detail: "configured headless executable must not be empty" }
+    ])
+  };
+});
 
 describe("CLI option normalization", () => {
+  it("exposes versioned SDK capabilities", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await createProgram().parseAsync(["node", "autotune", "capabilities", "--sdk-format", "json"]);
+
+    expect(JSON.parse(String(output.mock.calls[0]?.[0]))).toEqual({
+      protocolVersion: SDK_PROTOCOL_VERSION,
+      type: "result",
+      command: "capabilities",
+      exitCode: 0,
+      data: {
+        protocolVersion: SDK_PROTOCOL_VERSION,
+        commands: ["analyze", "doctor", "plot-progress", "results", "resume", "run"]
+      }
+    });
+    output.mockRestore();
+  });
+
+  it("exposes the SDK format on supported commands", () => {
+    const sdkCommands = ["analyze", "doctor", "plot-progress", "results", "resume", "run"];
+    expect(createProgram().commands.filter((command) => sdkCommands.includes(command.name())).every((command) =>
+      command.options.some((option) => option.long === "--sdk-format")
+    )).toBe(true);
+  });
+
+  it("returns typed doctor failures to SDK callers", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      await createProgram().parseAsync(["node", "autotune", "doctor", "--sdk-format", "json"]);
+      const response = JSON.parse(String(output.mock.calls.at(-1)?.[0])) as {
+        type: string;
+        exitCode: number;
+        data: Array<{ name: string; status: string; detail: string }>;
+      };
+      expect(response.type).toBe("result");
+      expect(response.exitCode).toBe(0);
+      expect(response.data).toContainEqual(expect.objectContaining({ name: "headless", status: "fail" }));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("keeps doctor failures nonzero for human callers", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    try {
+      await expect(createProgram().parseAsync(["node", "autotune", "doctor"]))
+        .rejects.toThrow("prerequisite check failed");
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("requires explicit run confirmation for SDK calls", async () => {
+    await expect(
+      createProgram().parseAsync(["node", "autotune", "run", "train.py", "--trials", "1", "--sdk-format", "json"])
+    ).rejects.toThrow("--sdk-format run requires --yes");
+  });
+
+  it("recognizes both SDK flag forms in parser errors", () => {
+    expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format", "json"])).toBe(true);
+    expect(usesSdkFormat(["node", "autotune", "run", "--sdk-format=json"])).toBe(true);
+    expect(usesSdkFormat(["node", "autotune", "run"])).toBe(false);
+  });
+
+  it("derives SDK error commands from the subcommand position", () => {
+    expect(sdkCommandFromArgv([
+      "node", "autotune", "run", "analyze", "--trials", "1", "--sdk-format", "json"
+    ])).toBe("run");
+  });
+
+  it("routes SDK subcommand parser failures to the caller", async () => {
+    const program = createProgram();
+    configureExecutableProgram(program, true);
+
+    await expect(
+      program.parseAsync(["node", "autotune", "run", "--sdk-format=json"])
+    ).rejects.toThrow("required option '--trials <n>' not specified");
+  });
+
+  it("does not expose sensitive build command output in SDK responses", async () => {
+    const secret = "review-secret";
+    const directory = await mkdtemp(path.join(tmpdir(), "autotune-sdk-secret-"));
+    const script = path.join(directory, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const originalExitCode = process.exitCode;
+
+    try {
+      await runCli([
+        "node",
+        "autotune",
+        "run",
+        script,
+        "--trials",
+        "1",
+        "--yes",
+        "--sdk-format",
+        "json",
+        "--build-command",
+        `${process.execPath} -e \"process.stderr.write('${secret}'); process.exit(1)\"`
+      ]);
+
+      expect(output.mock.calls.map(([value]) => String(value)).join("\n")).not.toContain(secret);
+      expect(error.mock.calls.map(([value]) => String(value)).join("\n")).not.toContain(secret);
+      expect(JSON.parse(String(output.mock.calls[0]?.[0]))).toMatchObject({
+        type: "error",
+        command: "run",
+        error: { message: "autotune SDK command failed" }
+      });
+    } finally {
+      output.mockRestore();
+      error.mockRestore();
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it("preserves successful version exits for the human CLI", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((code) => {
+      throw new Error(`process exited with ${String(code)}`);
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const program = createProgram();
+    configureExecutableProgram(program, false);
+
+    await expect(program.parseAsync(["node", "autotune", "--version"]))
+      .rejects.toThrow("process exited with 0");
+
+    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(output).toHaveBeenCalledWith(`${PACKAGE_VERSION}\n`);
+  });
+
   it("uses package.json as the CLI version source of truth", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
       version: string;

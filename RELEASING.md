@@ -1,6 +1,6 @@
 # Releasing Autotune
 
-Releases publish `@roberttlange/autotune` to npm from `.github/workflows/release.yml`. The package version in `package.json`, changelog section, annotated Git tag, npm version, and GitHub Release must agree.
+Releases publish `@roberttlange/autotune` to npm and `autotune-cli` to PyPI from `.github/workflows/release.yml`. The versions in `package.json`, `python/pyproject.toml`, changelog section, annotated Git tag, registries, and GitHub Release must agree.
 
 ## Prerequisites
 
@@ -8,6 +8,7 @@ Releases publish `@roberttlange/autotune` to npm from `.github/workflows/release
 - The npm account owns the `@roberttlange` scope and has two-factor authentication enabled.
 - A GitHub ruleset protects tags matching `v*` from deletion and non-release updates.
 - A protected GitHub environment named `npm` exists and requires reviewer approval before deployment.
+- A protected GitHub environment named `pypi` exists and is configured as the PyPI trusted publisher for `RobertTLange/autotune`'s `release.yml` workflow.
 
 ## First Publication
 
@@ -30,7 +31,7 @@ The release workflow automatically uses npm OIDC after the trusted publisher is 
 
 ## Prepare a Release
 
-1. Update `package.json` and `package-lock.json` to the exact target version.
+1. Update `package.json`, `package-lock.json`, and `python/pyproject.toml` to the exact target version.
 2. Move release notes into a dated `CHANGELOG.md` section named `## [X.Y.Z] - YYYY-MM-DD`.
 3. Run the complete gate:
 
@@ -41,6 +42,11 @@ The release workflow automatically uses npm OIDC after the trusted publisher is 
    npm run build
    npm audit --omit=dev
    npm pack --dry-run
+   python -m pip install ./python[test]
+   python -m mypy python/src
+   python -m ruff check python/src python/tests
+   (cd python && python -m pytest --cov=autotune_cli)
+   python -m build python
    ```
 
 4. Commit with `chore: release vX.Y.Z` and push `master`.

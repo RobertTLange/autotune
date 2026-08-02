@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, real
 import { fileURLToPath } from "node:url";
 import { plotProgress } from "./progress-plot.js";
 import type { ProgressXAxis } from "./progress-plot.js";
+import { SDK_PROTOCOL_VERSION, redactSdkErrorMessage, renderSdkError, renderSdkResult } from "./sdk.js";
 import { analyzeOnly, doctorAutotune, resumeStudy, runAutotune, showResults } from "./workflow.js";
 import type { Direction, Pruner, ReasoningEffort, RefineMode, RunOptions, Sampler } from "./types.js";
 
@@ -55,8 +56,13 @@ export function createProgram(): Command {
   .option("--work-dir <dir>", "artifact directory")
   .option("--yes", "skip confirmation prompts", false)
   .option("--config <file>", "pre-defined search space YAML/JSON")
+  .addOption(sdkFormatOption())
   .action(async (script: string, raw: Record<string, unknown>, command: Command) => {
-    await runAutotune(script, normalizeRunOptions(raw, command));
+    const sdk = isSdkRequest(raw);
+    rejectConflictingSdkOptions(raw, sdk);
+    requireSdkRunConfirmation(raw, sdk);
+    const result = await runAutotune(script, { ...normalizeRunOptions(raw, command), silent: sdk });
+    if (sdk) printSdkResult("run", result);
   });
 
   program
@@ -73,6 +79,7 @@ export function createProgram(): Command {
   .option("--output <file>", "write search space YAML to file")
   .option("--work-dir <dir>", "artifact directory", "autotune")
   .option("--command <command>", "override script invocation command")
+  .addOption(sdkFormatOption())
   .action(async (script: string, raw: {
     agent: string;
     model?: string;
@@ -85,12 +92,17 @@ export function createProgram(): Command {
     agentGuidance?: string;
     agentGuidanceFile?: string;
     maxParameters?: number;
+    sdkFormat?: "json";
   }) => {
-    await analyzeOnly(script, {
+    const sdk = isSdkRequest(raw);
+    rejectConflictingSdkOptions(raw, sdk);
+    const result = await analyzeOnly(script, {
       ...raw,
       reasoningEffort: normalizeReasoningEffort(raw),
-      agentGuidance: normalizeAgentGuidance(raw)
+      agentGuidance: normalizeAgentGuidance(raw),
+      silent: sdk
     });
+    if (sdk) printSdkResult("analyze", result);
   });
 
   program
@@ -99,8 +111,11 @@ export function createProgram(): Command {
   .option("--agent <name>", "headless agent", "claude")
   .option("--model <name>", "headless model override")
   .option("--command <command>", "override script invocation command")
-  .action(async (script: string | undefined, options: { agent: string; model?: string; command?: string }) => {
-    await doctorAutotune({ script, agent: options.agent, model: options.model, command: options.command });
+  .addOption(sdkFormatOption())
+  .action(async (script: string | undefined, options: { agent: string; model?: string; command?: string; sdkFormat?: "json" }) => {
+    const sdk = isSdkRequest(options);
+    const checks = await doctorAutotune({ script, agent: options.agent, model: options.model, command: options.command, silent: sdk });
+    if (sdk) printSdkResult("doctor", checks);
   });
 
   program
@@ -108,8 +123,12 @@ export function createProgram(): Command {
   .argument("[dir]", "artifact directory or results JSON file", "autotune")
   .option("--json", "print JSON", false)
   .option("--top <n>", "number of top trials", parsePositiveInt, 10)
-  .action(async (dir: string, options: { json: boolean; top: number }) => {
-    await showResults({ dir, json: options.json, top: options.top });
+  .addOption(sdkFormatOption())
+  .action(async (dir: string, options: { json: boolean; top: number; sdkFormat?: "json" }) => {
+    const sdk = isSdkRequest(options);
+    rejectConflictingSdkOptions(options, sdk);
+    const result = await showResults({ dir, json: options.json, top: options.top, silent: sdk });
+    if (sdk) printSdkResult("results", result);
   });
 
   program
@@ -125,6 +144,7 @@ export function createProgram(): Command {
   .option("--y-min <n>", "minimum y-axis value", parseFiniteNumber)
   .option("--y-max <n>", "maximum y-axis value", parseFiniteNumber)
   .option("--include-failed", "include failed/timeout trial values when updating best-so-far", false)
+  .addOption(sdkFormatOption())
   .action(async (runDir: string, options: {
     output: string;
     title?: string;
@@ -136,9 +156,11 @@ export function createProgram(): Command {
     yMin?: number;
     yMax?: number;
     includeFailed: boolean;
+    sdkFormat?: "json";
   }) => {
     await plotProgress(runDir, options);
-    console.log(`Wrote ${options.output}`);
+    if (isSdkRequest(options)) printSdkResult("plot-progress", { output: options.output });
+    else console.log(`Wrote ${options.output}`);
   });
 
   program
@@ -149,18 +171,119 @@ export function createProgram(): Command {
   .option("--n-jobs <n>", "parallel trial workers", parsePositiveInt, 1)
   .option("--work-dir <dir>", "artifact directory", "autotune")
   .addOption(new Option("--direction <direction>", "fallback direction").choices(["maximize", "minimize"]).default("maximize"))
-  .action(async (options: { storage: string; studyName?: string; trials: number; nJobs: number; workDir: string; direction: Direction }) => {
-    await resumeStudy(options);
+  .addOption(sdkFormatOption())
+  .action(async (options: { storage: string; studyName?: string; trials: number; nJobs: number; workDir: string; direction: Direction; sdkFormat?: "json" }) => {
+    const sdk = isSdkRequest(options);
+    const result = await resumeStudy({ ...options, silent: sdk });
+    if (sdk) printSdkResult("resume", result);
   });
+
+  program
+    .command("capabilities")
+    .addOption(sdkFormatOption())
+    .action((options: { sdkFormat?: "json" }) => {
+      const capabilities = {
+        protocolVersion: SDK_PROTOCOL_VERSION,
+        commands: ["analyze", "doctor", "plot-progress", "results", "resume", "run"]
+      };
+      if (isSdkRequest(options)) printSdkResult("capabilities", capabilities);
+      else console.log(JSON.stringify(capabilities, null, 2));
+    });
 
   return program;
 }
 
 if (isMainModule()) {
-  createProgram().parseAsync(process.argv).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode ??= 1;
-  });
+  void runCli();
+}
+
+export async function runCli(argv = process.argv): Promise<void> {
+  const sdk = usesSdkFormat(argv);
+  const program = createProgram();
+  configureExecutableProgram(program, sdk);
+  try {
+    await program.parseAsync(argv);
+  } catch (error) {
+    reportCliError(error, argv, sdk);
+  }
+}
+
+function reportCliError(error: unknown, argv: string[], sdk: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const exitCode = existingOrErrorExitCode(error);
+  if (sdk) {
+    console.log(renderSdkError(
+      redactSdkErrorMessage(message, argv),
+      exitCode,
+      sdkCommandFromArgv(argv)
+    ));
+  } else {
+    console.error(message);
+  }
+  process.exitCode = exitCode;
+}
+
+function sdkFormatOption(): Option {
+  return new Option("--sdk-format <format>", "versioned SDK output").choices(["json"]);
+}
+
+function isSdkRequest(options: { sdkFormat?: unknown }): boolean {
+  return options.sdkFormat === "json";
+}
+
+function rejectConflictingSdkOptions(options: { json?: unknown }, sdk: boolean): void {
+  if (sdk && options.json === true) {
+    throw new Error("--json cannot be used with --sdk-format");
+  }
+}
+
+function requireSdkRunConfirmation(options: { yes?: unknown }, sdk: boolean): void {
+  if (sdk && options.yes !== true) {
+    throw new Error("--sdk-format run requires --yes");
+  }
+}
+
+function printSdkResult(command: string, data: unknown): void {
+  console.log(renderSdkResult(command, data));
+}
+
+export function usesSdkFormat(argv: string[]): boolean {
+  return argv.some((value) => value === "--sdk-format" || value.startsWith("--sdk-format="));
+}
+
+export function sdkCommandFromArgv(argv: string[]): string {
+  const command = argv[2];
+  return command !== undefined &&
+    ["analyze", "capabilities", "doctor", "plot-progress", "results", "resume", "run"].includes(command)
+    ? command
+    : "cli";
+}
+
+function errorExitCode(error: unknown): number {
+  if (typeof error === "object" && error !== null && "exitCode" in error) {
+    const exitCode = (error as { exitCode?: unknown }).exitCode;
+    if (typeof exitCode === "number" && Number.isInteger(exitCode) && exitCode > 0) {
+      return exitCode;
+    }
+  }
+  return 1;
+}
+
+function existingOrErrorExitCode(error: unknown): number {
+  const existing = process.exitCode;
+  return typeof existing === "number" && Number.isInteger(existing) && existing > 0
+    ? existing
+    : errorExitCode(error);
+}
+
+export function configureExecutableProgram(program: Command, sdk: boolean): void {
+  if (!sdk) {
+    return;
+  }
+  for (const command of [program, ...program.commands]) {
+    command.exitOverride();
+    command.configureOutput({ writeErr: () => undefined });
+  }
 }
 
 export function normalizeRunOptions(raw: Record<string, unknown>, command: Command): RunOptions {
