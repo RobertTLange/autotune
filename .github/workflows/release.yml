@@ -101,7 +101,7 @@ jobs:
           overwrite: true
           retention-days: 7
       - name: Upload Python SDK artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pypi-release-${{ steps.metadata.outputs.version }}
           path: ${{ runner.temp }}/python-release
