@@ -4,7 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [TBD] - TBD
+## [0.3.0] - 2026-08-02
+
+### Added
+
+- Typed synchronous and asynchronous Python SDK (`autotune-cli`) for analysis, runs, results, doctor checks, resumption, and progress plots.
+- Versioned JSON SDK protocol for noninteractive CLI integrations.
+
+### Fixed
+
+- Bounded SDK subprocess capture, cancellation, process-tree cleanup, and cross-platform cleanup behavior.
+- SDK error redaction for sensitive arguments and build-command output.
 
 ## [0.2.0] - 2026-07-26
 
@@ -38,6 +48,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Private run artifacts, allowlisted agent environments, immutable nanochat data snapshots, and supervised BBOB process cleanup.
 - Cross-platform release gates for Node.js 22 and 24 on Linux and macOS.
 
-[TBD]: https://github.com/RobertTLange/autotune/compare/v0.2.0...HEAD
+[0.3.0]: https://github.com/RobertTLange/autotune/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/RobertTLange/autotune/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/RobertTLange/autotune/releases/tag/v0.1.0
