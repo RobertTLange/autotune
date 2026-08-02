@@ -1090,6 +1090,43 @@ describe("runAutotune", () => {
     expect(runner).toContain(runtime);
   });
 
+  it("does not log sensitive build commands for silent runs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "autotune-silent-build-"));
+    const binDir = path.join(dir, "bin");
+    const workDir = path.join(dir, ".autotune");
+    const script = path.join(dir, "train.cpp");
+    const config = path.join(dir, "space.yaml");
+    const buildLog = path.join(dir, "build.log");
+    const secret = "review-secret";
+    await writeFile(script, "int main() { /* autotune_metric */ return 0; }\n", "utf8");
+    await writeSearchSpace(config, {
+      parameters: [{ name: "x", cli_flag: "--x", type: "float", low: 0, high: 1 }],
+      has_arg_parsing: true,
+      needs_wrapper: false,
+      direction: "maximize"
+    });
+    await writeFakePython(path.join(binDir, "python3"));
+    await writeFakeBuilder(path.join(binDir, `fake-build-${secret}`), buildLog);
+    process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+
+    const stderr = await captureStderr(async () => {
+      await runAutotune(script, {
+        trials: 1,
+        nJobs: 1,
+        workDir,
+        agent: "claude",
+        command: `{work-dir}/train-bin`,
+        buildCommand: `fake-build-${secret} {script} {work-dir}/train-bin`,
+        config,
+        json: true,
+        yes: true,
+        silent: true
+      });
+    });
+
+    expect(stderr.join("\n")).not.toContain(secret);
+  });
+
   it("runs automatic agent refinement rounds with separate round artifacts", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "autotune-refine-"));
     const binDir = path.join(dir, "bin");

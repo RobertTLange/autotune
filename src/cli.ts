@@ -194,22 +194,33 @@ export function createProgram(): Command {
 }
 
 if (isMainModule()) {
+  void runCli();
+}
+
+export async function runCli(argv = process.argv): Promise<void> {
+  const sdk = usesSdkFormat(argv);
   const program = createProgram();
-  configureExecutableProgram(program, usesSdkFormat(process.argv));
-  program.parseAsync(process.argv).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    const exitCode = existingOrErrorExitCode(error);
-    if (usesSdkFormat(process.argv)) {
-      console.log(renderSdkError(
-        redactSdkErrorMessage(message, process.argv),
-        exitCode,
-        sdkCommandFromArgv(process.argv)
-      ));
-    } else {
-      console.error(message);
-    }
-    process.exitCode = exitCode;
-  });
+  configureExecutableProgram(program, sdk);
+  try {
+    await program.parseAsync(argv);
+  } catch (error) {
+    reportCliError(error, argv, sdk);
+  }
+}
+
+function reportCliError(error: unknown, argv: string[], sdk: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  const exitCode = existingOrErrorExitCode(error);
+  if (sdk) {
+    console.log(renderSdkError(
+      redactSdkErrorMessage(message, argv),
+      exitCode,
+      sdkCommandFromArgv(argv)
+    ));
+  } else {
+    console.error(message);
+  }
+  process.exitCode = exitCode;
 }
 
 function sdkFormatOption(): Option {

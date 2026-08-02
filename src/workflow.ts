@@ -55,7 +55,7 @@ export async function runAutotune(script: string, options: RunOptions): Promise<
   await mkdir(workDir, { recursive: true });
   const commandContext = { scriptPath, workDir };
   if (options.buildCommand) {
-    await runBuildCommand(options.buildCommand, commandContext);
+    await runBuildCommand(options.buildCommand, commandContext, options.silent);
   }
   const commandOverride = options.command ? expandCommandTemplateArgs(splitCommand(options.command), commandContext) : undefined;
   const invocation = detectInvocation(scriptPath, commandOverride);
@@ -855,15 +855,23 @@ async function copyLatestRunnerAlias(runnerPath: string, workDir: string, script
   await copyFile(runnerPath, latestPath);
 }
 
-async function runBuildCommand(template: string, context: CommandTemplateContext): Promise<void> {
+async function runBuildCommand(
+  template: string,
+  context: CommandTemplateContext,
+  silent: boolean | undefined
+): Promise<void> {
   const command = expandCommandTemplateArgs(splitCommand(template), context);
   const [executable, ...args] = command;
   if (!executable) {
     throw new Error("build command cannot be empty");
   }
-  writeStatus(`Building runtime: ${styles.dim(command.join(" "))}`);
+  if (!silent) {
+    writeStatus(`Building runtime: ${styles.dim(command.join(" "))}`);
+  }
   await runCommand(executable, args);
-  writeStatus("Build complete.", "success");
+  if (!silent) {
+    writeStatus("Build complete.", "success");
+  }
 }
 
 interface CommandTemplateContext {

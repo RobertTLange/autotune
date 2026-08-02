@@ -28,22 +28,30 @@ describe("SDK protocol", () => {
 });
 
 describe("SDK error redaction", () => {
-  it("redacts sensitive equals-form arguments echoed in errors", () => {
+  it("returns a safe error when sensitive equals-form arguments are present", () => {
     const secret = "postgres://user:secret@db";
     const message = `error: unknown option '--storage=${secret}'`;
 
     expect(redactSdkErrorMessage(message, ["node", "autotune", "analyze", `--storage=${secret}`]))
-      .toBe("error: unknown option '--storage=[REDACTED]'");
+      .toBe("autotune SDK command failed");
     expect(redactSdkErrorMessage(`failed: ${secret}`, [
       "node", "autotune", "analyze", `--storage=${secret}`
-    ])).toBe("failed: [REDACTED]");
+    ])).toBe("autotune SDK command failed");
   });
 
-  it("redacts sensitive split-form argument values echoed in errors", () => {
+  it("returns a safe error when sensitive split-form arguments are present", () => {
     const secret = "top-secret-guidance";
 
     expect(redactSdkErrorMessage(`failed: ${secret}`, [
       "node", "autotune", "run", "--agent-guidance", secret
-    ])).toBe("failed: [REDACTED]");
+    ])).toBe("autotune SDK command failed");
+  });
+
+  it("does not expose a secret echoed by a sensitive build command", () => {
+    const secret = "review-secret";
+
+    expect(redactSdkErrorMessage(`build failed: ${secret}`, [
+      "node", "autotune", "run", "--build-command", `sh -c 'printf ${secret} >&2; exit 1'`
+    ])).toBe("autotune SDK command failed");
   });
 });

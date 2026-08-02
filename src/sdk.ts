@@ -21,6 +21,7 @@ const SENSITIVE_FLAG_SUFFIXES = [
   "-secret-key",
   "-token"
 ];
+const SAFE_SDK_ERROR_MESSAGE = "autotune SDK command failed";
 
 interface SdkResultEnvelope {
   protocolVersion: typeof SDK_PROTOCOL_VERSION;
@@ -61,21 +62,11 @@ export function renderSdkError(message: string, exitCode: number, command = "cli
 }
 
 export function redactSdkErrorMessage(message: string, argv: string[]): string {
-  let redacted = message;
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index] ?? "";
-    const separator = value.indexOf("=");
-    const flag = separator >= 0 ? value.slice(0, separator) : value;
-    if (!isSensitiveFlag(flag)) continue;
-    if (separator >= 0) {
-      redacted = replaceAll(redacted, value, `${flag}=[REDACTED]`);
-      redacted = replaceAll(redacted, value.slice(separator + 1), "[REDACTED]");
-      continue;
-    }
-    const secret = argv[index + 1];
-    if (secret !== undefined) redacted = replaceAll(redacted, secret, "[REDACTED]");
-  }
-  return redacted;
+  return containsSensitiveArgument(argv) ? SAFE_SDK_ERROR_MESSAGE : message;
+}
+
+function containsSensitiveArgument(argv: string[]): boolean {
+  return argv.some((value) => isSensitiveFlag(value.split("=", 1)[0] ?? ""));
 }
 
 function isSensitiveFlag(flag: string): boolean {
@@ -84,8 +75,4 @@ function isSensitiveFlag(flag: string): boolean {
     SENSITIVE_FLAGS.has(normalized) ||
     SENSITIVE_FLAG_SUFFIXES.some((suffix) => normalized.endsWith(suffix))
   );
-}
-
-function replaceAll(value: string, search: string, replacement: string): string {
-  return search.length === 0 ? value : value.split(search).join(replacement);
 }

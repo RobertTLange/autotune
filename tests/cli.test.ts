@@ -13,6 +13,7 @@ import {
   parsePositiveInt,
   parseSamplerSeed,
   configureExecutableProgram,
+  runCli,
   sdkCommandFromArgv,
   usesSdkFormat
 } from "../src/cli.js";
@@ -108,6 +109,44 @@ describe("CLI option normalization", () => {
     await expect(
       program.parseAsync(["node", "autotune", "run", "--sdk-format=json"])
     ).rejects.toThrow("required option '--trials <n>' not specified");
+  });
+
+  it("does not expose sensitive build command output in SDK responses", async () => {
+    const secret = "review-secret";
+    const directory = await mkdtemp(path.join(tmpdir(), "autotune-sdk-secret-"));
+    const script = path.join(directory, "train.py");
+    await writeFile(script, "print('autotune_metric=1')\n", "utf8");
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const originalExitCode = process.exitCode;
+
+    try {
+      await runCli([
+        "node",
+        "autotune",
+        "run",
+        script,
+        "--trials",
+        "1",
+        "--yes",
+        "--sdk-format",
+        "json",
+        "--build-command",
+        `${process.execPath} -e \"process.stderr.write('${secret}'); process.exit(1)\"`
+      ]);
+
+      expect(output.mock.calls.map(([value]) => String(value)).join("\n")).not.toContain(secret);
+      expect(error.mock.calls.map(([value]) => String(value)).join("\n")).not.toContain(secret);
+      expect(JSON.parse(String(output.mock.calls[0]?.[0]))).toMatchObject({
+        type: "error",
+        command: "run",
+        error: { message: "autotune SDK command failed" }
+      });
+    } finally {
+      output.mockRestore();
+      error.mockRestore();
+      process.exitCode = originalExitCode;
+    }
   });
 
   it("preserves successful version exits for the human CLI", async () => {
